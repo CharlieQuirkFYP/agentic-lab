@@ -1,0 +1,21 @@
+package main
+
+import (
+	"log"
+
+	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/handler"
+	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/service"
+	"github.com/gin-gonic/gin"
+)
+
+func main() {
+	router := gin.Default()
+
+	incidentService := service.NewIncidentService()
+	incidentHandler := handler.NewIncidentHandler(incidentService)
+
+	router.GET("/health", handler.Health)
+	router.POST("/api/v1/incidents/analyze", incidentHandler.Analyze)
+
+	log.Fatal(router.Run(":8080"))
+}
