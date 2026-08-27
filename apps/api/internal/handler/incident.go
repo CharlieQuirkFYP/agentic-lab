@@ -27,6 +27,13 @@ func (h *IncidentHandler) Analyze(c *gin.Context) {
 		return
 	}
 
-	report := h.incidentService.Analyze(req.Transcript)
+	report, err := h.incidentService.Analyze(c.Request.Context(), req)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{
+			"error": "failed to analyze incident",
+		})
+		return
+	}
+
 	c.JSON(http.StatusOK, report)
 }

@@ -1,19 +1,22 @@
 package service
 
-import "github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
+import (
+	"context"
 
-type IncidentService struct{}
+	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/analyzer"
+	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
+)
 
-func NewIncidentService() *IncidentService {
-	return &IncidentService{}
+type IncidentService struct {
+	incidentAnalyzer analyzer.IncidentAnalyzer
 }
 
-func (s *IncidentService) Analyze(transcript string) model.IncidentReport {
-	return model.IncidentReport{
-		IncidentType:      "unknown",
-		Location:          "unknown",
-		Severity:          "unknown",
-		Summary:           transcript,
-		RecommendedAction: "Pending AI analysis",
+func NewIncidentService(incidentAnalyzer analyzer.IncidentAnalyzer) *IncidentService {
+	return &IncidentService{
+		incidentAnalyzer: incidentAnalyzer,
 	}
+}
+
+func (s *IncidentService) Analyze(ctx context.Context, req model.AnalyzeIncidentRequest) (model.IncidentReport, error) {
+	return s.incidentAnalyzer.Analyze(ctx, req)
 }

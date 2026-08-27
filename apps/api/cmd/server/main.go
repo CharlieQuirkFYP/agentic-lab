@@ -3,6 +3,7 @@ package main
 import (
 	"log"
 
+	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/analyzer"
 	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/handler"
 	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/service"
 	"github.com/gin-gonic/gin"
@@ -11,7 +12,8 @@ import (
 func main() {
 	router := gin.Default()
 
-	incidentService := service.NewIncidentService()
+	incidentAnalyzer := analyzer.NewMockIncidentAnalyzer()
+	incidentService := service.NewIncidentService(incidentAnalyzer)
 	incidentHandler := handler.NewIncidentHandler(incidentService)
 
 	router.GET("/health", handler.Health)
