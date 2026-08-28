@@ -96,3 +96,45 @@ Run static checks:
 ```bash
 go vet ./...
 ```
+
+### Web
+
+#### Prerequisites
+
+- Node.js 20.19+ or 22.12+
+- npm
+
+#### Setup
+
+From the repository root:
+
+```bash
+cd web
+npm install
+```
+
+Start the frontend:
+
+```bash
+npm run dev
+```
+
+The Vite dev server runs at:
+
+```text
+http://localhost:5173
+```
+
+#### Verification
+
+Build the frontend:
+
+```bash
+npm run build
+```
+
+Run the configured lint command:
+
+```bash
+npm run lint
+```

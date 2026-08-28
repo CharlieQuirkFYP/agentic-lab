@@ -138,6 +138,25 @@ For Go code:
 * Run `go vet`.
 * Keep error responses simple and avoid exposing internal error details over HTTP.
 
+## Frontend Conventions
+
+For frontend code:
+
+* Use React + TypeScript + Vite.
+* Use React Router DOM for routing.
+* Use Tailwind CSS.
+* Use shadcn/ui for reusable UI primitives.
+* Use Lucide React for icons.
+* Prefer simple reusable components.
+* Prefer a clean engineering/research dashboard aesthetic.
+* Default to light mode unless explicitly changed.
+* Use neutral surfaces, subtle borders, and restrained accents.
+* Prioritize experiment/data readability.
+* Remain responsive.
+* Avoid excessive gradients, glassmorphism, animation, and decorative effects.
+* Avoid turning the product into a marketing/SaaS landing page.
+* Avoid adding frontend dependencies unless they solve a clear requirement.
+
 ## Testing Conventions
 
 For Go unit/package tests:
@@ -173,7 +192,9 @@ Currently implemented:
 * `IncidentAnalyzer` interface
 * `MockIncidentAnalyzer`
 * unit tests for incident analyzer and service
+* frontend toolchain scaffold under `web/`
 * basic local Go setup instructions in `README.md`
+* basic local Web setup instructions in `README.md`
 
 Not yet implemented:
 
@@ -190,7 +211,7 @@ Not yet implemented:
 * Redis
 * Kafka
 * Docker
-* frontend
+* frontend product pages
 
 This section should be updated as the project evolves.
 
