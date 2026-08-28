@@ -181,6 +181,16 @@ directory may be used for:
 
 Do not move normal Go unit tests into a central test directory.
 
+## CI Guidance
+
+GitHub Actions PR CI currently runs separate backend and frontend workflows.
+
+The Go backend workflow checks formatting with `gofmt -l .`, runs `go vet ./...`, and runs `go test ./...` from `api/`.
+
+The frontend workflow installs npm dependencies, runs lint, and runs the production build from `web/`.
+
+Expand CI incrementally as new components or requirements are introduced.
+
 ## Current Implementation State
 
 Currently implemented:
