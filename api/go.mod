@@ -1,4 +1,4 @@
-module github.com/CharlieQuirkFYP/agentic-lab/apps/api
+module github.com/CharlieQuirkFYP/agentic-lab/api
 
 go 1.25.0
 

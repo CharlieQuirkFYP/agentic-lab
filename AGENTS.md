@@ -63,7 +63,7 @@ The Go API should not become tightly coupled to a specific AI implementation.
 The Go API lives under:
 
 ```text
-apps/api/
+api/
 ```
 
 It currently uses:
@@ -263,6 +263,21 @@ A hybrid of both may also be used.
 When implementing new components, preserve the ability to support both student-built and KLASS-provided implementations where reasonable.
 
 ## Repository Guidance
+
+The intended top-level repository structure is:
+
+```text
+api/
+web/
+ai-service/
+benchmark/
+docs/
+infra/
+scripts/
+tests/
+```
+
+`web/` and `ai-service/` are future components and should not be created before they are needed.
 
 Do not store large model weights or benchmark media directly in Git.
 

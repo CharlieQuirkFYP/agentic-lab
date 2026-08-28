@@ -3,9 +3,9 @@ package main
 import (
 	"log"
 
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/analyzer"
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/handler"
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/service"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/analyzer"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/handler"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

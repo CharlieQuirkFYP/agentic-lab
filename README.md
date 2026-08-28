@@ -21,7 +21,7 @@ Local setup instructions will be expanded as more services are introduced. For n
 From the repository root, navigate to the API service:
 
 ```bash
-cd apps/api
+cd api
 ```
 
 Synchronize and install dependencies:

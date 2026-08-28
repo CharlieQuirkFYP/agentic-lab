@@ -3,7 +3,7 @@ package analyzer
 import (
 	"context"
 
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/model"
 )
 
 type IncidentAnalyzer interface {

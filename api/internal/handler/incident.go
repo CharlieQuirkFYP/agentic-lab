@@ -3,8 +3,8 @@ package handler
 import (
 	"net/http"
 
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/service"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/model"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
 	"github.com/gin-gonic/gin"
 )
 

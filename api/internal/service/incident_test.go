@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/model"
 )
 
 type fakeIncidentAnalyzer struct {

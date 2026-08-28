@@ -3,8 +3,8 @@ package service
 import (
 	"context"
 
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/analyzer"
-	"github.com/CharlieQuirkFYP/agentic-lab/apps/api/internal/model"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/analyzer"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/model"
 )
 
 type IncidentService struct {
