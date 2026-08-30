@@ -79,6 +79,10 @@ Existing endpoints:
 GET /health
 
 POST /api/v1/incidents/analyze
+
+POST /api/v1/experiments
+
+GET /api/v1/experiments/:id
 ```
 
 The incident endpoint currently returns a placeholder response through `MockIncidentAnalyzer`.
@@ -106,6 +110,26 @@ IncidentAnalyzer
 ```
 
 Do not bypass the analyzer boundary by calling AI implementations directly from handlers.
+
+## Current Benchmark Lifecycle
+
+Benchmark experiments are asynchronous and generic across:
+
+* Incident Reporting
+* Interview Assistant
+* License Plate Monitoring
+
+The current implementation lives inside the Go API under:
+
+```text
+api/internal/benchmark/
+```
+
+Experiment creation stores a queued experiment in memory, enqueues a small job containing the experiment ID, and returns immediately. A background Go worker consumes jobs from an in-memory buffered channel, marks experiments as running, executes the configured `Runner`, stores the result, and marks the experiment as completed or failed.
+
+The current runner is mocked and does not call real AI workflows, external services, or model runtimes.
+
+Repository, queue, worker, and runner implementations are intentionally replaceable. Future work may replace the in-memory repository, in-memory queue, mock runner, or internal worker loop with PostgreSQL, a persistent/distributed queue, KLASS/local runners, or separate benchmark worker processes if remote or distributed execution becomes necessary.
 
 ## Architecture Principles
 
@@ -198,10 +222,17 @@ Currently implemented:
 * initial Go Gin API
 * `GET /health`
 * `POST /api/v1/incidents/analyze`
+* `POST /api/v1/experiments`
+* `GET /api/v1/experiments/:id`
 * incident handler/service/model separation
 * `IncidentAnalyzer` interface
 * `MockIncidentAnalyzer`
+* generic asynchronous benchmark experiment lifecycle
+* in-memory benchmark repository and job queue
+* background Go benchmark worker
+* mocked benchmark runner
 * unit tests for incident analyzer and service
+* unit tests for benchmark repository, service, worker, and experiment HTTP handler
 * frontend toolchain scaffold under `web/`
 * basic local Go setup instructions in `README.md`
 * basic local Web setup instructions in `README.md`
@@ -216,7 +247,7 @@ Not yet implemented:
 * interview workflow
 * vision workflow
 * KLASS adapters
-* benchmarking runtime
+* real benchmark runners/runtime
 * PostgreSQL
 * Redis
 * Kafka
