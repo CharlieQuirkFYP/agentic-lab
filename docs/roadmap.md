@@ -22,19 +22,25 @@ Name the dedicated Python service `voice-agent/`. Assign incident state, confirm
 
 Create `voice-agent/` with the [initial API contract](api/voice-agent.md), health/readiness endpoints, runtime/path/timeout configuration, tests, Python CI, and local setup instructions. Use a fake analyzer for contract tests; until T04 connects a runtime, return the documented unavailable error rather than presenting mock output as real analysis. Keep weights outside Git.
 
-**Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02. **Status:** implemented with health/readiness, configuration, tests, Ruff, and Python CI; real inference is T04.
+**Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02. **Status:** implemented with health/readiness, configuration, tests, Ruff, and Python CI; real inference is T04b.
 
-### T04 — Implement local incident analysis through llama.cpp (M)
+### T04a — Set up the local llama.cpp runtime (S)
 
-Add the runtime adapter, structured extraction prompts, output validation, and timeout/unavailable-runtime handling. Choose a provisional model using the development examples; record model, quantization, prompt/runtime revisions, and stage timing.
+Pin the upstream runtime revision, document installation outside the repository, and add a configurable launcher with executable/model path validation, port/context/thread/offload settings, version checks, and dry-run output. Defer final model selection; distinguish installation checks from model-backed inference checks.
 
-**Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T03.
+**Acceptance:** pinned installation/version are verifiable, launcher tests need no model, and startup/shutdown instructions are reproducible. **Dependencies:** T03. **Status:** setup and launcher implemented; see [runtime instructions](../voice-agent/docs/llama-cpp.md). Model-backed verification is deferred.
+
+### T04b — Connect Voice Agent to llama.cpp (M)
+
+Use a provisional compatible model without committing to the final SLM. Add the Python runtime adapter, structured extraction prompts, output validation, real readiness checks, and timeout/unavailable-runtime handling. Record model, quantization, prompt/runtime revisions, and stage timing; run a model-backed smoke test.
+
+**Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T04a. This completes the original T04 inference milestone.
 
 ### T05 — Connect the Go incident analyzer to Voice Agent (S)
 
 Implement VoiceAgentIncidentAnalyzer behind the existing interface, configure concrete wiring in main, propagate cancellation, and preserve simple HTTP errors. Add adapter tests and a cross-service smoke test.
 
-**Acceptance:** the existing text endpoint performs real local analysis without changing its contract; mock mode remains usable. **Dependencies:** T04.
+**Acceptance:** the existing text endpoint performs real local analysis without changing its contract; mock mode remains usable. **Dependencies:** T04b.
 
 ## Milestone 2 — Complete Voice Reporting Workflow
 
@@ -80,7 +86,7 @@ Collect consented local-speech examples covering terminology, noise, missing fac
 
 Run real versioned scenarios against the Voice Agent service API through the shared Go client; include separate public-API end-to-end checks. Collect stage/resource metrics, outcomes, and full runtime configuration. Distinguish execution errors and output-quality failure. Explicitly remove licence-plate monitoring from supported benchmark requests and update affected tests/API docs; interview development remains deferred.
 
-**Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11. Basic timing instrumentation starts in T04/T08.
+**Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11. Basic timing instrumentation starts in T04b/T08.
 
 ### T13 — Persist experiments and expose dashboard query APIs (M)
 
@@ -122,6 +128,6 @@ Implement device measurement collection and compare a bounded set of model/runti
 
 ## Recommended Starting Sequence and Checks
 
-With T01/T02 documented and T03 scaffolded, continue with T04–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
+With T01/T02 documented and T03 scaffolded, continue with T04b–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
 
 For implementation tickets, use meaningful Go/Python unit tests at integration/state boundaries and shared cross-service scenarios. Run gofmt, go vet, and Go tests for backend changes, and lint/build for frontend changes. Ordinary CI should use fakes/small fixtures; model and device evaluations run separately with recorded configurations. For documentation-only updates, verify diff whitespace, links, current-code claims, and consistency; no runtime tests are required.

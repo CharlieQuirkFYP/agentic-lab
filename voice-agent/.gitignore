@@ -4,3 +4,7 @@ __pycache__/
 .ruff_cache/
 *.egg-info/
 .env
+
+# Guard against accidentally adding model weights; store them outside the repo.
+*.gguf
+*.ggml

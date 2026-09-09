@@ -228,6 +228,7 @@ Currently implemented:
 * strict text-analysis schemas, analyzer boundary, unavailable default implementation, timeouts/cancellation
 * `GET /health`, `GET /ready`, and `POST /v1/incidents/analyze` on Voice Agent (separate from Go)
 * Voice Agent tests, pinned development dependencies, Python CI, and local setup instructions
+* pinned external llama.cpp setup and configurable launcher under `voice-agent/scripts/` (model selection and Python adapter pending)
 
 Planned but not yet implemented:
 

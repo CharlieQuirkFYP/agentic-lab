@@ -59,3 +59,7 @@ python -m pytest
 * `tests/`: contract/configuration tests using fakes; no model downloads.
 
 The workflow, repositories, and runtime adapter directory will be added as their tickets are implemented.
+
+## Local llama.cpp Setup
+
+See [pinned runtime installation and launcher](docs/llama-cpp.md). The runtime is installed outside this repository and started with `scripts/start-llama.sh`; `--check` verifies the executable without a model. Final model selection and model-backed inference verification remain deferred. Python does not connect to this server until the adapter ticket is implemented.
