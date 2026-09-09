@@ -4,59 +4,39 @@
 
 Agentic Lab is a university final year project developed in collaboration with KLASS.
 
-The project focuses on building and evaluating agentic AI workflows across different hardware environments, especially low-spec and resource-constrained environments.
+The team will build its own agentic speech-to-speech incident reporting solution and evaluate efficient local deployment on resource-constrained hardware. Existing KLASS solutions and KLASS adapters are not an implementation path.
 
-The main research goal is to compare trade-offs in:
+The research compares power consumption, energy per completed task, battery endurance, thermal behaviour, latency, memory, CPU/GPU usage, throughput, task success, and output quality.
 
-* latency
-* memory usage
-* CPU/GPU usage
-* throughput
-* task success
-* output quality
+## Use Case Scope
 
-The project may either:
+* Voice-Based Incident Reporting is the active implementation scope, including clarification, correction, human confirmation, report storage, and spoken retrieval/summarization.
+* Interview Understanding and Intelligence is outside the current development focus; it has not explicitly been removed.
+* Vision-Based Monitoring / Licence Plate Detection (Use Case 3) is removed.
 
-1. implement reference AI workflows ourselves, or
-2. integrate existing KLASS solutions and adapt them for low-spec deployment and benchmarking.
+Do not scaffold other use cases. The operational interaction should prioritize speech. The web app remains both a development voice console and a benchmark dashboard.
 
-The architecture should remain flexible enough to support either path.
+## Architecture Direction
 
-## Use Case Priority
-
-The current development priority is:
-
-1. Voice-Based Incident Reporting
-2. Interview Understanding and Intelligence
-3. Vision-Based Monitoring / Licence Plate Detection
-
-Do not scaffold later use cases unless explicitly requested.
-
-Focus development on the incident reporting use case first.
-
-## Current Architecture Direction
-
-The intended high-level architecture is:
+The planned development architecture is:
 
 ```text
-Frontend
+Web voice console / benchmark dashboard
    ↓
-Go API
+Go API — application logic, session state, confirmation, repositories
    ↓
-Implementation / Integration Boundary
+Python AI service — transcription, interpretation, extraction, summarization
    ↓
-Python AI Service or KLASS Solution
-   ↓
-Local Model / Runtime where required
-   ↓
-Benchmarking and Evaluation
+Whisper speech recognition + llama.cpp language-model runtime
 ```
 
-The Go API is the application-facing backend.
+Speech output uses a replaceable speech-synthesis adapter, initially at the client. Benchmark workers exercise the same application workflow and collect measurements. SQLite is planned when session/report persistence is implemented, followed by persistent benchmark results.
 
-Future AI-heavy functionality is expected to live primarily in Python.
+The Go API remains the application-facing backend. Keep AI-heavy functionality behind integration interfaces; do not couple handlers to a model runtime. Go owns authoritative conversation state and validates AI-proposed actions. Start with an explicit state machine; LangGraph is not required for the initial workflow.
 
-The Go API should not become tightly coupled to a specific AI implementation.
+The preferred eventual target is a mobile phone, potentially an iOS device supplied by KLASS; NVIDIA Jetson is an alternative. Hardware specifications and selection are pending. Build the local prototype now. Do not assume the Go/Python service layout ships unchanged inside an iOS app, or that remote inference accessed from a phone qualifies as on-device inference.
+
+See [requirements](docs/requirements.md), [architecture](docs/architecture.md), [benchmark methodology](docs/benchmark-methodology.md), and [implementation roadmap](docs/roadmap.md). These distinguish planned work from implemented behaviour.
 
 ## Current Go API
 
@@ -101,23 +81,19 @@ MockIncidentAnalyzer
 
 This abstraction is intentional.
 
-Future implementations may include:
-
-```text
-IncidentAnalyzer
-├── PythonIncidentAnalyzer
-└── KlassIncidentAnalyzer
-```
+The planned real implementation is `PythonIncidentAnalyzer`. Retain the mock for isolated development and tests. Add multi-turn conversation logic separately rather than forcing it into the one-shot `Analyze` contract.
 
 Do not bypass the analyzer boundary by calling AI implementations directly from handlers.
 
 ## Current Benchmark Lifecycle
 
-Benchmark experiments are asynchronous and generic across:
+Benchmark experiments are asynchronous. The current code still accepts these legacy use-case values:
 
 * Incident Reporting
 * Interview Assistant
 * License Plate Monitoring
+
+This describes current API behaviour, not the active project scope. Removing the licence-plate value requires an explicit code/test/API documentation change; a documentation update alone does not remove support.
 
 The current implementation lives inside the Go API under:
 
@@ -129,7 +105,7 @@ Experiment creation stores a queued experiment in memory, enqueues a small job c
 
 The current runner is mocked and does not call real AI workflows, external services, or model runtimes.
 
-Repository, queue, worker, and runner implementations are intentionally replaceable. Future work may replace the in-memory repository, in-memory queue, mock runner, or internal worker loop with PostgreSQL, a persistent/distributed queue, KLASS/local runners, or separate benchmark worker processes if remote or distributed execution becomes necessary.
+Repository, queue, worker, and runner implementations are intentionally replaceable. Planned work adds a real incident runner, SQLite-backed experiment storage, listing/filtering APIs, and dashboard comparisons. Retain the in-memory queue and internal worker until a concrete requirement justifies replacing them. Current benchmark values are hardcoded, not measurements.
 
 ## Architecture Principles
 
@@ -142,7 +118,7 @@ Follow these rules:
 * Keep request/response/domain structs inside model packages.
 * Use interfaces at integration boundaries where multiple implementations may exist.
 * Avoid interfaces for every struct purely for abstraction.
-* Do not tightly couple the Go backend to Gemma, llama.cpp, LangGraph, or any KLASS-specific implementation.
+* Do not tightly couple the Go backend to a particular model, Whisper implementation, llama.cpp, or orchestration library.
 * Preserve public API contracts unless a task explicitly requires changing them.
 * Prefer incremental development over scaffolding the entire future architecture.
 * Do not create services or infrastructure before they solve an actual requirement.
@@ -163,6 +139,8 @@ For Go code:
 * Keep error responses simple and avoid exposing internal error details over HTTP.
 
 ## Frontend Conventions
+
+The web app has two planned roles: a voice workflow console for development and a research dashboard for experiment creation, progress, results, comparisons, and export. A speech-first operational use case does not remove the dashboard requirement. Neither role is implemented beyond the toolchain scaffold.
 
 For frontend code:
 
@@ -237,22 +215,19 @@ Currently implemented:
 * basic local Go setup instructions in `README.md`
 * basic local Web setup instructions in `README.md`
 
-Not yet implemented:
+Planned but not yet implemented:
 
-* Python AI service
-* Gemma
-* llama.cpp
-* LangGraph
-* ASR / faster-whisper
-* interview workflow
-* vision workflow
-* KLASS adapters
-* real benchmark runners/runtime
-* PostgreSQL
-* Redis
-* Kafka
-* Docker
-* frontend product pages
+* Python AI service and `PythonIncidentAnalyzer`
+* Whisper transcription and llama.cpp integration with a selected local model
+* speech synthesis and audio turn handling
+* multi-turn sessions, clarification, corrections, and revision-bound confirmation
+* SQLite session/report storage and incident retrieval
+* real benchmark runner, evaluation dataset, and resource/energy measurements
+* persistent benchmark results and listing/filtering APIs
+* web voice console and benchmark dashboard, comparisons, and export
+* target-device deployment and power/thermal/endurance evaluation
+
+Model selection, speech-synthesis implementation, and target-device specifications remain pending. MERaLiON is an optional candidate for local speech understanding, not a required dependency. LangGraph and fine-tuning are not baseline prerequisites. Interview development is deferred; vision workflows and KLASS adapters are out of scope. PostgreSQL, Redis, Kafka, and Docker are not implemented or required by the current plan.
 
 This section should be updated as the project evolves.
 
@@ -268,61 +243,21 @@ Do not add the following unless explicitly requested or justified by an actual r
 * gRPC
 * additional microservices
 
-The expected progression is roughly:
+Implement incrementally: real text analysis, conversation and local persistence, speech input/output, report retrieval, real evaluation and dashboard, then target-device optimization. Start collecting stage timings with real inference. Obtain device specifications alongside implementation.
 
-```text
-Go API
-   ↓
-Python AI service / KLASS integration
-   ↓
-local model runtime
-   ↓
-benchmarking
-   ↓
-database / frontend
-   ↓
-async infrastructure only if needed
-```
-
-Redis may be introduced later for caching or job state.
-
-Kafka may be introduced later if distributed benchmark execution or event-driven workflows genuinely require it.
-
-Do not add either simply because they appear in the project proposal.
+SQLite is the planned embedded persistence choice when storage is implemented. Do not add a separate database server, distributed queue, or infrastructure simply because it appeared in the original proposal.
 
 ## AI Implementation Guidance
 
-The AI implementation strategy is not yet finalized.
+Whisper for speech recognition and llama.cpp for language-model inference are the working baseline discussed with KLASS. The provisional Whisper runtime is whisper.cpp; exact model sizes, quantization, and runtime builds must be evaluated and recorded. Do not present this as a validated device configuration.
 
-Possible path A:
+Keep transcription, language-model inference, and speech synthesis replaceable. Use persistent runtimes where appropriate rather than reloading weights each turn. Keep authoritative session state in Go; Python receives relevant context and returns validated proposals. Application code controls tool execution and report finalization.
 
-```text
-Go API
-   ↓
-Python AI Service
-   ↓
-LangGraph / ASR / CV
-   ↓
-llama.cpp
-   ↓
-Gemma or other SLM
-```
+Require explicit confirmation of the current draft revision before finalizing a report. Corrections invalidate prior confirmation. Retry handling must prevent duplicate turns and saved reports. Retrieve reports through validated database queries and summarize only returned records.
 
-Possible path B:
+Build local-speech evaluation examples early. Consider vocabulary/prompt improvements, alternative models (including MERaLiON), or fine-tuning based on measured errors. Do not assume using pretrained models conflicts with building the solution ourselves.
 
-```text
-Go API
-   ↓
-KLASS Adapter
-   ↓
-Existing KLASS solution
-   ↓
-local runtime / model adaptation where required
-```
-
-A hybrid of both may also be used.
-
-When implementing new components, preserve the ability to support both student-built and KLASS-provided implementations where reasonable.
+Record unavailable measurements as unavailable, not zero. CPU utilization is not a substitute for measured power. Treat 8–10 hours as an illustrative endurance target until KLASS confirms workload and acceptance criteria.
 
 ## Repository Guidance
 
@@ -339,7 +274,7 @@ scripts/
 tests/
 ```
 
-`web/` and `ai-service/` are future components and should not be created before they are needed.
+`api/`, `web/`, and `docs/` exist. Create `ai-service/` when its implementation begins. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
 
 Do not store large model weights or benchmark media directly in Git.
 
@@ -361,13 +296,7 @@ Keep deeper documentation elsewhere, for example under:
 docs/
 ```
 
-Potential future documentation includes:
-
-* architecture
-* benchmark methodology
-* use-case specifications
-* KLASS integration
-* deployment
+Project planning lives in `docs/requirements.md`, `docs/architecture.md`, `docs/benchmark-methodology.md`, and `docs/roadmap.md`. Current endpoint behaviour is documented under `docs/api/`. Add device deployment instructions once validated.
 
 Do not overload the README with implementation history or detailed design decisions.
 

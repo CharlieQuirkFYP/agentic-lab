@@ -1,12 +1,25 @@
 # Agentic Lab
-## Goal
-This is a university final year project in collaboration with Klass, focused on building and evaluating agentic AI workflows across different hardware environments.
 
-The project explores how lightweight AI agents can perform practical tasks using local models, speech recognition, retrieval, and computer vision, while measuring the trade-offs between performance, resource usage, and output quality.
+## Goal
+
+Agentic Lab is a university final year project in collaboration with KLASS. The team is building its own agentic voice-based incident reporting solution, with spoken clarification, human confirmation, and retrieval of previous reports.
+
+The working AI baseline is Whisper speech recognition and local language-model inference through llama.cpp, with speech synthesis completing the spoken interaction. The research evaluates quality, latency, resource usage, power consumption, energy, and thermal/endurance trade-offs on resource-constrained hardware. A mobile phone, potentially iOS, is the preferred eventual target; NVIDIA Jetson is an alternative pending device specifications.
+
+The web app will provide a development voice console and a benchmark dashboard. Existing KLASS solutions will not be integrated. Vision/licence-plate monitoring is out of scope; interview development is deferred.
+
+## Project Documentation
+
+* [Requirements and scope](docs/requirements.md)
+* [Planned system architecture](docs/architecture.md)
+* [Benchmark methodology](docs/benchmark-methodology.md)
+* [Implementation roadmap and ticket breakdown](docs/roadmap.md)
+* [Current experiment API](docs/api/experiments.md)
+* [Contributor/agent instructions](AGENTS.md)
 
 ## Local Development
 
-Local setup instructions will be expanded as more services are introduced. For now, only the initial Go API setup is documented.
+The following instructions cover the existing Go API and web scaffold. Model/runtime and Python setup instructions will be added when those components are implemented.
 
 ### Go API
 
