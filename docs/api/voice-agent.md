@@ -1,6 +1,6 @@
 # Voice Agent Service Boundary and API Contract
 
-Status: planned contract for roadmap T02, not an implemented endpoint. The repository currently uses `MockIncidentAnalyzer`. T03 scaffolds this contract, T04 connects inference, and T05 connects Go. See [architecture](../architecture.md) and [roadmap](../roadmap.md).
+Status: the T03 Python scaffold implements request/response validation, sanitized errors, timeout/cancellation, and an injectable analyzer. Its default analyzer returns `503 runtime_unavailable`; T04 connects real inference. Go still uses `MockIncidentAnalyzer` until T05 connects it. See [architecture](../architecture.md) and [roadmap](../roadmap.md).
 
 ## Service Identity and Ownership
 
@@ -23,7 +23,7 @@ Current binding failures return `400` with `{"error":"transcript is required"}`.
 
 Current validation is Gin's required-string binding, not the stricter internal validation below. Unknown public JSON fields are not currently rejected, and whitespace-only text is not explicitly rejected. Do not silently claim those public behaviours have changed. Any future public validation/status improvements require an explicit implementation change and tests.
 
-## Planned Internal Text Analysis API
+## Internal Text Analysis API
 
 ```http
 POST /v1/incidents/analyze
@@ -98,7 +98,7 @@ Go validates the upstream success schema as well. Any non-200 response, malforme
 
 ### Timeout and Cancellation Policy
 
-Initial proposed configuration defaults (tunable for model/hardware evaluation):
+Configuration defaults (Python implemented; Go client pending T05; tunable for evaluation):
 
 * Go `VOICE_AGENT_TIMEOUT_SECONDS=60` covers the complete upstream HTTP call; an earlier request-context deadline wins.
 * Voice Agent `VOICE_AGENT_ANALYSIS_TIMEOUT_SECONDS=55` covers its analysis operation, including inference. Keep this below the configured Go timeout to leave response overhead.
@@ -208,4 +208,11 @@ Required transition examples for T06:
 * Confirmation for a stale revision → conflict, no save.
 * “Cancel this report” → mark cancelled, no finalized report.
 
-No Python scaffold, runtime integration, Go behaviour change, or database migration is included in T02. T03 is the next implementation ticket.
+No Python scaffold, runtime integration, Go behaviour change, or database migration is included in T02. T03 now provides the scaffold; T04 is the next implementation ticket.
+
+## Scaffold Health and Readiness
+
+* `GET /health`: `200 {"status":"ok"}` indicates the HTTP service is live.
+* `GET /ready`: `200 {"status":"ready"}` when the injected analyzer is ready; otherwise the documented 503 runtime-unavailable error. Readiness failures/timeouts also return 503.
+
+The default analyzer is unavailable even when a runtime URL/model path is configured: these settings are reserved for T04, not an implemented connection. The scaffold validates output structure but cannot enforce semantic grounding without an actual inference adapter. See [setup](../../voice-agent/README.md).

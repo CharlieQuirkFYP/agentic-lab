@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. Application capabilities remain planned.
+These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. T03 implements the validated service scaffold; real inference and workflow capabilities remain planned.
 
 See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally, retaining existing public contracts unless a ticket explicitly changes them.
 
@@ -22,7 +22,7 @@ Name the dedicated Python service `voice-agent/`. Assign incident state, confirm
 
 Create `voice-agent/` with the [initial API contract](api/voice-agent.md), health/readiness endpoints, runtime/path/timeout configuration, tests, Python CI, and local setup instructions. Use a fake analyzer for contract tests; until T04 connects a runtime, return the documented unavailable error rather than presenting mock output as real analysis. Keep weights outside Git.
 
-**Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02.
+**Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02. **Status:** implemented with health/readiness, configuration, tests, Ruff, and Python CI; real inference is T04.
 
 ### T04 — Implement local incident analysis through llama.cpp (M)
 
@@ -122,6 +122,6 @@ Implement device measurement collection and compare a bounded set of model/runti
 
 ## Recommended Starting Sequence and Checks
 
-With T01/T02 documented, begin implementation at T03–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
+With T01/T02 documented and T03 scaffolded, continue with T04–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
 
 For implementation tickets, use meaningful Go/Python unit tests at integration/state boundaries and shared cross-service scenarios. Run gofmt, go vet, and Go tests for backend changes, and lint/build for frontend changes. Ordinary CI should use fakes/small fixtures; model and device evaluations run separately with recorded configurations. For documentation-only updates, verify diff whitespace, links, current-code claims, and consistency; no runtime tests are required.

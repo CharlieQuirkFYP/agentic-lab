@@ -138,6 +138,14 @@ For Go code:
 * Run `go vet`.
 * Keep error responses simple and avoid exposing internal error details over HTTP.
 
+## Python Conventions
+
+* Keep HTTP handling in `app/main.py`, schemas/application logic in `app/incident_reporting/`, and future runtime integrations behind the analyzer boundary.
+* Use the application factory to inject dependencies; production defaults must not return fake analysis as real inference.
+* Use the pinned development environment in `voice-agent/requirements-dev.lock`, Ruff, and pytest.
+* Tests use local fakes and do not download model weights. Keep Python tests under `voice-agent/tests/`.
+* Run `python -m ruff format --check .`, `python -m ruff check .`, and `python -m pytest` from `voice-agent/` for Python changes.
+
 ## Frontend Conventions
 
 The web app has two planned roles: a voice workflow console for development and a research dashboard for experiment creation, progress, results, comparisons, and export. A speech-first operational use case does not remove the dashboard requirement. Neither role is implemented beyond the toolchain scaffold.
@@ -185,11 +193,13 @@ Do not move normal Go unit tests into a central test directory.
 
 ## CI Guidance
 
-GitHub Actions PR CI currently runs separate backend and frontend workflows.
+GitHub Actions PR CI runs separate Go backend, web frontend, and Voice Agent workflows.
 
 The Go backend workflow checks formatting with `gofmt -l .`, runs `go vet ./...`, and runs `go test ./...` from `api/`.
 
 The frontend workflow installs npm dependencies, runs lint, and runs the production build from `web/`.
+
+Voice Agent CI uses Python 3.12, pinned dependencies, Ruff formatting/lint, and pytest with fakes (no models).
 
 Expand CI incrementally as new components or requirements are introduced.
 
@@ -214,10 +224,14 @@ Currently implemented:
 * frontend toolchain scaffold under `web/`
 * basic local Go setup instructions in `README.md`
 * basic local Web setup instructions in `README.md`
+* Voice Agent Python/FastAPI scaffold under `voice-agent/`
+* strict text-analysis schemas, analyzer boundary, unavailable default implementation, timeouts/cancellation
+* `GET /health`, `GET /ready`, and `POST /v1/incidents/analyze` on Voice Agent (separate from Go)
+* Voice Agent tests, pinned development dependencies, Python CI, and local setup instructions
 
 Planned but not yet implemented:
 
-* Voice Agent service (Python) and `VoiceAgentIncidentAnalyzer`
+* real Voice Agent inference adapter and Go `VoiceAgentIncidentAnalyzer`
 * Whisper transcription and llama.cpp integration with a selected local model
 * speech synthesis and audio turn handling
 * Voice Agent-owned multi-turn sessions, clarification, corrections, and revision-bound confirmation
@@ -274,7 +288,7 @@ scripts/
 tests/
 ```
 
-`api/`, `web/`, and `docs/` exist. Create `voice-agent/` when its implementation begins. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
+`api/`, `web/`, `voice-agent/`, and `docs/` exist. Voice Agent currently has only the stateless text-analysis scaffold; do not scaffold future workflow/runtime components until needed. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
 
 Do not store large model weights or benchmark media directly in Git.
 

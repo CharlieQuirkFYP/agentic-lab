@@ -22,7 +22,7 @@ The web app will provide a development voice console and a benchmark dashboard. 
 
 ## Local Development
 
-The following instructions cover the existing Go API and web scaffold. Model/runtime and Python setup instructions will be added when those components are implemented.
+The following instructions cover Go, Voice Agent, and the web scaffold. Model/runtime setup will be added when inference is implemented.
 
 ### Go API
 
@@ -112,6 +112,21 @@ Run static checks:
 ```bash
 go vet ./...
 ```
+
+### Voice Agent
+
+Requires Python 3.12+. From the repository root:
+
+```bash
+cd voice-agent
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install -r requirements-dev.lock
+python -m pip install --no-deps --no-build-isolation -e .
+python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+```
+
+`GET /health` returns 200. `GET /ready` and valid `POST /v1/incidents/analyze` requests return 503 until a real model adapter is implemented. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
 
 ### Web
 
