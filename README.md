@@ -6,6 +6,8 @@ Agentic Lab is a university final year project in collaboration with KLASS. The 
 
 The working AI baseline is Whisper speech recognition and local language-model inference through llama.cpp, with speech synthesis completing the spoken interaction. The research evaluates quality, latency, resource usage, power consumption, energy, and thermal/endurance trade-offs on resource-constrained hardware. A mobile phone, potentially iOS, is the preferred eventual target; NVIDIA Jetson is an alternative pending device specifications.
 
+The planned `voice-agent/` Python service owns the complete incident workflow and its runtime adapters. Go exposes the public API and coordinates benchmarks.
+
 The web app will provide a development voice console and a benchmark dashboard. Existing KLASS solutions will not be integrated. Vision/licence-plate monitoring is out of scope; interview development is deferred.
 
 ## Project Documentation
@@ -14,6 +16,7 @@ The web app will provide a development voice console and a benchmark dashboard. 
 * [Planned system architecture](docs/architecture.md)
 * [Benchmark methodology](docs/benchmark-methodology.md)
 * [Implementation roadmap and ticket breakdown](docs/roadmap.md)
+* [Planned Voice Agent API contract](docs/api/voice-agent.md)
 * [Current experiment API](docs/api/experiments.md)
 * [Contributor/agent instructions](AGENTS.md)
 

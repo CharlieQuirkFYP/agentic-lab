@@ -14,35 +14,68 @@ This is the planned architecture for the [revised requirements](requirements.md)
 
 ```mermaid
 flowchart TD
-    Client[Web voice console] <--> Go[Go API and application services]
-    Dashboard[Web benchmark dashboard] <--> Go
-    Go <--> Storage[(SQLite sessions, incidents, experiments)]
-    Go <--> Python[Python AI service]
-    Python --> Whisper[Whisper transcription adapter]
-    Python --> LLM[llama.cpp adapter and local model]
-    Client --> TTS[Speech synthesis adapter]
-    Go --> Queue[Existing benchmark queue and worker]
-    Queue --> Runner[Real incident scenario runner]
-    Runner --> Workflow[Same application workflow]
+    Client[Web voice console] <--> Go[Go public incident API and service client]
+    Dashboard[Web benchmark dashboard] <--> Experiments[Go experiment API and service]
+    Experiments <--> Results[(Go-owned experiment storage)]
+    Experiments --> Queue[Existing queue and background worker]
+    Queue --> Runner[Scenario runner and measurement collection]
+    Runner -->|Shared service client| AgentAPI
+    Go <--> AgentAPI[Voice Agent API]
+    subgraph VoiceAgent[voice-agent/ — Python service]
+        AgentAPI <--> Workflow[Incident workflow and authoritative session state]
+        Workflow <--> Reports[(Voice Agent-owned sessions and reports)]
+        Workflow --> WhisperAdapter[Whisper adapter]
+        Workflow --> LLMAdapter[llama.cpp adapter]
+    end
+    WhisperAdapter <--> Whisper[Whisper runtime]
+    LLMAdapter <--> LLM[llama.cpp and local model]
+    Client --> TTS[Speech synthesis adapter and playback]
+    Runner --> Results
 ```
 
-These are responsibilities, not separate microservices. Begin with Go, one Python HTTP service, and persistent inference runtimes. The benchmark runner should invoke the same application services used by interactive requests; endpoint/audio integration is also exercised in end-to-end scenarios.
+The dedicated Voice Agent replaces the previously proposed generic AI service. It is the complete Use Case 1 backend, not another service layered beneath a separate incident workflow. Begin with Go, one Python HTTP service, and persistent inference runtimes. Adapter code lives inside `voice-agent/`; a runtime it calls may be a separate local process.
+
+The benchmark runner invokes the same Voice Agent API through the shared Go client as interactive requests. Public endpoint/audio/client playback behaviour is also exercised in end-to-end scenarios. Keep benchmark sessions/reports isolated from interactive data.
 
 ## Ownership and Boundaries
 
 | Component | Owns |
 | --- | --- |
-| Go handlers | HTTP parsing, status codes, request limits, response serialization |
-| Go services | Authoritative session state, validated actions, confirmation, report finalization, retrieval |
-| Python service | Transcription, intent interpretation, extraction, clarification proposals, grounded response generation |
-| Runtime adapters | Runtime-specific configuration, requests, cancellation/timeouts, inference output |
-| Repositories | Session/report persistence and atomic finalization; later experiment persistence |
-| Client | Audio capture/playback, speech output, interaction status, development inspection |
-| Dashboard | Experiment configuration, progress, results, comparison, export |
+| Go handlers/services | Public HTTP contract, request validation, delegation through Voice Agent client |
+| Go benchmark components | Experiment configuration, queue/worker, scenario execution, scoring and result storage |
+| Voice Agent workflow | Authoritative sessions/drafts, intent, clarification, corrections, validated actions, confirmation, finalization, retrieval and response generation |
+| Voice Agent runtime adapters | Whisper and llama.cpp configuration/calls, cancellation/timeouts, validated inference output |
+| Voice Agent repositories | Incident/session persistence and atomic finalization |
+| Go experiment repository | Benchmark configurations, status, measurements and scores |
+| Web voice client | Audio capture/playback, speech output, interaction status, development inspection |
+| Web dashboard | Experiment configuration, progress, results, comparison, export |
 
-Python receives relevant session context from Go and returns validated proposals; it does not maintain a second authoritative conversation history. Go validates proposed fields and bounded actions before applying them. Start with an explicit state machine and ordinary functions; LangGraph is optional future tooling.
+The Voice Agent loads its own session state and validates model proposals before executing bounded actions. Go forwards operations and does not maintain a duplicate incident state machine or access the Voice Agent database. Each service owns its repository implementations; separate SQLite files are sufficient without introducing database servers. Start with an explicit state machine and ordinary functions inside Voice Agent; LangGraph is optional future tooling.
 
-Keep the one-shot `IncidentAnalyzer` interface and existing public endpoint. Add `PythonIncidentAnalyzer`, selected through configuration in `cmd/server/main.go`, and retain the mock for tests. Add conversation services separately.
+Keep the existing `IncidentAnalyzer` interface and public text endpoint. Add `VoiceAgentIncidentAnalyzer` in Go, selected in `cmd/server/main.go`, and retain `MockIncidentAnalyzer` for tests. The [initial API contract](api/voice-agent.md) specifies the call and error mapping. Later session operations get dedicated client methods, rather than extending one-shot `Analyze` into a stateful operation.
+
+## Planned Directory Layout
+
+Create these files only during the corresponding implementation ticket:
+
+```text
+api/                            Public API, Voice Agent client, benchmarks
+web/                            Voice console and benchmark dashboard
+voice-agent/                    Dedicated Python service
+  app/
+    main.py                     HTTP service entry point
+    incident_reporting/
+      workflow.py               State transitions and validated actions
+      models.py                 Analysis/session/domain contracts
+      repository.py             Incident/session storage boundary
+      prompts/                  Versioned extraction and response prompts
+    adapters/
+      whisper.py                Transcription runtime adapter
+      llama_cpp.py              Language-model runtime adapter
+  tests/                        Python contract/workflow/adapter tests
+```
+
+The Python import package is `app`; `voice-agent/` is a repository directory name, not a Python module identifier. Speech synthesis remains at the client/platform initially. No `voice-agent/` scaffold exists yet.
 
 ## Incident Workflow
 
@@ -57,13 +90,13 @@ stateDiagram-v2
     AwaitingConfirmation --> Cancelled: Cancel
 ```
 
-Track draft revisions. A correction invalidates prior confirmation. Ambiguous responses must not finalize a report. Use request identifiers and atomic state updates so retries or concurrent requests cannot save duplicate reports or confirm a stale draft. Spoken confirmation and explicit confirmation controls must call the same service logic.
+The Voice Agent tracks draft revisions and owns all transitions above. A correction invalidates prior confirmation. Ambiguous responses must not finalize a report. Use request identifiers and atomic state updates so retries or concurrent requests cannot save duplicate reports or confirm a stale draft. Spoken confirmation and explicit confirmation controls must call the same service logic.
 
 Start with text turns to test the workflow, then route transcribed audio through it. Add audio format normalization, bounded recording sizes/durations, silence handling, cancellation, and clear recoverable errors. Record stage timings from the first real inference integration.
 
 ## Proposed API and Data Contracts
 
-These endpoints are proposals, not currently available APIs. Finalize schemas in roadmap ticket T02.
+The initial internal text-analysis API is defined in [Voice Agent API](api/voice-agent.md). The public endpoints below remain proposals, not currently available APIs. Session payloads and completeness policy will be finalized in T06 using the contract outline.
 
 | Endpoint | Purpose |
 | --- | --- |
@@ -74,11 +107,11 @@ These endpoints are proposals, not currently available APIs. Finalize schemas in
 | `GET /api/v1/incidents/:id` | Read one report |
 | `GET /api/v1/experiments` | Paginated/filterable experiment history |
 
-Turn responses should expose transcript, reply text, state, and draft revision. Keep existing endpoint contracts unless an implementation ticket explicitly changes them.
+Go delegates session/incident operations to the Voice Agent. Turn responses should expose transcript, reply text, state, and draft revision. Keep existing endpoint contracts unless an implementation ticket explicitly changes them.
 
-Planned records include sessions (state/draft/revision), ordered turns (request IDs and transcripts), confirmed reports (IDs and occurrence/recording/confirmation timestamps), and execution traces (stage timings and configuration). SQLite solves local persistence without a database server. Define audio retention separately rather than retaining all recordings by default.
+Planned records include sessions (state/draft/revision), ordered turns (request IDs and transcripts), confirmed reports (IDs and occurrence/recording/confirmation timestamps), and execution traces (stage timings and configuration). The Voice Agent owns these incident/session records in SQLite. Go stores benchmark records separately; SQLite needs no database server. Define audio retention separately rather than retaining all recordings by default.
 
-For report queries, validate model-proposed parameters, execute parameterized SQL, then summarize the returned records. Keep record IDs in the response/trace to verify grounding. Time-filtered retrieval does not require embeddings or a vector database.
+For report queries, the Voice Agent validates model-proposed parameters, executes parameterized SQL through its repository, then summarizes the returned records. Keep record IDs in the response/trace to verify grounding. Time-filtered retrieval does not require embeddings or a vector database.
 
 ## Runtime and Device Strategy
 
@@ -93,8 +126,8 @@ Upstream implementation references: [llama.cpp](https://github.com/ggml-org/llam
 
 ## Benchmark Dashboard and Storage
 
-Retain the existing asynchronous experiment lifecycle and in-memory queue. Add a real runner, SQLite experiment/result repository, and history/filter APIs. Define interrupted-run status on restart; persistence alone does not make the in-memory queue durable.
+Retain the existing asynchronous experiment lifecycle and in-memory queue. Add a real runner, Go-owned SQLite experiment/result repository, and history/filter APIs. Define interrupted-run status on restart; persistence alone does not make the in-memory queue durable.
 
 The dashboard will create experiments, poll progress, display quality/performance/device metrics, compare configurations, and export results with metadata. Display unavailable measurements explicitly and highlight differing datasets or methods when comparing runs. The operational focus on speech does not remove this visual research interface.
 
-Add directories only when used: `ai-service/` for Python, `api/internal/repository/` for persistence, `tests/` for cross-service scenarios, and `scripts/` for setup. Keep Go unit tests beside source. No distributed queue, additional database service, or top-level benchmark service is required by this plan.
+Add directories only when used: `voice-agent/` for the incident solution and its persistence, Go experiment persistence beside the existing benchmark repository boundary, `tests/` for cross-service scenarios, and `scripts/` for setup. Keep Go unit tests beside source. No distributed queue, additional database service, or top-level benchmark service is required by this plan.

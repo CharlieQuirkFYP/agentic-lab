@@ -23,20 +23,20 @@ The planned development architecture is:
 ```text
 Web voice console / benchmark dashboard
    ↓
-Go API — application logic, session state, confirmation, repositories
+Go API — public API, Voice Agent client, benchmark coordination
    ↓
-Python AI service — transcription, interpretation, extraction, summarization
+Voice Agent service (Python) — incident workflow, sessions, confirmation, storage
    ↓
 Whisper speech recognition + llama.cpp language-model runtime
 ```
 
-Speech output uses a replaceable speech-synthesis adapter, initially at the client. Benchmark workers exercise the same application workflow and collect measurements. SQLite is planned when session/report persistence is implemented, followed by persistent benchmark results.
+Speech output uses a replaceable speech-synthesis adapter, initially at the client. The Voice Agent owns its Whisper and llama.cpp adapters and incident/session repositories. Benchmark workers exercise its service API and collect measurements. SQLite is planned for Voice Agent incident/session storage and separately for Go-owned experiment storage; neither service accesses the other’s database directly.
 
-The Go API remains the application-facing backend. Keep AI-heavy functionality behind integration interfaces; do not couple handlers to a model runtime. Go owns authoritative conversation state and validates AI-proposed actions. Start with an explicit state machine; LangGraph is not required for the initial workflow.
+The Go API remains the application-facing backend. Keep AI-heavy functionality behind integration interfaces; do not couple handlers to a model runtime. The Voice Agent owns authoritative conversation state, validates AI-proposed actions, and enforces confirmation. Go delegates incident operations through its service client and owns benchmark orchestration/results; do not duplicate incident workflow rules in Go. Start with an explicit state machine; LangGraph is not required for the initial workflow.
 
 The preferred eventual target is a mobile phone, potentially an iOS device supplied by KLASS; NVIDIA Jetson is an alternative. Hardware specifications and selection are pending. Build the local prototype now. Do not assume the Go/Python service layout ships unchanged inside an iOS app, or that remote inference accessed from a phone qualifies as on-device inference.
 
-See [requirements](docs/requirements.md), [architecture](docs/architecture.md), [benchmark methodology](docs/benchmark-methodology.md), and [implementation roadmap](docs/roadmap.md). These distinguish planned work from implemented behaviour.
+See [requirements](docs/requirements.md), [architecture](docs/architecture.md), [benchmark methodology](docs/benchmark-methodology.md), [implementation roadmap](docs/roadmap.md), and [Voice Agent contract](docs/api/voice-agent.md). These distinguish planned work from implemented behaviour.
 
 ## Current Go API
 
@@ -81,7 +81,7 @@ MockIncidentAnalyzer
 
 This abstraction is intentional.
 
-The planned real implementation is `PythonIncidentAnalyzer`. Retain the mock for isolated development and tests. Add multi-turn conversation logic separately rather than forcing it into the one-shot `Analyze` contract.
+The planned real implementation is `VoiceAgentIncidentAnalyzer`. Retain the mock for isolated development and tests. Keep multi-turn conversation logic inside `voice-agent/` and add corresponding Go client methods when needed, rather than forcing it into the one-shot `Analyze` contract. The [Voice Agent API contract](docs/api/voice-agent.md) defines the initial integration.
 
 Do not bypass the analyzer boundary by calling AI implementations directly from handlers.
 
@@ -217,11 +217,11 @@ Currently implemented:
 
 Planned but not yet implemented:
 
-* Python AI service and `PythonIncidentAnalyzer`
+* Voice Agent service (Python) and `VoiceAgentIncidentAnalyzer`
 * Whisper transcription and llama.cpp integration with a selected local model
 * speech synthesis and audio turn handling
-* multi-turn sessions, clarification, corrections, and revision-bound confirmation
-* SQLite session/report storage and incident retrieval
+* Voice Agent-owned multi-turn sessions, clarification, corrections, and revision-bound confirmation
+* Voice Agent SQLite session/report storage and incident retrieval
 * real benchmark runner, evaluation dataset, and resource/energy measurements
 * persistent benchmark results and listing/filtering APIs
 * web voice console and benchmark dashboard, comparisons, and export
@@ -251,7 +251,7 @@ SQLite is the planned embedded persistence choice when storage is implemented. D
 
 Whisper for speech recognition and llama.cpp for language-model inference are the working baseline discussed with KLASS. The provisional Whisper runtime is whisper.cpp; exact model sizes, quantization, and runtime builds must be evaluated and recorded. Do not present this as a validated device configuration.
 
-Keep transcription, language-model inference, and speech synthesis replaceable. Use persistent runtimes where appropriate rather than reloading weights each turn. Keep authoritative session state in Go; Python receives relevant context and returns validated proposals. Application code controls tool execution and report finalization.
+Keep transcription, language-model inference, and speech synthesis replaceable. Use persistent runtimes where appropriate rather than reloading weights each turn. Keep authoritative session state and incident tool execution in the Voice Agent. Its workflow validates model proposals and controls report finalization; Go forwards operations without maintaining another session state machine.
 
 Require explicit confirmation of the current draft revision before finalizing a report. Corrections invalidate prior confirmation. Retry handling must prevent duplicate turns and saved reports. Retrieve reports through validated database queries and summarize only returned records.
 
@@ -266,7 +266,7 @@ The intended top-level repository structure is:
 ```text
 api/
 web/
-ai-service/
+voice-agent/
 benchmark/
 docs/
 infra/
@@ -274,7 +274,7 @@ scripts/
 tests/
 ```
 
-`api/`, `web/`, and `docs/` exist. Create `ai-service/` when its implementation begins. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
+`api/`, `web/`, and `docs/` exist. Create `voice-agent/` when its implementation begins. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
 
 Do not store large model weights or benchmark media directly in Git.
 

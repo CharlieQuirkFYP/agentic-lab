@@ -13,6 +13,12 @@ This document records the latest KLASS discussion and the resulting implementati
 * A mobile phone is the preferred eventual platform. KLASS may supply an iOS device or NVIDIA Jetson; selection and specifications are pending.
 * Development should proceed without waiting for hardware.
 
+## Service Boundary
+
+The dedicated Python **Voice Agent** service will live in `voice-agent/`. It owns transcription, interpretation, the incident conversation/state machine, confirmation, incident storage/retrieval, response generation, and its Whisper/llama.cpp adapters. Go exposes the public API and owns benchmark orchestration and experiment results. The web app owns interaction/playback and the research dashboard. Each service accesses only its own repositories.
+
+The initial text-analysis contract is specified in [Voice Agent API](api/voice-agent.md); session contracts there remain an outline for later implementation. The service directory is not scaffolded by this documentation ticket.
+
 ## Functional Requirements
 
 The proposed first complete milestone is: report an incident by voice, answer a clarification, correct the draft, confirm it, and request a spoken summary of recent reports.
@@ -31,7 +37,7 @@ The proposed first complete milestone is: report an incident by voice, answer a 
 
 The initial interaction is push-to-talk, one turn at a time. Continuous listening, wake words, and interruption during playback are later refinements, not first-milestone requirements.
 
-The current report has incident type, location, severity, summary, and recommended action. Required fields, allowed values, and rules for unknown values must be finalized in the contract ticket. Model-generated recommendations must not trigger real-world actions automatically.
+The current report has incident type, location, severity, summary, and recommended action. The initial analysis contract defines required response fields, baseline allowed values, and unknown handling. Stakeholder report-completeness rules for finalization remain to be confirmed before the session workflow is implemented. Model-generated recommendations must not trigger real-world actions automatically.
 
 For “give me the last five incident reports in the last hour,” the proposed default is recording time, newest first. Store occurrence time separately when known. Define time-zone and boundary semantics in the API contract. Return fewer than five when fewer exist, and explicitly handle no matches.
 

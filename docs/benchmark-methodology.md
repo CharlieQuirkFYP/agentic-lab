@@ -39,7 +39,7 @@ Record the code revision, prompts/schema versions, ASR/LLM/TTS model identities 
 
 Separate cold-start/model-loading runs from warm runs. Use repeated trials and report sample counts and variation, with latency percentiles where sample size supports them. Fix or record workload, concurrency, audio lengths, background processes, ambient conditions, and starting battery conditions. Use one benchmark run at a time for the initial constrained-device baseline to limit interference.
 
-The runner should exercise the same workflow as the application, with scripted human turns for repeatability. Include audio and speech-output measurements when claiming end-to-end results; text-only runs must be labelled separately. Human evaluation is needed for qualities not captured by deterministic scoring.
+The Go runner should exercise the Voice Agent service API through the shared client, with scripted human turns for repeatability. Voice Agent owns workflow execution and incident data; Go owns experiment configurations/results and scoring. Keep evaluation sessions/reports isolated from interactive data, and record the reset/cleanup procedure for reproducible retrieval scenarios. Include audio and speech-output measurements when claiming end-to-end results; text-only runs must be labelled separately. Human evaluation is needed for qualities not captured by deterministic scoring.
 
 ## Device Power and Endurance
 

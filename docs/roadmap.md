@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. Only the documentation work in T01 is covered by this update; other capabilities remain planned.
+These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. Application capabilities remain planned.
 
 See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally, retaining existing public contracts unless a ticket explicitly changes them.
 
@@ -12,15 +12,15 @@ Update AGENTS.md and README for the student-built incident workflow, removed Use
 
 **Acceptance:** documentation consistently reflects the KLASS direction and links to detailed plans. **Dependencies:** none. **Status:** covered by this documentation update.
 
-### T02 — Define incident, conversation, and AI service contracts (M)
+### T02 — Define the Voice Agent service boundary and API contracts (M)
 
-Define required fields, unknown values, session states, draft revisions, clarification/confirmation rules, turn requests/responses, and Python contracts. Include complete, incomplete, corrected, cancelled, and confirmed examples. Specify time-filter semantics and retry handling; preserve the existing text-analysis contract.
+Name the dedicated Python service `voice-agent/`. Assign incident state, confirmation, storage/retrieval, and runtime adapters to it; retain the Go public API/client and benchmark responsibilities. Define the initial text-analysis request/response, unknown values, errors, timeouts/cancellation, and complete/incomplete/ambiguous examples. Outline future sessions and revision-bound confirmation without implementing them.
 
-**Acceptance:** Go and Python can be implemented against explicit schemas and expected conversation outcomes. **Dependencies:** T01.
+**Acceptance:** documentation has one owner for each state/data type and a precise initial analysis contract, while preserving the public endpoint. **Dependencies:** T01. **Status:** documented in [Voice Agent API](api/voice-agent.md) and [architecture](architecture.md). Future session schemas and finalization-completeness policy are explicitly deferred to T06.
 
-### T03 — Create the Python AI service foundation (S)
+### T03 — Scaffold the Voice Agent service with a validated text-analysis API (S)
 
-Add validated HTTP schemas, health/readiness endpoints, runtime/path/timeout configuration, tests, Python CI, and local setup instructions. Keep weights outside Git.
+Create `voice-agent/` with the [initial API contract](api/voice-agent.md), health/readiness endpoints, runtime/path/timeout configuration, tests, Python CI, and local setup instructions. Use a fake analyzer for contract tests; until T04 connects a runtime, return the documented unavailable error rather than presenting mock output as real analysis. Keep weights outside Git.
 
 **Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02.
 
@@ -30,9 +30,9 @@ Add the runtime adapter, structured extraction prompts, output validation, and t
 
 **Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T03.
 
-### T05 — Connect the Go incident analyzer to Python (S)
+### T05 — Connect the Go incident analyzer to Voice Agent (S)
 
-Implement PythonIncidentAnalyzer behind the existing interface, configure concrete wiring in main, propagate cancellation, and preserve simple HTTP errors. Add adapter tests and a cross-service smoke test.
+Implement VoiceAgentIncidentAnalyzer behind the existing interface, configure concrete wiring in main, propagate cancellation, and preserve simple HTTP errors. Add adapter tests and a cross-service smoke test.
 
 **Acceptance:** the existing text endpoint performs real local analysis without changing its contract; mock mode remains usable. **Dependencies:** T04.
 
@@ -40,19 +40,19 @@ Implement PythonIncidentAnalyzer behind the existing interface, configure concre
 
 ### T06 — Implement conversation state and human confirmation (L)
 
-Add session/turn APIs and Go state transitions, using a small in-memory implementation before durable storage. Support clarification, correction, readback, cancellation, and confirmation of the current revision. Deduplicate retried turns.
+Finalize the session/turn schemas and report-completeness policy outlined in T02. Implement the state machine and session/turn APIs in `voice-agent/`, initially using in-memory state. Add thin Go handlers/client methods that delegate to those APIs without duplicating transitions. Support clarification, correction, readback, cancellation, and confirmation of the current revision. Deduplicate retried turns.
 
 **Acceptance:** text scenarios complete the workflow; stale or ambiguous confirmation cannot finalize a report, and corrections invalidate prior confirmation. **Dependencies:** T02, T05.
 
 ### T07 — Persist sessions and confirmed incident reports (M)
 
-Add SQLite migrations and repositories for sessions, turns, and reports. Separate occurrence, recording, and confirmation timestamps. Make finalization atomic and idempotent.
+Add SQLite migrations and repositories inside `voice-agent/` for sessions, turns, and reports; Go must not access that database directly. Separate occurrence, recording, and confirmation timestamps. Make finalization atomic and idempotent.
 
 **Acceptance:** reports survive restart, sessions resume consistently, and retries cannot create duplicates. **Dependencies:** T06.
 
 ### T08 — Add Whisper transcription and audio turns (M)
 
-Implement a replaceable transcription adapter, provisionally whisper.cpp. Accept/normalize supported audio formats; enforce limits and handle silence, cancellation, and invalid input. Record runtime configuration and transcription duration.
+Implement a replaceable transcription adapter inside `voice-agent/`, provisionally whisper.cpp. Forward audio through the Go client to the Voice Agent. Accept/normalize supported audio formats; enforce limits and handle silence, cancellation, and invalid input. Record runtime configuration and transcription duration.
 
 **Acceptance:** audio enters the same conversation workflow as text and failures are recoverable. **Dependencies:** T03, T06.
 
@@ -64,7 +64,7 @@ Add push-to-talk, speech output through an adapter, listening/processing/speakin
 
 ### T10 — Implement incident retrieval and spoken summaries (M)
 
-Add listing/detail APIs and validated time/count filters with parameterized queries. Interpret spoken requests and summarize only retrieved records, retaining IDs for verification. Cover empty and partial result sets.
+Add Voice Agent listing/detail APIs, thin Go delegation, and validated time/count filters with parameterized queries in Voice Agent repositories. Interpret spoken requests and summarize only retrieved records, retaining IDs for verification. Cover empty and partial result sets.
 
 **Acceptance:** “last five reports in the last hour” returns the correct records and grounded spoken answer. **Dependencies:** T07, T09.
 
@@ -78,13 +78,13 @@ Collect consented local-speech examples covering terminology, noise, missing fac
 
 ### T12 — Replace the mock benchmark runner with an incident runner (L)
 
-Run real versioned scenarios through the application workflow. Collect stage/resource metrics, outcomes, and full runtime configuration. Distinguish execution errors and output-quality failure. Explicitly remove licence-plate monitoring from supported benchmark requests and update affected tests/API docs; interview development remains deferred.
+Run real versioned scenarios against the Voice Agent service API through the shared Go client; include separate public-API end-to-end checks. Collect stage/resource metrics, outcomes, and full runtime configuration. Distinguish execution errors and output-quality failure. Explicitly remove licence-plate monitoring from supported benchmark requests and update affected tests/API docs; interview development remains deferred.
 
 **Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11. Basic timing instrumentation starts in T04/T08.
 
 ### T13 — Persist experiments and expose dashboard query APIs (M)
 
-Add a SQLite experiment/result repository, paginated history and filters. Preserve create/get contracts and define interrupted-run handling after restart without assuming the in-memory queue is durable.
+Add a Go-owned SQLite experiment/result repository, paginated history and filters. Keep experiment storage separate from Voice Agent incident/session storage. Preserve create/get contracts and define interrupted-run handling after restart without assuming the in-memory queue is durable.
 
 **Acceptance:** historical runs survive restart and can be queried; interrupted runs have a defined visible outcome. **Dependencies:** T07, T12.
 
@@ -122,6 +122,6 @@ Implement device measurement collection and compare a bounded set of model/runti
 
 ## Recommended Starting Sequence and Checks
 
-Begin with T01–T05, start T11 after contracts are defined, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
+With T01/T02 documented, begin implementation at T03–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
 
 For implementation tickets, use meaningful Go/Python unit tests at integration/state boundaries and shared cross-service scenarios. Run gofmt, go vet, and Go tests for backend changes, and lint/build for frontend changes. Ordinary CI should use fakes/small fixtures; model and device evaluations run separately with recorded configurations. For documentation-only updates, verify diff whitespace, links, current-code claims, and consistency; no runtime tests are required.
