@@ -2,27 +2,25 @@
 
 ## Goal
 
-Agentic Lab is a university final year project in collaboration with KLASS. The team is building its own agentic voice-based incident reporting solution, with spoken clarification, human confirmation, and retrieval of previous reports.
+Agentic Lab is a university final year project in collaboration with KLASS. The project is building a local, speech-first incident-reporting system with clarification, human confirmation, and retrieval of previous reports.
 
-The working AI baseline is Whisper speech recognition and local language-model inference through llama.cpp, with speech synthesis completing the spoken interaction. The research evaluates quality, latency, resource usage, power consumption, energy, and thermal/endurance trade-offs on resource-constrained hardware. A mobile phone, potentially iOS, is the preferred eventual target; NVIDIA Jetson is an alternative pending device specifications.
+The canonical voice-agent implementation is [`pheme-va/`](pheme-va/), a portable Rust workspace. It provides the audio pipeline, Whisper/whisper.cpp integration, host adapters, and the foundation for incident analysis and workflow execution. The project evaluates quality, latency, memory, CPU/GPU usage, power, energy, and thermal/endurance trade-offs on resource-constrained hardware.
 
-The planned `voice-agent/` Python service owns the complete incident workflow and its runtime adapters. Go exposes the public API and coordinates benchmarks.
-
-The web app will provide a development voice console and a benchmark dashboard. Existing KLASS solutions will not be integrated. Vision/licence-plate monitoring is out of scope; interview development is deferred.
+The Go API remains the application-facing backend and benchmark coordinator. The web app will provide a development voice console and a research dashboard. The former Python implementation has been removed; the historical Python contract documentation is retained separately for reference only. Existing KLASS solutions are not being integrated. Vision/licence-plate monitoring is out of scope and interview development is deferred.
 
 ## Project Documentation
 
 - [Requirements and scope](docs/requirements.md)
 - [Planned system architecture](docs/architecture.md)
 - [Benchmark methodology](docs/benchmark-methodology.md)
-- [Implementation roadmap and ticket breakdown](docs/roadmap.md)
-- [Planned Voice Agent API contract](docs/api/voice-agent.md)
+- [Implementation roadmap](docs/roadmap.md)
 - [Current experiment API](docs/api/experiments.md)
+- [Pheme VA README](pheme-va/README.md)
 - [Contributor/agent instructions](AGENTS.md)
 
 ## Local Development
 
-The following instructions cover Go, Voice Agent, and the web scaffold. Model/runtime setup will be added when inference is implemented.
+The active components are the Go API, the Pheme VA Rust workspace, and the web scaffold.
 
 ### Go API
 
@@ -38,45 +36,17 @@ From the repository root, navigate to the API service:
 
 ```bash
 cd api
-```
-
-Synchronize and install dependencies:
-
-```bash
 go mod tidy
-```
-
-Start the API:
-
-```bash
 go run ./cmd/server
 ```
 
-The server runs at:
-
-```text
-http://localhost:8080
-```
+The server runs at `http://localhost:8080`.
 
 #### Verify the API
 
-Check the health endpoint:
-
 ```bash
 curl http://localhost:8080/health
-```
 
-Expected response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-Check the incident analysis endpoint:
-
-```bash
 curl -X POST \
   http://localhost:8080/api/v1/incidents/analyze \
   -H "Content-Type: application/json" \
@@ -85,60 +55,103 @@ curl -X POST \
   }'
 ```
 
-Expected response:
+The public incident endpoint still uses the Go `MockIncidentAnalyzer`. The Pheme client integration is the next backend integration step; do not interpret the current placeholder response as model-backed analysis.
 
-```json
-{
-  "incident_type": "unknown",
-  "location": "unknown",
-  "severity": "unknown",
-  "summary": "A vehicle collided with a barrier near the west entrance.",
-  "recommended_action": "Pending AI analysis"
-}
-```
-
-The incident analysis response is currently a placeholder; AI integration has not yet been implemented.
-
-#### Testing
-
-Run the test suite:
+Run the Go checks from `api/`:
 
 ```bash
+gofmt -l .
+go vet ./...
 go test ./...
 ```
 
-Run static checks:
-
-```bash
-go vet ./...
-```
-
-### Voice Agent
-
-Requires Python 3.12+. From the repository root:
-
-```bash
-cd voice-agent
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.lock
-python -m pip install --no-deps --no-build-isolation -e .
-python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
-```
-
-`GET /health` returns 200. `GET /ready` and valid `POST /v1/incidents/analyze` requests return 503 until a real model adapter is implemented. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
-
 ### Pheme VA
 
-The backend-first Rust implementation lives under [`pheme-va/`](pheme-va/). It contains a portable audio/STT core, in-process `whisper-rs` support, a WAV/TUI client, a development HTTP wrapper, and a C ABI intended for native iOS/Android hosts. It does not own a frontend hotkey, clipboard, or mobile UI. Model weights are kept locally under the ignored `pheme-va/models/` directory; see its README for the current model and checksum.
+Pheme VA requires the stable Rust toolchain. From the repository root:
 
 ```bash
 cd pheme-va
+cargo fmt --all -- --check
 cargo test --workspace
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-For model-backed local work, follow the [Pheme VA README](pheme-va/README.md) for the TUI, HTTP service, WAV test, and mobile build commands. The Whisper `large-v3-turbo` model has been downloaded locally and the release CLI has been verified against a real speech sample; model weights remain ignored and are not committed.
+The workspace contains:
+
+- `crates/core`: portable audio normalization, mono 16 kHz conversion, speech gating, dictionary prompts, transcript guards, replaceable adapter traits, Whisper integration, and conservative incident extraction
+- `crates/cli`: WAV transcription and a small terminal microphone recorder
+- `crates/server`: development HTTP host around the same core
+- `crates/ffi`: C ABI for native iOS/Android hosts
+
+The core does not own a frontend hotkey, clipboard, microphone permission, or mobile UI. Hosts provide audio and control their own lifecycle.
+
+#### Download the Whisper model
+
+Model weights are ignored by Git and must not be committed. The initial CPU baseline is Whisper `large-v3-turbo`, stored locally at `pheme-va/models/ggml-large-v3-turbo.bin`:
+
+```bash
+cd pheme-va
+./scripts/download-model.sh
+```
+
+The script downloads the model from the whisper.cpp model repository and verifies SHA-256 before installing it. See [`pheme-va/models/README.md`](pheme-va/models/README.md) for the source, checksum, and licensing reminder.
+
+This model is used by the in-process `whisper-rs` backend, which is built on whisper.cpp. It is an initial baseline, not a validated mobile configuration. Smaller models, quantization, accelerator support, and device-specific settings still need to be evaluated.
+
+#### Transcribe a WAV file
+
+```bash
+cargo run --release -p cli --features whisper -- \
+  transcribe recording.wav \
+  --model models/ggml-large-v3-turbo.bin \
+  --language en \
+  --dictionary KLASS,whisper.cpp,"west entrance"
+```
+
+The input may use a supported sample rate, channel count, or WAV sample format; Pheme normalizes it before Whisper receives it.
+
+#### Run the development HTTP host
+
+```bash
+cargo run --release -p server --features whisper -- \
+  --model models/ggml-large-v3-turbo.bin \
+  --bind 127.0.0.1:8000
+```
+
+The host exposes:
+
+```text
+GET  /health
+GET  /ready
+POST /v1/transcribe   Content-Type: audio/wav
+POST /v1/analyze      Content-Type: application/json
+```
+
+`/v1/transcribe` returns raw and processed transcript text, speech-gate status, segments, backend information, and processing time. `/v1/analyze` currently uses the conservative deterministic incident extractor; model-backed structured extraction is a separate adapter task.
+
+#### Run the model-backed test
+
+The real-model test is ignored by default because it requires local model weights and a speech recording:
+
+```bash
+PHEME_VA_WHISPER_MODEL="$PWD/models/ggml-large-v3-turbo.bin" \
+PHEME_VA_TEST_AUDIO=/absolute/path/to/speech.wav \
+PHEME_VA_TEST_LANGUAGE=en \
+cargo test -p core --features whisper --test audio_pipeline -- --ignored --nocapture
+```
+
+A successful run confirms that the selected Whisper model loads through the whisper.cpp-backed Rust adapter and produces non-empty transcript text. It does not by itself validate incident-report quality or target-device performance.
+
+#### Terminal microphone recorder
+
+On Linux, install the system audio development package required by `cpal` if necessary, for example `libasound2-dev` on Debian/Ubuntu:
+
+```bash
+cargo run --release -p cli --features whisper -- \
+  tui --model models/ggml-large-v3-turbo.bin
+```
+
+Press Enter or Space to start and stop recording, and `q` to quit. This is a development TUI, not the product UI.
 
 ### Web
 
@@ -147,37 +160,20 @@ For model-backed local work, follow the [Pheme VA README](pheme-va/README.md) fo
 - Node.js 20.19+ or 22.12+
 - npm
 
-#### Setup
-
-From the repository root:
+#### Setup and verification
 
 ```bash
 cd web
 npm install
-```
-
-Start the frontend:
-
-```bash
 npm run dev
-```
-
-The Vite dev server runs at:
-
-```text
-http://localhost:5173
-```
-
-#### Verification
-
-Build the frontend:
-
-```bash
+npm run lint
 npm run build
 ```
 
-Run the configured lint command:
+The Vite development server runs at `http://localhost:5173`. The voice console and benchmark dashboard are still scaffolding.
 
-```bash
-npm run lint
-```
+## Model and deployment notes
+
+Whisper/whisper.cpp is the current speech-recognition baseline. Pheme keeps transcription and language-model inference behind replaceable boundaries so alternative local models can be evaluated. A concrete llama.cpp-compatible language-model adapter for structured incident extraction is still planned; the current rule-based extractor is deliberately conservative and does not invent facts.
+
+The eventual target may be an iOS phone or NVIDIA Jetson, but Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.

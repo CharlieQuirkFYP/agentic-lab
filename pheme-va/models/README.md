@@ -7,10 +7,16 @@ Model weights are intentionally ignored by Git. The current local STT baseline i
 - Size: approximately 1.62 GB
 - SHA-256: `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69`
 
-The model is a Whisper speech-recognition model. It is not the same thing as
-`voice-agent/llama.cpp-revision`, which is only a pinned llama.cpp source
-revision. A llama.cpp language model is a separate future cleanup/extraction
-model and is not currently bundled here.
+The model is a Whisper speech-recognition model. It is used by Pheme VA's
+in-process `whisper-rs` backend, which is built on whisper.cpp. It is not a
+language model for incident extraction; a separate local language-model
+adapter remains a future evaluation target.
+
+Download and verify the ignored model with:
+
+```bash
+./scripts/download-model.sh
+```
 
 Use the model from the Pheme VA workspace:
 

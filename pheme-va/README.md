@@ -28,7 +28,7 @@ The repository contains four crates:
 | `server` | Development HTTP wrapper around the same core            |
 | `ffi`    | Small C ABI for iOS/Android hosts (`include/pheme_va.h`) |
 
-Model weights are not committed; the local `models/` directory contains the downloaded Whisper baseline and its checksum manifest.
+Model weights are not committed. The local `models/` directory contains the checksum manifest; run `./scripts/download-model.sh` to download and verify the ignored Whisper baseline.
 
 ## What is implemented
 
@@ -61,14 +61,15 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 ## Use Whisper locally
 
-The local `models/` directory contains `ggml-large-v3-turbo.bin`, downloaded from the whisper.cpp Hugging Face repository. Its checksum and source are recorded in [`models/README.md`](models/README.md). `large-v3-turbo` is an initial CPU baseline, not a validated mobile configuration; compare it against smaller models on the target device.
+The local `models/` directory contains `ggml-large-v3-turbo.bin`, downloaded from the whisper.cpp Hugging Face repository. Run `./scripts/download-model.sh` to reproduce the setup; its checksum and source are recorded in [`models/README.md`](models/README.md). `large-v3-turbo` is an initial CPU baseline, not a validated mobile configuration; compare it against smaller models on the target device.
 
 Build and transcribe an existing WAV file:
 
 ```bash
+./scripts/download-model.sh
 cargo run --release -p cli --features whisper -- \
   transcribe recording.wav \
-  --model /path/to/ggml-large-v3-turbo.bin \
+  --model models/ggml-large-v3-turbo.bin \
   --language en \
   --dictionary KLASS,whisper.cpp,"west entrance"
 ```
