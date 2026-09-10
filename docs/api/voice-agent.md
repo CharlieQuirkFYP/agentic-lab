@@ -1,6 +1,6 @@
 # Voice Agent Service Boundary and API Contract
 
-Status: the T03 Python scaffold implements request/response validation, sanitized errors, timeout/cancellation, and an injectable analyzer. Its default analyzer returns `503 runtime_unavailable`; T04 connects real inference. Go still uses `MockIncidentAnalyzer` until T05 connects it. See [architecture](../architecture.md) and [roadmap](../roadmap.md).
+Status: the T03 Python scaffold implements request/response validation, sanitized errors, timeout/cancellation, and an injectable analyzer. Its default analyzer returns `503 runtime_unavailable`; T04b adds an opt-in `llama_cpp` backend with real inference. Go still uses `MockIncidentAnalyzer` until T05 connects it. See [architecture](../architecture.md) and [roadmap](../roadmap.md).
 
 ## Service Identity and Ownership
 
@@ -208,11 +208,11 @@ Required transition examples for T06:
 * Confirmation for a stale revision → conflict, no save.
 * “Cancel this report” → mark cancelled, no finalized report.
 
-No Python scaffold, runtime integration, Go behaviour change, or database migration is included in T02. T03 now provides the scaffold; T04 is the next implementation ticket.
+No Python scaffold, runtime integration, Go behaviour change, or database migration is included in T02. T03 now provides the scaffold; T04b now connects local inference; Go integration is T05.
 
 ## Scaffold Health and Readiness
 
 * `GET /health`: `200 {"status":"ok"}` indicates the HTTP service is live.
 * `GET /ready`: `200 {"status":"ready"}` when the injected analyzer is ready; otherwise the documented 503 runtime-unavailable error. Readiness failures/timeouts also return 503.
 
-The default analyzer is unavailable even when a runtime URL/model path is configured: these settings are reserved for T04, not an implemented connection. The scaffold validates output structure but cannot enforce semantic grounding without an actual inference adapter. See [setup](../../voice-agent/README.md).
+Select `VOICE_AGENT_ANALYZER=llama_cpp` to connect the configured runtime URL; the default `unavailable` backend remains offline. The runtime process owns model loading. Schema validation does not establish semantic grounding, even with the real adapter. See [local analysis behaviour, errors, and traces](../../voice-agent/docs/local-analysis.md). See [setup](../../voice-agent/README.md).

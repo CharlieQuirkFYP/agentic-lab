@@ -126,7 +126,7 @@ python -m pip install --no-deps --no-build-isolation -e .
 python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
-`GET /health` returns 200. `GET /ready` and valid `POST /v1/incidents/analyze` requests return 503 until a real model adapter is implemented. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
+`GET /health` returns 200. With the default unavailable backend, readiness and analysis return 503. Follow [local inference setup](voice-agent/docs/local-analysis.md) to enable llama.cpp-backed analysis. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
 
 ### Web
 

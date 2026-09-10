@@ -1,6 +1,6 @@
 # Local llama.cpp Runtime
 
-This setup ticket installs llama.cpp separately from Python and provides a launcher. It does not select a final SLM, download weights, or connect Voice Agent to inference. Voice Agent still returns `503 runtime_unavailable` until its Python adapter is implemented.
+This setup ticket installs llama.cpp separately from Python and provides a launcher. It does not select a final SLM, download weights, or connect Voice Agent to inference. For the subsequent Python integration and provisional-model smoke test, see [local analysis](local-analysis.md).
 
 ## Version Pin
 
@@ -77,13 +77,13 @@ export VOICE_AGENT_MODEL_PATH="/absolute/path/outside/repository/model.gguf"
 | `VOICE_AGENT_LLAMA_THREADS` | `4` | CPU threads, 1–1024 |
 | `VOICE_AGENT_LLAMA_GPU_LAYERS` | `0` | Offloaded layers, 0–1,000,000; requires a separately validated accelerator-enabled build |
 
-The defaults are a small development starting point, not optimized settings. The context includes the prompt and generated output; it is not a guarantee that the Voice Agent contract's full 16,000-character input fits. Budget/token handling belongs in the later adapter ticket.
+The defaults are a small development starting point, not optimized settings. The context includes the prompt and generated output; it is not a guarantee that the Voice Agent contract's full 16,000-character input fits. The adapter now preflights the formatted prompt against the runtime context; see [local analysis](local-analysis.md).
 
 `.env` files are not automatically loaded. Environment values are passed as literal arguments, without shell evaluation. Existing upstream `LLAMA_ARG_*` variables can affect options not explicitly set by the launcher; use a clean runtime environment and record all overrides during experiments. The launcher does not accept arbitrary extra CLI arguments.
 
 `--dry-run` validates configuration and prints a shell-escaped command without executing it. `--check` needs only the executable, not a model. Invalid paths, numeric values, and unknown options fail with a `start-llama:` error. Stop a launched server with Ctrl+C; the script uses `exec`, preserving runtime signals and exit status. If the port is occupied, the runtime reports the bind failure; change the port or stop the process you own.
 
-The Python service remains a separate process on port 8000. Its `VOICE_AGENT_LLAMA_CPP_URL` defaults to `http://127.0.0.1:8081`; when the adapter is implemented, set that URL to match any launcher host/port changes. This launcher does not alter Python configuration or Go's mock analyzer.
+The Python service remains a separate process on port 8000. Its `VOICE_AGENT_LLAMA_CPP_URL` defaults to `http://127.0.0.1:8081`; with `VOICE_AGENT_ANALYZER=llama_cpp`, set that URL to match any launcher host/port changes. This launcher does not alter Python configuration or Go's mock analyzer.
 
 ## Verification Levels
 
@@ -104,7 +104,7 @@ Wait for loading to complete; health should return 200, and generation should re
 
 Update the revision file, release/default executable path, these build instructions, and verification evidence together when changing the runtime pin. Normal Python CI runs launcher tests using a fake executable and no weights. Rebuild/version checks are explicit runtime-maintenance work, not an automatic dependency download during tests.
 
-## Verified Setup for This Ticket
+## Historical T04a Setup Verification
 
 Built on Darwin arm64 with CMake 4.1.2 and AppleClang 21.0.0, using the CPU-only flags above and the documented SDK header workaround. The external source checkout matches the revision file and has no source changes.
 

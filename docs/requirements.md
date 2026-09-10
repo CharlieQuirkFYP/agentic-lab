@@ -17,7 +17,7 @@ This document records the latest KLASS discussion and the resulting implementati
 
 The dedicated Python **Voice Agent** service will live in `voice-agent/`. It owns transcription, interpretation, the incident conversation/state machine, confirmation, incident storage/retrieval, response generation, and its Whisper/llama.cpp adapters. Go exposes the public API and owns benchmark orchestration and experiment results. The web app owns interaction/playback and the research dashboard. Each service accesses only its own repositories.
 
-The initial text-analysis contract is specified in [Voice Agent API](api/voice-agent.md); session contracts there remain an outline for later implementation. The service scaffold is implemented in T03; it returns runtime unavailable until T04 connects inference. Session and retrieval behaviour remain planned.
+The initial text-analysis contract is specified in [Voice Agent API](api/voice-agent.md); session contracts there remain an outline for later implementation. T03 provides the scaffold and T04b adds opt-in llama.cpp text analysis with a provisional model. The default unavailable backend still makes no runtime calls. Session and retrieval behaviour remain planned.
 
 ## Functional Requirements
 
