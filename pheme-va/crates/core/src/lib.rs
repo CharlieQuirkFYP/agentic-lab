@@ -21,7 +21,10 @@ pub use engine::{
     CleanupStatus, DecoderConfig, Engine, EngineConfig, EngineError, LanguageModel, LlmTextCleaner,
     RuleBasedFormatter, TextCleaner, Transcriber, TranscriptionResult, TranscriptionStatus,
 };
-pub use incident::{IncidentAnalyzer, IncidentReport, RuleBasedIncidentAnalyzer};
+pub use incident::{
+    analyze_with_metrics, IncidentAnalyzer, IncidentReport, RuleBasedIncidentAnalyzer,
+};
+pub use metrics::{MetricsConfig, MetricsContext, MetricsHub, MetricsSubscriber, Stage};
 pub use transcript::{
     RawTranscription, TranscriptGuardDecision, TranscriptSegment, TranscriptionOptions,
 };

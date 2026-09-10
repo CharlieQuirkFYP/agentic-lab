@@ -4,11 +4,11 @@ This is the planned architecture for the [revised requirements](requirements.md)
 
 ## Current Foundation
 
-* `api/`: Gin handlers, services, models, and the `IncidentAnalyzer` boundary. The transcript endpoint delegates to `MockIncidentAnalyzer`.
-* `api/internal/benchmark/`: replaceable repository/runner boundaries, an in-memory queue/repository, a background worker, and a mock runner returning hardcoded values.
-* `web/`: React/TypeScript/Vite, routing and reusable UI tooling, with a placeholder home page.
-* Current endpoints: `GET /health`, `POST /api/v1/incidents/analyze`, `POST /api/v1/experiments`, and `GET /api/v1/experiments/:id`.
-* Existing benchmark storage holds experiments, not incident reports. The Python `voice-agent/` scaffold implements validation, health/readiness, and an unavailable analyzer boundary. The new `pheme-va/` workspace implements the portable audio pipeline, adapter traits, an optional in-process `whisper-rs` backend, a development HTTP host, a microphone TUI, and a mobile-oriented C ABI. Conversation state and persistent reports remain unimplemented.
+- `api/`: Gin handlers, services, models, the `IncidentAnalyzer` boundary, and the separate metrics ingestion repository.
+- `api/internal/benchmark/`: replaceable repository/runner boundaries, an in-memory queue/repository, a background worker, and a mock runner returning hardcoded values.
+- `web/`: React/TypeScript/Vite, routing and reusable UI tooling, with a placeholder home page.
+- Current endpoints: `GET /health`, `POST /api/v1/incidents/analyze`, `POST /api/v1/experiments`, `GET /api/v1/experiments/:id`, and the experiment metrics append/read routes.
+- `pheme-va/`: portable audio/STT core, separate pure incident analyzer, `metrics` pub/sub and batch contract, optional in-process `whisper-rs` backend, development HTTP host, microphone TUI, and mobile-oriented C ABI. Conversation state and persistent reports remain unimplemented.
 
 ## Development Architecture
 
@@ -26,7 +26,10 @@ flowchart TD
         Core --> WhisperAdapter[Replaceable STT adapter]
         Core --> LLMAdapter[Optional cleanup/LLM adapter]
         Core --> Draft[Transcript and future incident workflow]
+        Core --> Metrics[Metrics pub/sub and resource sampling]
+        Metrics --> Batch[Versioned metric batches]
     end
+    Batch --> GoMetrics[Go metrics API]
     WhisperAdapter <--> Whisper[Whisper runtime]
     LLMAdapter <--> LLM[llama.cpp or another model provider]
     Mobile[iOS/Android native host] --> FFI[Rust C ABI]
@@ -41,16 +44,17 @@ The benchmark runner invokes the same Voice Agent API through the shared Go clie
 
 ## Ownership and Boundaries
 
-| Component | Owns |
-| --- | --- |
-| Go handlers/services | Public HTTP contract, request validation, delegation through Voice Agent client |
-| Go benchmark components | Experiment configuration, queue/worker, scenario execution, scoring and result storage |
-| Voice Agent workflow | Authoritative sessions/drafts, intent, clarification, corrections, validated actions, confirmation, finalization, retrieval and response generation |
-| Voice Agent runtime adapters | Whisper and llama.cpp configuration/calls, cancellation/timeouts, validated inference output |
-| Voice Agent repositories | Incident/session persistence and atomic finalization |
-| Go experiment repository | Benchmark configurations, status, measurements and scores |
-| Web voice client | Audio capture/playback, speech output, interaction status, development inspection |
-| Web dashboard | Experiment configuration, progress, results, comparison, export |
+| Component                    | Owns                                                                                                                                                |
+| ---------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Go handlers/services         | Public HTTP contract, request validation, delegation through Voice Agent client                                                                     |
+| Go benchmark components      | Experiment configuration, queue/worker, scenario execution, scoring and result storage                                                              |
+| Go metrics repository        | Versioned metric-batch ingestion and separate metric storage                                                                                        |
+| Voice Agent workflow         | Authoritative sessions/drafts, intent, clarification, corrections, validated actions, confirmation, finalization, retrieval and response generation |
+| Voice Agent runtime adapters | Whisper and llama.cpp configuration/calls, cancellation/timeouts, validated inference output                                                        |
+| Voice Agent repositories     | Incident/session persistence and atomic finalization                                                                                                |
+| Rust metrics crate           | Typed events, internal subscriptions, resource-provider boundary, and batch formation                                                               |
+| Web voice client             | Audio capture/playback, speech output, interaction status, development inspection                                                                   |
+| Web dashboard                | Experiment configuration, progress, results, comparison, export                                                                                     |
 
 The Voice Agent loads its own session state and validates model proposals before executing bounded actions. Go forwards operations and does not maintain a duplicate incident state machine or access the Voice Agent database. Each service owns its repository implementations; separate SQLite files are sufficient without introducing database servers. Start with an explicit state machine and ordinary functions inside Voice Agent; LangGraph is optional future tooling.
 
@@ -94,20 +98,20 @@ stateDiagram-v2
 
 The Voice Agent tracks draft revisions and owns all transitions above. A correction invalidates prior confirmation. Ambiguous responses must not finalize a report. Use request identifiers and atomic state updates so retries or concurrent requests cannot save duplicate reports or confirm a stale draft. Spoken confirmation and explicit confirmation controls must call the same service logic.
 
-Start with text turns to test the workflow, then route transcribed audio through it. Add audio format normalization, bounded recording sizes/durations, silence handling, cancellation, and clear recoverable errors. Record stage timings from the first real inference integration.
+Start with text turns to test the workflow, then route transcribed audio through it. Add audio format normalization, bounded recording sizes/durations, silence handling, cancellation, and clear recoverable errors. The Rust metrics crate now records end-to-end and optional stage timings, workflow outcomes, retry count, transcript status, and resource snapshots from the first core execution path.
 
 ## Proposed API and Data Contracts
 
 The initial internal text-analysis API is defined in [Voice Agent API](api/voice-agent.md). The public endpoints below remain proposals, not currently available APIs. Session payloads and completeness policy will be finalized in T06 using the contract outline.
 
-| Endpoint | Purpose |
-| --- | --- |
-| `POST /api/v1/sessions` | Start a conversation |
-| `POST /api/v1/sessions/:id/turns` | Submit text or audio with a retry identifier |
-| `POST /api/v1/sessions/:id/confirm` | Confirm a specific draft revision |
-| `GET /api/v1/incidents` | Query reports using validated filters |
-| `GET /api/v1/incidents/:id` | Read one report |
-| `GET /api/v1/experiments` | Paginated/filterable experiment history |
+| Endpoint                            | Purpose                                      |
+| ----------------------------------- | -------------------------------------------- |
+| `POST /api/v1/sessions`             | Start a conversation                         |
+| `POST /api/v1/sessions/:id/turns`   | Submit text or audio with a retry identifier |
+| `POST /api/v1/sessions/:id/confirm` | Confirm a specific draft revision            |
+| `GET /api/v1/incidents`             | Query reports using validated filters        |
+| `GET /api/v1/incidents/:id`         | Read one report                              |
+| `GET /api/v1/experiments`           | Paginated/filterable experiment history      |
 
 Go delegates session/incident operations to the Voice Agent. Turn responses should expose transcript, reply text, state, and draft revision. Keep existing endpoint contracts unless an implementation ticket explicitly changes them.
 
@@ -117,10 +121,10 @@ For report queries, the Voice Agent validates model-proposed parameters, execute
 
 ## Runtime and Device Strategy
 
-* Whisper is the speech-recognition baseline; whisper.cpp is the provisional implementation. Pin the evaluated model/runtime build.
-* llama.cpp runs the selected local language model through a persistent local server during development. Keep model selection and quantization configurable.
-* Speech synthesis is replaceable, initially at the client. Verify actual execution location/offline behaviour before including it in local-inference or energy claims.
-* MERaLiON and fine-tuning are evaluation options if baseline local-speech errors justify them.
+- Whisper is the speech-recognition baseline; whisper.cpp is the provisional implementation. Pin the evaluated model/runtime build.
+- llama.cpp runs the selected local language model through a persistent local server during development. Keep model selection and quantization configurable.
+- Speech synthesis is replaceable, initially at the client. Verify actual execution location/offline behaviour before including it in local-inference or energy claims.
+- MERaLiON and fine-tuning are evaluation options if baseline local-speech errors justify them.
 
 Jetson can start from the service-based prototype, subject to board/software validation. The Rust workspace now provides the portable core, development HTTP wrapper, microphone TUI, and C ABI for eventual native hosts. Fully local iOS deployment still requires native audio integration, Apple linking/Metal validation, signing, and a physical-device test; do not present the Linux build or a remote HTTP call as on-device inference. Preserve schemas, prompts, state-transition specifications, and shared conformance scenarios for the mobile port. Device selection remains pending.
 

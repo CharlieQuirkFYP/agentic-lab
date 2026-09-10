@@ -17,19 +17,21 @@ Use consented recordings. Keep versioned manifests and intentionally small fixtu
 
 ## Measurements
 
-| Dimension | Measures and interpretation |
-| --- | --- |
-| Transcription | Word error rate plus accuracy of important places, names, and numbers |
-| Report quality | Field accuracy/completeness, unsupported facts, summary faithfulness |
-| Conversation | Completion rate, clarification turns, correction success, incorrect finalization |
-| Retrieval | Correct records, time boundaries, ordering, grounded summaries |
-| Timing | ASR, LLM, retrieval, and TTS durations; end-of-user-speech to first audible reply; full report duration |
-| Resources | Defined process/system memory scope and available CPU/GPU utilization |
-| Power | Average/peak watts during defined idle and active intervals |
-| Energy | Integrated power over time, expressed as joules or watt-hours per task; include failed attempts in the accounting |
-| Sustained operation | Temperature, throttling indicators where available, latency drift, battery endurance |
+| Dimension           | Measures and interpretation                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| Transcription       | Word error rate plus accuracy of important places, names, and numbers                                             |
+| Report quality      | Field accuracy/completeness, unsupported facts, summary faithfulness                                              |
+| Conversation        | Completion rate, clarification turns, correction success, incorrect finalization                                  |
+| Retrieval           | Correct records, time boundaries, ordering, grounded summaries                                                    |
+| Timing              | ASR, LLM, retrieval, and TTS durations; end-of-user-speech to first audible reply; full report duration           |
+| Resources           | Defined process/system memory scope and available CPU/GPU utilization                                             |
+| Power               | Average/peak watts during defined idle and active intervals                                                       |
+| Energy              | Integrated power over time, expressed as joules or watt-hours per task; include failed attempts in the accounting |
+| Sustained operation | Temperature, throttling indicators where available, latency drift, battery endurance                              |
 
 Record unavailable metrics as absent with a reason, never zero. CPU utilization is not measured power. On systems with shared memory, document accounting to avoid presenting a naive sum of process memory as unique physical usage.
+
+The initial implementation emits the application and resource events described in the [metrics contract](api/metrics.md). Process and system CPU are intentionally separate, as are process and system RAM scopes. Linux/macOS/Windows use the initial `sysinfo` sampler for CPU/RAM; GPU, temperature, battery, whole-device power, and energy require a host provider unless an external instrument supplies them. Power-to-energy integration is valid only when whole-device power samples are available.
 
 Distinguish successful execution from task quality: a completed run can produce an inaccurate report. Report both. Document denominators for energy per completed report and task success.
 

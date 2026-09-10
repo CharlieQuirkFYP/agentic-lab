@@ -31,6 +31,10 @@ int32_t pheme_va_transcribe(PhemeVaHandle *handle, const float *samples,
                             size_t sample_count, uint32_t sample_rate,
                             uint16_t channels, char **output_text);
 
+/* Metrics are emitted as JSON batches for forwarding to the backend API. */
+int32_t pheme_va_metrics_set_enabled(PhemeVaHandle *handle, bool enabled);
+int32_t pheme_va_metrics_drain(PhemeVaHandle *handle, char **output_json);
+
 void pheme_va_whisper_free(PhemeVaHandle *handle);
 void pheme_va_string_free(char *value);
 

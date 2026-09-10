@@ -16,5 +16,6 @@ whisper-metal = ["va_core/whisper-metal"]
 whisper-coreml = ["va_core/whisper-coreml"]
 
 [dependencies]
+metrics = { path = "../metrics", default-features = false }
 serde_json.workspace = true
 va_core = { package = "core", path = "../core" }

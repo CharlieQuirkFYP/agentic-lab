@@ -13,6 +13,7 @@ import (
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/analyzer"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/benchmark"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/handler"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
 	"github.com/gin-gonic/gin"
 )
@@ -28,6 +29,10 @@ func main() {
 	incidentHandler := handler.NewIncidentHandler(incidentService)
 
 	benchmarkRepository := benchmark.NewMemoryRepository()
+	metricsRepository := metrics.NewMemoryRepository()
+	metricsService := metrics.NewService(metricsRepository)
+	metricsHandler := handler.NewMetricsHandler(metricsService)
+
 	benchmarkQueue, err := benchmark.NewJobQueue(100)
 	if err != nil {
 		log.Fatal(err)
@@ -42,6 +47,8 @@ func main() {
 	router.POST("/api/v1/incidents/analyze", incidentHandler.Analyze)
 	router.POST("/api/v1/experiments", experimentHandler.Create)
 	router.GET("/api/v1/experiments/:id", experimentHandler.Get)
+	router.POST("/api/v1/experiments/:id/metrics", metricsHandler.Append)
+	router.GET("/api/v1/experiments/:id/metrics", metricsHandler.Get)
 
 	server := &http.Server{
 		Addr:    ":8080",
