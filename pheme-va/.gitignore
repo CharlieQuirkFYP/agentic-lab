@@ -1,0 +1,5 @@
+/target/
+*.wav
+*.gguf
+*.bin
+.env

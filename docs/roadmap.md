@@ -4,6 +4,18 @@ These are local planning references, not Linear issue IDs. Tickets are not creat
 
 See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally, retaining existing public contracts unless a ticket explicitly changes them.
 
+## Rust backend migration — implemented foundation
+
+The empty `pheme-va/` directory now contains the first portable backend slice. This does not claim that the complete incident workflow or mobile application is finished.
+
+- `core`: audio/WAV validation, mono/16 kHz resampling, configurable energy gate, dictionary prompt construction, Whisper decoder settings, silence/prompt-echo guards, raw/processed transcript results, swappable STT and language-model cleanup traits, and a conservative rule-based incident extractor.
+- `cli`: WAV transcription command and a small prewarmed-model terminal microphone recorder.
+- `server`: development HTTP wrapper around the same core (`/health`, `/ready`, `/v1/transcribe`, `/v1/analyze`).
+- `ffi`: C ABI bridge for eventual Swift/Kotlin hosts.
+- Tests use generated WAV audio and local fakes. The ignored real-model test accepts externally supplied speech/model files; weights are not committed. The downloaded `large-v3-turbo` model has also been verified through the release CLI against a real speech sample.
+
+The `voice-agent/` Python service remains the current contract scaffold until Rust contract parity, workflow coverage, and mobile/device validation justify a deliberate cutover. The next Rust work is to add a concrete llama.cpp-compatible cleanup adapter and run the pipeline on a physical iPhone.
+
 ## Milestone 1 — Real Local Incident Analysis
 
 ### T01 — Update project scope and architecture documentation (S)
