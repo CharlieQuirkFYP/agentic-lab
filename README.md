@@ -12,13 +12,13 @@ The web app will provide a development voice console and a benchmark dashboard. 
 
 ## Project Documentation
 
-* [Requirements and scope](docs/requirements.md)
-* [Planned system architecture](docs/architecture.md)
-* [Benchmark methodology](docs/benchmark-methodology.md)
-* [Implementation roadmap and ticket breakdown](docs/roadmap.md)
-* [Planned Voice Agent API contract](docs/api/voice-agent.md)
-* [Current experiment API](docs/api/experiments.md)
-* [Contributor/agent instructions](AGENTS.md)
+- [Requirements and scope](docs/requirements.md)
+- [Planned system architecture](docs/architecture.md)
+- [Benchmark methodology](docs/benchmark-methodology.md)
+- [Implementation roadmap and ticket breakdown](docs/roadmap.md)
+- [Planned Voice Agent API contract](docs/api/voice-agent.md)
+- [Current experiment API](docs/api/experiments.md)
+- [Contributor/agent instructions](AGENTS.md)
 
 ## Local Development
 
@@ -127,6 +127,18 @@ python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
 ```
 
 `GET /health` returns 200. With the default unavailable backend, readiness and analysis return 503. Follow [local inference setup](voice-agent/docs/local-analysis.md) to enable llama.cpp-backed analysis. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
+
+### Pheme VA
+
+The backend-first Rust implementation lives under [`pheme-va/`](pheme-va/). It contains a portable audio/STT core, in-process `whisper-rs` support, a WAV/TUI client, a development HTTP wrapper, and a C ABI intended for native iOS/Android hosts. It does not own a frontend hotkey, clipboard, or mobile UI. Model weights are kept locally under the ignored `pheme-va/models/` directory; see its README for the current model and checksum.
+
+```bash
+cd pheme-va
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+For model-backed local work, follow the [Pheme VA README](pheme-va/README.md) for the TUI, HTTP service, WAV test, and mobile build commands. The Whisper `large-v3-turbo` model has been downloaded locally and the release CLI has been verified against a real speech sample; model weights remain ignored and are not committed.
 
 ### Web
 
