@@ -1,6 +1,6 @@
 # Voice Agent
 
-Python service for Voice-Based Incident Reporting. The scaffold implements the [text-analysis HTTP contract](../docs/api/voice-agent.md) with an injectable analyzer boundary. Model inference, sessions, speech, and storage are not implemented yet. Go still uses its mock analyzer and does not call this service.
+Python service for Voice-Based Incident Reporting. The service implements the [text-analysis HTTP contract](../docs/api/voice-agent.md) with an injectable analyzer and an opt-in llama.cpp adapter. Sessions, speech, and storage are not implemented yet. Go still uses its mock analyzer and does not call this service.
 
 ## Local Development
 
@@ -26,7 +26,7 @@ curl -i http://127.0.0.1:8000/v1/incidents/analyze \
   -d '{"transcript":"Smoke reported near the west entrance."}'
 ```
 
-Health returns `200 {"status":"ok"}`. Readiness and valid analysis requests return `503` with `runtime_unavailable` until a real adapter is wired in T04. Invalid analysis requests return the documented 400/415 errors. The default analyzer never invents a report. Tests inject small local fakes to verify success, failures, timeout, and cancellation.
+Health returns `200 {"status":"ok"}`. Readiness and valid analysis requests return `503` with `runtime_unavailable` with the default `unavailable` backend. To enable real inference, follow [local analysis setup](docs/local-analysis.md). Invalid analysis requests return the documented 400/415 errors. The default analyzer never invents a report. Tests inject small local fakes to verify success, failures, timeout, and cancellation.
 
 The OpenAPI UI is at `http://127.0.0.1:8000/docs`.
 
@@ -36,9 +36,11 @@ Environment variables are read when the application factory starts. Invalid sett
 
 | Variable | Default | Purpose |
 | --- | --- | --- |
+| `VOICE_AGENT_ANALYZER` | `unavailable` | Select `llama_cpp` for real inference |
+| `VOICE_AGENT_MAX_OUTPUT_TOKENS` | `512` | Generation cap, 64–4096 |
 | `VOICE_AGENT_ANALYSIS_TIMEOUT_SECONDS` | `55` | Positive finite budget for analysis and readiness checks |
-| `VOICE_AGENT_LLAMA_CPP_URL` | `http://127.0.0.1:8081` | Validated runtime URL reserved for T04; not contacted by the scaffold |
-| `VOICE_AGENT_MODEL_PATH` | unset | Optional external model path reserved for T04; not loaded or checked for existence yet |
+| `VOICE_AGENT_LLAMA_CPP_URL` | `http://127.0.0.1:8081` | Root runtime URL used by the `llama_cpp` backend |
+| `VOICE_AGENT_MODEL_PATH` | unset | Legacy Python setting; model loading is handled by the launcher, not Python |
 
 Host and port use Uvicorn command-line options. `.env` files are not automatically loaded. Keep the Python budget below the future Go client's timeout. Async runtime adapters must cooperate with cancellation; cancelling an HTTP request does not guarantee immediate accelerator preemption.
 
@@ -58,8 +60,11 @@ python -m pytest
 * `app/incident_reporting/service.py`: analyzer protocol, unavailable implementation, timeout and output validation.
 * `tests/`: contract/configuration tests using fakes; no model downloads.
 
-The workflow, repositories, and runtime adapter directory will be added as their tickets are implemented.
+* `app/adapters/llama_cpp.py`: runtime HTTP adapter, context preflight, readiness, and execution traces.
+* `app/incident_reporting/prompts.py`: versioned extraction instructions and development examples.
+
+Workflow and repositories will be added in later tickets.
 
 ## Local llama.cpp Setup
 
-See [pinned runtime installation and launcher](docs/llama-cpp.md). The runtime is installed outside this repository and started with `scripts/start-llama.sh`; `--check` verifies the executable without a model. Final model selection and model-backed inference verification remain deferred. Python does not connect to this server until the adapter ticket is implemented.
+See [pinned runtime installation and launcher](docs/llama-cpp.md). The runtime is installed outside this repository and started with `scripts/start-llama.sh`; `--check` verifies the executable without a model. Final model selection remains deferred. The [local analysis guide](docs/local-analysis.md) documents a provisional model and the Python connection.

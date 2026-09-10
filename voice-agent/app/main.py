@@ -2,12 +2,13 @@
 
 import asyncio
 import json
-from contextlib import suppress
+from contextlib import asynccontextmanager, suppress
 
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 
+from app.adapters.llama_cpp import LlamaCppAnalyzer
 from app.config import Settings
 from app.incident_reporting.models import AnalyzeRequest, IncidentReport
 from app.incident_reporting.service import (
@@ -66,11 +67,24 @@ def create_app(
     settings: Settings | None = None, analyzer: Analyzer | None = None
 ) -> FastAPI:
     settings = settings if settings is not None else Settings.from_env()
-    service = AnalysisService(
-        analyzer if analyzer is not None else UnavailableAnalyzer(),
-        settings.analysis_timeout_seconds,
-    )
-    app = FastAPI(title="Voice Agent", version="0.1.0")
+    owned_analyzer = None
+    if analyzer is None:
+        if settings.analyzer_backend == "llama_cpp":
+            owned_analyzer = LlamaCppAnalyzer(settings)
+            analyzer = owned_analyzer
+        else:
+            analyzer = UnavailableAnalyzer()
+    service = AnalysisService(analyzer, settings.analysis_timeout_seconds)
+
+    @asynccontextmanager
+    async def lifespan(app: FastAPI):
+        try:
+            yield
+        finally:
+            if owned_analyzer is not None:
+                await owned_analyzer.aclose()
+
+    app = FastAPI(title="Voice Agent", version="0.1.0", lifespan=lifespan)
 
     @app.get("/health")
     async def health() -> dict[str, str]:

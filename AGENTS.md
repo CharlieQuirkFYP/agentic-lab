@@ -228,12 +228,13 @@ Currently implemented:
 * strict text-analysis schemas, analyzer boundary, unavailable default implementation, timeouts/cancellation
 * `GET /health`, `GET /ready`, and `POST /v1/incidents/analyze` on Voice Agent (separate from Go)
 * Voice Agent tests, pinned development dependencies, Python CI, and local setup instructions
-* pinned external llama.cpp setup and configurable launcher under `voice-agent/scripts/` (model selection and Python adapter pending)
+* opt-in llama.cpp analyzer, versioned extraction prompt, live readiness, context checks, safe execution traces, and provisional-model smoke verification
+* pinned external llama.cpp setup and configurable launcher under `voice-agent/scripts/` (final model selection pending)
 
 Planned but not yet implemented:
 
-* real Voice Agent inference adapter and Go `VoiceAgentIncidentAnalyzer`
-* Whisper transcription and llama.cpp integration with a selected local model
+* Go `VoiceAgentIncidentAnalyzer` integration
+* Whisper transcription and final model/device evaluation
 * speech synthesis and audio turn handling
 * Voice Agent-owned multi-turn sessions, clarification, corrections, and revision-bound confirmation
 * Voice Agent SQLite session/report storage and incident retrieval
@@ -289,7 +290,7 @@ scripts/
 tests/
 ```
 
-`api/`, `web/`, `voice-agent/`, and `docs/` exist. Voice Agent currently has only the stateless text-analysis scaffold; do not scaffold future workflow/runtime components until needed. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
+`api/`, `web/`, `voice-agent/`, and `docs/` exist. Voice Agent supports stateless text analysis through an opt-in llama.cpp adapter; do not scaffold future workflow/runtime components until needed. Other listed directories are optional future locations, not scaffolding requirements; the benchmark lifecycle currently lives in `api/internal/benchmark/`.
 
 Do not store large model weights or benchmark media directly in Git.
 

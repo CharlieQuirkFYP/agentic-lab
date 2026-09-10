@@ -1,6 +1,6 @@
 # Implementation Roadmap
 
-These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. T03 implements the validated service scaffold; real inference and workflow capabilities remain planned.
+These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. T03 implements the validated scaffold; T04a/T04b add the runtime setup and opt-in text inference. Conversation and speech workflows remain planned.
 
 See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally, retaining existing public contracts unless a ticket explicitly changes them.
 
@@ -34,7 +34,7 @@ Pin the upstream runtime revision, document installation outside the repository,
 
 Use a provisional compatible model without committing to the final SLM. Add the Python runtime adapter, structured extraction prompts, output validation, real readiness checks, and timeout/unavailable-runtime handling. Record model, quantization, prompt/runtime revisions, and stage timing; run a model-backed smoke test.
 
-**Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T04a. This completes the original T04 inference milestone.
+**Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T04a. **Status:** implemented with an opt-in adapter, tests, and provisional-model smoke checks; see [local analysis](../voice-agent/docs/local-analysis.md). Final model quality/selection remain evaluation work.
 
 ### T05 — Connect the Go incident analyzer to Voice Agent (S)
 
@@ -128,6 +128,6 @@ Implement device measurement collection and compare a bounded set of model/runti
 
 ## Recommended Starting Sequence and Checks
 
-With T01/T02 documented and T03 scaffolded, continue with T04b–T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
+With T01/T02 documented and T03 scaffolded, continue with T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
 
 For implementation tickets, use meaningful Go/Python unit tests at integration/state boundaries and shared cross-service scenarios. Run gofmt, go vet, and Go tests for backend changes, and lint/build for frontend changes. Ordinary CI should use fakes/small fixtures; model and device evaluations run separately with recorded configurations. For documentation-only updates, verify diff whitespace, links, current-code claims, and consistency; no runtime tests are required.

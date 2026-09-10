@@ -8,7 +8,7 @@ This is the planned architecture for the [revised requirements](requirements.md)
 * `api/internal/benchmark/`: replaceable repository/runner boundaries, an in-memory queue/repository, a background worker, and a mock runner returning hardcoded values.
 * `web/`: React/TypeScript/Vite, routing and reusable UI tooling, with a placeholder home page.
 * Current endpoints: `GET /health`, `POST /api/v1/incidents/analyze`, `POST /api/v1/experiments`, and `GET /api/v1/experiments/:id`.
-* Existing benchmark storage holds experiments, not incident reports. The Python Voice Agent scaffold implements validation, health/readiness, and an unavailable analyzer boundary. There is no real inference, speech pipeline, conversation state, or persistent database.
+* Existing benchmark storage holds experiments, not incident reports. Python Voice Agent implements validation, health/readiness, and opt-in llama.cpp text analysis. There is no speech pipeline, conversation state, or persistent database.
 
 ## Development Architecture
 
@@ -75,7 +75,7 @@ voice-agent/                    Dedicated Python service
   tests/                        Python contract/workflow/adapter tests
 ```
 
-The Python import package is `app`; `voice-agent/` is a repository directory name, not a Python module identifier. Speech synthesis remains at the client/platform initially. `voice-agent/` now contains the application factory, configuration, stateless schemas/analysis service, and tests. Workflow, repositories, prompts, and runtime adapters in this planned layout are not implemented yet.
+The Python import package is `app`; `voice-agent/` is a repository directory name, not a Python module identifier. Speech synthesis remains at the client/platform initially. `voice-agent/` now contains the application factory, configuration, stateless schemas/analysis service, a versioned prompt, llama.cpp adapter, and tests. Workflow and repositories in this planned layout remain unimplemented.
 
 ## Incident Workflow
 
