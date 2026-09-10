@@ -12,6 +12,7 @@ use crate::transcript::{
     guard_transcript, normalize_transcript, RawTranscription, TranscriptGuardDecision,
     TranscriptionOptions,
 };
+use metrics::{MetricsContext, Stage};
 
 pub trait Transcriber: Send {
     fn name(&self) -> &str;
@@ -167,6 +168,19 @@ pub enum TranscriptionStatus {
     EmptyTranscript,
 }
 
+impl TranscriptionStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Speech => "speech",
+            Self::NoSpeech => "no_speech",
+            Self::InsufficientSpeech => "insufficient_speech",
+            Self::DictionaryPromptEcho => "dictionary_prompt_echo",
+            Self::KnownSilenceMarker => "known_silence_marker",
+            Self::EmptyTranscript => "empty_transcript",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
 pub enum CleanupStatus {
     Disabled,
@@ -195,6 +209,7 @@ pub struct Engine {
     transcriber: Box<dyn Transcriber>,
     cleaner: Option<Box<dyn TextCleaner>>,
     config: EngineConfig,
+    metrics: MetricsContext,
 }
 
 impl Engine {
@@ -206,6 +221,7 @@ impl Engine {
             transcriber: Box::new(transcriber),
             cleaner: None,
             config: EngineConfig::default(),
+            metrics: MetricsContext::disabled(),
         }
     }
 
@@ -217,7 +233,17 @@ impl Engine {
             transcriber: Box::new(transcriber),
             cleaner: None,
             config,
+            metrics: MetricsContext::disabled(),
         }
+    }
+
+    pub fn with_metrics(mut self, metrics: MetricsContext) -> Self {
+        self.metrics = metrics;
+        self
+    }
+
+    pub fn metrics(&self) -> &MetricsContext {
+        &self.metrics
     }
 
     pub fn with_cleaner<C>(mut self, cleaner: C) -> Self
@@ -245,9 +271,40 @@ impl Engine {
     }
 
     pub fn transcribe(&mut self, audio: AudioBuffer) -> Result<TranscriptionResult, EngineError> {
+        let metrics = self.metrics.clone();
+        self.transcribe_with_metrics(audio, metrics)
+    }
+
+    pub fn transcribe_with_metrics(
+        &mut self,
+        audio: AudioBuffer,
+        metrics: MetricsContext,
+    ) -> Result<TranscriptionResult, EngineError> {
         let started = Instant::now();
-        let normalized = audio.normalize(self.config.max_audio_seconds)?;
-        self.transcribe_normalized(normalized, started)
+        let request_timer = metrics.start_stage(Stage::EndToEndRequest);
+        let normalized = {
+            let timer = metrics.start_stage(Stage::AudioNormalization);
+            let result = audio.normalize(self.config.max_audio_seconds);
+            timer.finish();
+            result
+        };
+        let result = match normalized {
+            Ok(normalized) => self.transcribe_normalized(normalized, started, &metrics),
+            Err(error) => Err(error.into()),
+        };
+
+        match &result {
+            Ok(transcription) => {
+                metrics.record_retry_count(u64::from(transcription.recovery_attempted));
+                metrics.record_transcript_status(transcription.status.as_str());
+                metrics.record_workflow_outcome(true);
+            }
+            Err(_) => {
+                metrics.record_workflow_outcome(false);
+            }
+        }
+        request_timer.finish();
+        result
     }
 
     pub fn transcribe_wav(&mut self, wav: &[u8]) -> Result<TranscriptionResult, EngineError> {
@@ -258,11 +315,18 @@ impl Engine {
         &mut self,
         mut audio: NormalizedAudio,
         started: Instant,
+        metrics: &MetricsContext,
     ) -> Result<TranscriptionResult, EngineError> {
         // The configured gate is deliberately re-run here so callers can tune
-        // thresholds without changing the shared audio normalizer.
-        audio.gate = self.config.gate.analyze(&audio.samples, audio.sample_rate);
-        let gate = audio.gate.clone();
+        // thresholds without changing the shared audio normalizer. This stage
+        // timing covers the configured decision used by the engine.
+        let gate = {
+            let timer = metrics.start_stage(Stage::SpeechGate);
+            let gate = self.config.gate.analyze(&audio.samples, audio.sample_rate);
+            timer.finish();
+            audio.gate = gate;
+            audio.gate.clone()
+        };
         let prompt = self.config.dictionary.prompt();
         let prompt_text = prompt.as_ref().map(|prompt| prompt.text.clone());
         let backend_name = self.transcriber.name().to_owned();
@@ -275,7 +339,7 @@ impl Engine {
                 SpeechGateDecision::InsufficientSpeech => TranscriptionStatus::InsufficientSpeech,
                 SpeechGateDecision::SpeechDetected => unreachable!(),
             };
-            return Ok(TranscriptionResult {
+            let result = TranscriptionResult {
                 status,
                 raw_text: String::new(),
                 text: String::new(),
@@ -295,7 +359,8 @@ impl Engine {
                 },
                 recovery_attempted: false,
                 processing_time_ms: started.elapsed().as_millis(),
-            });
+            };
+            return Ok(result);
         }
 
         if !self.transcriber.is_ready() {
@@ -309,7 +374,12 @@ impl Engine {
             dictionary_prompt: prompt,
             decoder: self.config.decoder.clone().into(),
         };
-        let mut raw = self.transcriber.transcribe(&audio, &options)?;
+        let mut raw = {
+            let timer = metrics.start_stage(Stage::WhisperTranscription);
+            let result = self.transcriber.transcribe(&audio, &options);
+            timer.finish();
+            result?
+        };
         let mut raw_text = normalize_transcript(&raw.text);
         let mut guard = guard_transcript(&raw_text, options.dictionary_prompt.as_ref());
         let mut recovery_attempted = false;
@@ -321,7 +391,13 @@ impl Engine {
             retry_options.dictionary_prompt = None;
             // A recovery failure preserves the original guarded result rather
             // than turning a successful transcription into a transport error.
-            if let Ok(retry_raw) = self.transcriber.transcribe(&audio, &retry_options) {
+            let retry_result = {
+                let timer = metrics.start_stage(Stage::WhisperTranscription);
+                let result = self.transcriber.transcribe(&audio, &retry_options);
+                timer.finish();
+                result
+            };
+            if let Ok(retry_raw) = retry_result {
                 let retry_text = normalize_transcript(&retry_raw.text);
                 let retry_guard = guard_transcript(&retry_text, None);
                 if retry_guard != TranscriptGuardDecision::DictionaryPromptEcho {
@@ -353,7 +429,7 @@ impl Engine {
             ),
         };
 
-        Ok(TranscriptionResult {
+        let result = TranscriptionResult {
             status,
             raw_text,
             text,
@@ -369,7 +445,8 @@ impl Engine {
             cleanup_status,
             recovery_attempted,
             processing_time_ms: started.elapsed().as_millis(),
-        })
+        };
+        Ok(result)
     }
 
     fn clean_text(&mut self, raw_text: &str) -> (String, CleanupStatus) {
@@ -412,6 +489,10 @@ impl TextCleaner for RuleBasedFormatter {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::{Arc, Mutex};
+
+    use metrics::{MetricsConfig, MetricsHub, MetricsSubscriber};
+
     use super::*;
     use crate::audio::AudioBuffer;
     use crate::transcript::RawTranscription;
@@ -538,5 +619,56 @@ mod tests {
         let result = agent.transcribe(audio).unwrap();
         assert_eq!(result.status, TranscriptionStatus::NoSpeech);
         assert!(result.text.is_empty());
+    }
+
+    #[derive(Default)]
+    struct MetricNames {
+        names: Mutex<Vec<String>>,
+    }
+
+    impl MetricsSubscriber for MetricNames {
+        fn on_event(&self, event: &metrics::MetricEvent) {
+            self.names.lock().unwrap().push(event.name.clone());
+        }
+    }
+
+    #[test]
+    fn publishes_application_metrics_for_a_transcription_run() {
+        let hub = Arc::new(MetricsHub::new());
+        let names = Arc::new(MetricNames::default());
+        let _subscription = hub.subscribe(Arc::clone(&names));
+        let metrics = MetricsContext::new(
+            "run-1",
+            Some("exp-1".to_owned()),
+            MetricsConfig {
+                enabled: true,
+                incident_active: false,
+                resource_sampling: false,
+            },
+            hub,
+        );
+        let mut agent = Engine::new(FakeTranscriber {
+            text: "collision at west gate".to_owned(),
+        });
+        let result = agent
+            .transcribe_with_metrics(speech_audio(), metrics)
+            .unwrap();
+        assert_eq!(result.status, TranscriptionStatus::Speech);
+
+        let names = names.names.lock().unwrap();
+        for expected in [
+            "audio_normalization_duration_ms",
+            "speech_gate_duration_ms",
+            "whisper_transcription_duration_ms",
+            "retry_count",
+            "transcript_status",
+            "workflow_outcome",
+            "end_to_end_request_duration_ms",
+        ] {
+            assert!(
+                names.iter().any(|name| name == expected),
+                "missing {expected}"
+            );
+        }
     }
 }

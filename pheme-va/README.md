@@ -19,14 +19,15 @@ native microphone / web upload
      raw + processed transcript
 ```
 
-The repository contains four crates:
+The repository contains five crates:
 
-| Crate    | Purpose                                                  |
-| -------- | -------------------------------------------------------- |
-| `core`   | Platform-independent pipeline and adapter traits         |
-| `cli`    | WAV client and small terminal microphone recorder        |
-| `server` | Development HTTP wrapper around the same core            |
-| `ffi`    | Small C ABI for iOS/Android hosts (`include/pheme_va.h`) |
+| Crate     | Purpose                                                        |
+| --------- | -------------------------------------------------------------- |
+| `core`    | Platform-independent pipeline and adapter traits               |
+| `metrics` | Per-run pub/sub metrics, resource samplers, and batch contract |
+| `cli`     | WAV client and small terminal microphone recorder              |
+| `server`  | Development HTTP wrapper around the same core                  |
+| `ffi`     | Small C ABI for iOS/Android hosts (`include/pheme_va.h`)       |
 
 Model weights are not committed. The local `models/` directory contains the checksum manifest; run `./scripts/download-model.sh` to download and verify the ignored Whisper baseline.
 
@@ -45,7 +46,10 @@ Model weights are not committed. The local `models/` directory contains the chec
 - An ignored real-model transcription test for a supplied speech recording.
 - A native microphone TUI that loads the model before recording, captures from the default input device, and sends the resulting audio through the same engine.
 - A development HTTP wrapper accepting `audio/wav` and returning the serialized transcription result.
-- A C ABI bridge suitable for a thin Swift/Kotlin host.
+- A portable `metrics` crate with synchronous pub/sub, per-run filtering, application timings/status events, resource snapshots, explicit unavailable values, and batched export data.
+- Linux/macOS/Windows process/system CPU and RAM sampling through `sysinfo`, with extension points for native mobile sensors and device power/thermal providers.
+- Core and incident-analysis instrumentation that keeps pure text analysis separate from transcription.
+- A C ABI bridge suitable for a thin Swift/Kotlin host, including JSON metric-batch draining.
 
 The default deterministic tests do not download models or require an inference runtime.
 
@@ -92,7 +96,10 @@ The model loads before recording. Press **Enter** or **Space** to start, press i
 ```bash
 cargo run --release -p server --features whisper -- \
   --model /path/to/ggml-large-v3-turbo.bin \
-  --bind 127.0.0.1:8000
+  --bind 127.0.0.1:8000 \
+  --metrics-enabled \
+  --incident-metrics \
+  --resource-sampling
 ```
 
 Then send a WAV:
@@ -103,7 +110,7 @@ curl -X POST http://127.0.0.1:8000/v1/transcribe \
   --data-binary @recording.wav
 ```
 
-Health endpoints are `GET /health` and `GET /ready`. `POST /v1/analyze` provides the conservative deterministic incident-field extractor for development; model-backed structured extraction remains behind the same replaceable boundary.
+Health endpoints are `GET /health` and `GET /ready`. `POST /v1/analyze` provides the conservative deterministic incident-field extractor for development; model-backed structured extraction remains behind the same replaceable boundary. `GET /v1/metrics/batches` drains locally collected metric batches. Set `PHEME_VA_METRICS_ENABLED=true` and `PHEME_VA_RESOURCE_SAMPLING=true` (or use the flags above) to collect metrics; `X-Run-ID` and `X-Experiment-ID` request headers control correlation.
 
 ## Real audio test
 
@@ -133,7 +140,7 @@ iOS AVAudioEngine / Android AudioRecord
         core + whisper.cpp
 ```
 
-The mobile host owns microphone permission, audio-session lifecycle, and UI. Rust receives interleaved `f32` samples and returns text. The FFI crate can be built as a static or dynamic library:
+The mobile host owns microphone permission, audio-session lifecycle, UI, and HTTP transport. Rust receives interleaved `f32` samples and returns text. When built with Whisper, the FFI also collects per-call metric batches; the host can toggle collection with `pheme_va_metrics_set_enabled` and drain JSON with `pheme_va_metrics_drain`, then forward those batches to the Go metrics endpoint. Native iOS/Android resource providers can implement the `metrics::ResourceSampler` trait in a later host integration. The FFI crate can be built as a static or dynamic library:
 
 ```bash
 cargo build -p ffi --release --features whisper \
@@ -151,3 +158,5 @@ Apple linking, Metal/Core ML configuration, signing, and physical-device validat
 - Cleanup failure falls back to raw text. Incident extraction must not use rewritten text as the only evidence.
 - The current LLM seam is a trait; no cloud provider is enabled by default and no model-specific cleanup prompt is hard-coded into the core.
 - Runtime/model versions, latency, memory, power, and quality must be recorded during later device evaluation.
+- Metrics are published internally through `metrics::MetricsHub`; TUI, tests, and host exporters subscribe without making the core depend on an API or UI.
+- The Go metrics endpoint stores batches separately from benchmark results. Unsupported device values remain null with an explanation; CPU percentage is never treated as a power measurement.

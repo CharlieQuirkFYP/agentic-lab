@@ -1,5 +1,7 @@
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use axum::body::Bytes;
@@ -9,8 +11,12 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use clap::Parser;
+use metrics::{
+    MetricBatch, MetricsBatcher, MetricsConfig, MetricsContext, MetricsHub, MetricsSubscription,
+    Stage, SysinfoResourceSampler,
+};
 use serde::{Deserialize, Serialize};
-use va_core::{Engine, IncidentAnalyzer, RuleBasedIncidentAnalyzer};
+use va_core::{analyze_with_metrics, Engine, RuleBasedIncidentAnalyzer};
 
 #[derive(Debug, Parser)]
 #[command(name = "server", about = "HTTP wrapper around the Pheme VA core")]
@@ -25,11 +31,22 @@ struct Args {
     language: Option<String>,
     #[arg(long, value_delimiter = ',')]
     dictionary: Vec<String>,
+    #[arg(long, env = "PHEME_VA_METRICS_ENABLED", default_value_t = false)]
+    metrics_enabled: bool,
+    #[arg(long, env = "PHEME_VA_INCIDENT_METRICS", default_value_t = false)]
+    incident_metrics: bool,
+    #[arg(long, env = "PHEME_VA_RESOURCE_SAMPLING", default_value_t = false)]
+    resource_sampling: bool,
 }
 
 #[derive(Clone)]
 struct AppState {
     engine: Arc<Mutex<Engine>>,
+    metrics_hub: Arc<MetricsHub>,
+    metrics_batcher: Arc<MetricsBatcher>,
+    _metrics_subscription: Arc<MetricsSubscription>,
+    metrics_config: MetricsConfig,
+    resource_sampler: Arc<Mutex<SysinfoResourceSampler>>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -63,8 +80,20 @@ async fn main() -> Result<()> {
         args.language,
         args.dictionary,
     )?;
+    let metrics_hub = Arc::new(MetricsHub::new());
+    let metrics_batcher = Arc::new(MetricsBatcher::new());
+    let metrics_subscription = Arc::new(metrics_hub.subscribe(Arc::clone(&metrics_batcher)));
     let state = AppState {
         engine: Arc::new(Mutex::new(engine)),
+        metrics_hub,
+        metrics_batcher,
+        _metrics_subscription: metrics_subscription,
+        metrics_config: MetricsConfig {
+            enabled: args.metrics_enabled,
+            incident_active: args.incident_metrics,
+            resource_sampling: args.resource_sampling,
+        },
+        resource_sampler: Arc::new(Mutex::new(SysinfoResourceSampler::new())),
     };
     let address: std::net::SocketAddr = args
         .bind
@@ -75,6 +104,7 @@ async fn main() -> Result<()> {
         .route("/ready", get(ready))
         .route("/v1/transcribe", post(transcribe))
         .route("/v1/analyze", post(analyze))
+        .route("/v1/metrics/batches", get(metrics_batches))
         .with_state(state);
 
     println!("server listening on http://{address}");
@@ -174,14 +204,24 @@ async fn transcribe(State(state): State<AppState>, headers: HeaderMap, body: Byt
         );
     }
 
+    let metrics = request_metrics(&state, &headers, false);
+    let metrics_for_sampling = metrics.clone();
+    let resource_sampler = Arc::clone(&state.resource_sampler);
     let engine = Arc::clone(&state.engine);
     let result = tokio::task::spawn_blocking(move || {
-        let mut engine = engine
-            .lock()
-            .map_err(|_| anyhow!("engine lock was poisoned"))?;
-        engine
-            .transcribe_wav(&body)
-            .map_err(|error| anyhow!(error.to_string()))
+        sample_resources(&resource_sampler, &metrics_for_sampling);
+        let result = (|| {
+            let mut engine = engine
+                .lock()
+                .map_err(|_| anyhow!("engine lock was poisoned"))?;
+            let audio = va_core::AudioBuffer::from_wav(&body)
+                .map_err(|error| anyhow!(error.to_string()))?;
+            engine
+                .transcribe_with_metrics(audio, metrics)
+                .map_err(|error| anyhow!(error.to_string()))
+        })();
+        sample_resources(&resource_sampler, &metrics_for_sampling);
+        result
     })
     .await;
 
@@ -199,7 +239,11 @@ async fn transcribe(State(state): State<AppState>, headers: HeaderMap, body: Byt
     }
 }
 
-async fn analyze(State(_state): State<AppState>, Json(request): Json<AnalyzeRequest>) -> Response {
+async fn analyze(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Json(request): Json<AnalyzeRequest>,
+) -> Response {
     let transcript = request.transcript.trim();
     if transcript.is_empty() || transcript.chars().count() > 16_000 {
         return api_error(
@@ -208,15 +252,83 @@ async fn analyze(State(_state): State<AppState>, Json(request): Json<AnalyzeRequ
             "A non-empty transcript of at most 16000 characters is required.",
         );
     }
+    let metrics = request_metrics(&state, &headers, true);
+    sample_resources(&state.resource_sampler, &metrics);
+    let request_timer = metrics.start_stage(Stage::EndToEndRequest);
     let mut analyzer = RuleBasedIncidentAnalyzer;
-    match analyzer.analyze(transcript) {
-        Ok(report) => Json(report).into_response(),
-        Err(_) => api_error(
-            StatusCode::BAD_GATEWAY,
-            "invalid_model_response",
-            "Analysis runtime returned an invalid response.",
-        ),
+    let result = analyze_with_metrics(&mut analyzer, transcript, &metrics);
+    let response = match result {
+        Ok(report) => {
+            metrics.record_workflow_outcome(true);
+            Json(report).into_response()
+        }
+        Err(_) => {
+            metrics.record_workflow_outcome(false);
+            api_error(
+                StatusCode::BAD_GATEWAY,
+                "invalid_model_response",
+                "Analysis runtime returned an invalid response.",
+            )
+        }
+    };
+    sample_resources(&state.resource_sampler, &metrics);
+    request_timer.finish();
+    response
+}
+
+async fn metrics_batches(State(state): State<AppState>) -> Json<Vec<MetricBatch>> {
+    Json(state.metrics_batcher.drain())
+}
+
+fn sample_resources(sampler: &Arc<Mutex<SysinfoResourceSampler>>, metrics: &MetricsContext) {
+    if let Ok(mut sampler) = sampler.lock() {
+        metrics.sample_resources(&mut *sampler);
     }
+}
+
+fn request_metrics(state: &AppState, headers: &HeaderMap, incident_route: bool) -> MetricsContext {
+    let mut config = state.metrics_config.clone();
+    if let Some(active) = header_bool(headers, "x-incident-active") {
+        config.incident_active = active;
+    } else if incident_route {
+        config.incident_active = true;
+    }
+
+    MetricsContext::new(
+        header_string(headers, "x-run-id").unwrap_or_else(new_run_id),
+        header_string(headers, "x-experiment-id"),
+        config,
+        Arc::clone(&state.metrics_hub),
+    )
+}
+
+fn header_string(headers: &HeaderMap, name: &str) -> Option<String> {
+    headers
+        .get(name)
+        .and_then(|value| value.to_str().ok())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+}
+
+fn header_bool(headers: &HeaderMap, name: &str) -> Option<bool> {
+    header_string(headers, name).and_then(|value| match value.to_ascii_lowercase().as_str() {
+        "true" | "1" | "yes" => Some(true),
+        "false" | "0" | "no" => Some(false),
+        _ => None,
+    })
+}
+
+fn new_run_id() -> String {
+    static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
+    let timestamp_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis())
+        .unwrap_or_default();
+    format!(
+        "run_{timestamp_ms}_{}",
+        NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
+    )
 }
 
 fn map_engine_error(message: &str) -> Response {

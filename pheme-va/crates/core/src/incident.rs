@@ -1,3 +1,4 @@
+use metrics::{MetricsContext, Stage};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -19,6 +20,22 @@ pub enum IncidentError {
 
 pub trait IncidentAnalyzer: Send {
     fn analyze(&mut self, transcript: &str) -> Result<IncidentReport, IncidentError>;
+}
+
+/// Run the pure transcript-to-report analyzer while publishing its optional
+/// incident-specific timing through the supplied per-run metrics context.
+pub fn analyze_with_metrics<A>(
+    analyzer: &mut A,
+    transcript: &str,
+    metrics: &MetricsContext,
+) -> Result<IncidentReport, IncidentError>
+where
+    A: IncidentAnalyzer + ?Sized,
+{
+    let timer = metrics.start_stage(Stage::IncidentAnalysis);
+    let result = analyzer.analyze(transcript);
+    timer.finish();
+    result
 }
 
 /// A conservative, deterministic baseline for development and offline tests.

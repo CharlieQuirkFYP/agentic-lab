@@ -17,6 +17,7 @@ whisper-coreml = ["whisper", "whisper-rs/coreml"]
 
 [dependencies]
 hound = "3.5"
+metrics = { path = "../metrics", default-features = false }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
