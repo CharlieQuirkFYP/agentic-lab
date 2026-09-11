@@ -165,7 +165,16 @@ fn load_zipformer(_entry: ModelEntry, _manifest_path: &Path) -> Result<Box<dyn T
     ))
 }
 
-fn resolve_artifact(manifest_path: &Path, artifact: &Path) -> PathBuf {
+pub(crate) fn family_supported(family: &str) -> bool {
+    matches!(family, "whisper" | "zipformer")
+}
+
+pub(crate) fn family_compiled(family: &str) -> bool {
+    (family == "whisper" && cfg!(feature = "whisper"))
+        || (family == "zipformer" && cfg!(feature = "zipformer"))
+}
+
+pub(crate) fn resolve_artifact(manifest_path: &Path, artifact: &Path) -> PathBuf {
     if artifact.is_absolute() {
         return artifact.to_owned();
     }
