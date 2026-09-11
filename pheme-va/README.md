@@ -47,7 +47,7 @@ Model weights are not committed. The local `models/` directory contains the chec
 - A model-agnostic `Transcriber` trait in `core`, separate `whispercpp` and optional LiteRT `zipformer` model crates, and manifest-based CLI model selection. SeaLLMs-Audio remains download-only and is not part of the active runtime.
 - A WAV fixture test that exercises the complete audio path without model weights.
 - An ignored real-model transcription test for a supplied speech recording.
-- A native microphone TUI that loads the model before recording, captures from the default input device, and sends the resulting audio through the same engine.
+- A ratatui-based local TUI with first-run onboarding, manifest model selection, worker-owned model switching, WAV browsing, live microphone capture, final transcript display, metrics graphs, and structured logs.
 - A development HTTP wrapper accepting `audio/wav` and returning the serialized transcription result.
 - A portable `metrics` crate with synchronous pub/sub, per-run filtering, application timings/status events, resource snapshots, explicit unavailable values, and batched export data.
 - Linux/macOS/Windows process/system CPU and RAM sampling through `sysinfo`, with extension points for native mobile sensors and device power/thermal providers.
@@ -83,16 +83,40 @@ cargo run --release -p cli --features whisper -- \
 
 The WAV may have any supported sample rate/channel count. It is normalized inside the core before the selected speech model receives it.
 
-### Terminal microphone recorder
+### Local TUI test bench
 
-On Linux, install the system audio development package required by `cpal` if it is missing, for example `libasound2-dev` on Debian/Ubuntu. Then run:
+On Linux, install the system audio development package required by `cpal` if it is missing, for example `libasound2-dev` on Debian/Ubuntu. Start the TUI from `pheme-va`:
 
 ```bash
-cargo run --release -p cli --features whisper -- \
-  --stt-model whisper-large-v3-turbo tui
+cargo run --release -p cli -- tui
 ```
 
-The model loads before recording. Press **Enter** or **Space** to start, press it again to stop, and press **q** to quit. This is intentionally a small development TUI, not the product UI or a global desktop hotkey implementation.
+The first launch opens onboarding and lets you choose a manifest model ID. The WAV browser defaults to `local/audio/` when launched from `pheme-va` (`pheme-va/local/audio/` when launched from the repository root). Use `--audio-directory` to override it or `tui --reconfigure` to reopen setup.
+
+Select a model with Enter. If its adapter is not compiled, the TUI builds it in the background, preserving already-enabled adapters, then automatically restarts with that model. Press `t` for compiler logs or Escape on the build screen to cancel; build failure leaves the current model available. Settings are retained, but restart clears in-memory results, metrics, and logs.
+
+Automatic builds require the original source checkout, Cargo/Rust, and the native build dependencies. Cargo may download dependencies or the LiteRT runtime; **model weights are not downloaded automatically**. Builds use `target/tui-adapters/<host-triple>/release/cli` and do not overwrite the original executable. This is a development convenience, not runtime compilation for mobile deployments.
+
+To avoid the initial build/restart, optionally compile both adapters up front:
+
+```bash
+cargo run --release -p cli --features 'whisper,zipformer' -- \
+  --model-manifest models/manifest.toml \
+  --stt-model whisper-large-v3-turbo \
+  tui
+```
+
+If the Zipformer artifacts are not present, download one explicitly before selecting it:
+
+```bash
+./scripts/download-model.sh zipformer-small
+```
+
+The test bench supports `[f]` WAV selection, `[l]` microphone recording, `[n]` next WAV, `[r]` retry, `[m]` manifest model switching, and `[t]` metrics/logs. In telemetry, `[1–4]` changes tabs, `[` / `]` selects a retained run, and arrows or `j/k` select categorized metric series in Metrics/Graphs. Each series shows its latest value and timestamped progression, distinguished by scope, source, and unit. `[f]` or `/` edits one shared filter across Overview, Metrics, Graphs, and Logs; `[x]` clears it. Missing readings are not plotted as zero. On Unix, native stderr (including Whisper/ALSA diagnostics) is captured into bounded logs instead of corrupting the screen; capture is not yet implemented on other platforms.
+
+Resource readings include process/system CPU and RAM, available component temperatures, and Linux DRM GPU utilization and single-battery capacity drain. Process CPU can exceed 100% because it sums core utilization. GPU is the busiest readable card, not per-process use; temperature is the hottest reported component, not ambient temperature. Battery drain is a signed percentage-point decrease since the sampler's first valid reading (negative while charging), with coarse sensor resolution. Whole-device power and energy remain unavailable without a verified provider; component or battery-terminal power is not silently relabeled.
+
+Current manifest models return a final transcript after a complete clip; they do not provide partial live words. This is intentionally a local development and model-evaluation console, not the production UI or a global desktop hotkey implementation.
 
 ### Development HTTP service
 

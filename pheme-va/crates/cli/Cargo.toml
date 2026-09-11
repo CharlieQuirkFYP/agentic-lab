@@ -17,7 +17,9 @@ zipformer = ["dep:zipformer", "zipformer/litert", "dep:litert-sys"]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive", "env"] }
 cpal = "0.15"
-crossterm = "0.29"
+
+metrics = { path = "../metrics", features = ["desktop"] }
+ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
 serde.workspace = true
 toml = "0.8"
 va_core = { package = "core", path = "../core" }

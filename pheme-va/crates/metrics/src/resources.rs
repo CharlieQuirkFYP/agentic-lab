@@ -157,13 +157,17 @@ where
 }
 
 /// Desktop-first provider using `sysinfo` on Linux, macOS, and Windows. The
-/// provider intentionally reports only process/system CPU and RAM today. GPU,
-/// temperature, battery, whole-device power, and energy require host-specific
-/// providers and are returned as unavailable measurements.
+/// temperature is the hottest finite, currently reported component sensor, not
+/// an ambient or whole-device temperature. Linux additionally reports the peak
+/// utilization among readable DRM cards (not process usage) and signed battery
+/// percentage-point decrease since the first valid sample of a single battery.
+/// Whole-device power/energy require a provider with a verified measurement boundary.
 #[cfg(feature = "desktop")]
 pub struct SysinfoResourceSampler {
     system: sysinfo::System,
     pid: sysinfo::Pid,
+    #[cfg(target_os = "linux")]
+    sensors: crate::linux_sensors::LinuxSensors,
 }
 
 #[cfg(feature = "desktop")]
@@ -174,6 +178,8 @@ impl SysinfoResourceSampler {
         Self {
             system,
             pid: sysinfo::Pid::from_u32(process::id()),
+            #[cfg(target_os = "linux")]
+            sensors: crate::linux_sensors::LinuxSensors::new("/sys"),
         }
     }
 
@@ -194,7 +200,14 @@ impl Default for SysinfoResourceSampler {
 #[cfg(feature = "desktop")]
 impl ResourceSampler for SysinfoResourceSampler {
     fn source(&self) -> &str {
-        "sysinfo"
+        #[cfg(target_os = "linux")]
+        {
+            "sysinfo+linux-sysfs"
+        }
+        #[cfg(not(target_os = "linux"))]
+        {
+            "sysinfo"
+        }
     }
 
     fn capabilities(&self) -> ResourceCapabilities {
@@ -203,6 +216,11 @@ impl ResourceSampler for SysinfoResourceSampler {
             system_cpu_percent: true,
             process_ram_bytes: true,
             system_ram_bytes: true,
+            temperature_celsius: desktop_temperature().is_available(),
+            #[cfg(target_os = "linux")]
+            gpu_usage_percent: self.sensors.gpu_usage().is_available(),
+            #[cfg(target_os = "linux")]
+            battery_drain_percent: self.sensors.has_battery_capacity(),
             ..ResourceCapabilities::default()
         }
     }
@@ -210,7 +228,15 @@ impl ResourceSampler for SysinfoResourceSampler {
     fn sample(&mut self) -> ResourceSnapshot {
         self.system.refresh_all();
         let process = self.system.process(self.pid);
-        let unsupported = "not provided by the desktop sampler";
+        let unsupported = "no verified whole-device power meter; CPU/GPU component power and battery-terminal power are not whole-device measurements";
+        #[cfg(target_os = "linux")]
+        let (gpu_usage_percent, battery_drain_percent) =
+            (self.sensors.gpu_usage(), self.sensors.battery_drain());
+        #[cfg(not(target_os = "linux"))]
+        let (gpu_usage_percent, battery_drain_percent) = (
+            Measurement::unavailable("GPU utilization provider not implemented for this platform"),
+            Measurement::unavailable("battery capacity provider not implemented for this platform"),
+        );
         ResourceSnapshot {
             sampled_at_ms: epoch_millis(),
             source: self.source().to_owned(),
@@ -224,14 +250,34 @@ impl ResourceSampler for SysinfoResourceSampler {
                 .map(|process| Measurement::available(process.memory() as f64))
                 .unwrap_or_else(|| Measurement::unavailable("current process was not found")),
             system_ram_bytes: Measurement::available(self.system.used_memory() as f64),
-            gpu_usage_percent: Measurement::unavailable(unsupported),
-            temperature_celsius: Measurement::unavailable(unsupported),
-            battery_drain_percent: Measurement::unavailable(unsupported),
+            gpu_usage_percent,
+            temperature_celsius: desktop_temperature(),
+            battery_drain_percent,
             whole_device_power_watts: Measurement::unavailable(unsupported),
             energy_joules: Measurement::unavailable(unsupported),
             energy_watt_hours: Measurement::unavailable(unsupported),
         }
     }
+}
+
+#[cfg(feature = "desktop")]
+fn desktop_temperature() -> Measurement<f64> {
+    // Rediscover each sample so removed sensors cannot retain stale readings.
+    let components = sysinfo::Components::new_with_refreshed_list();
+    hottest_temperature(
+        components
+            .iter()
+            .map(|component| f64::from(component.temperature())),
+    )
+}
+
+#[cfg(any(feature = "desktop", test))]
+fn hottest_temperature(values: impl Iterator<Item = f64>) -> Measurement<f64> {
+    values
+        .filter(|value| value.is_finite())
+        .reduce(f64::max)
+        .map(Measurement::available)
+        .unwrap_or_else(|| Measurement::unavailable("no finite component temperature reported by sysinfo; sensors may be absent, inaccessible, or unsupported"))
 }
 
 fn epoch_millis() -> u64 {
@@ -266,6 +312,20 @@ mod tests {
         let mut snapshot = ResourceSnapshot::unavailable("fake", "not measured");
         snapshot.whole_device_power_watts = power;
         snapshot
+    }
+
+    #[test]
+    fn temperature_selects_hottest_finite_sensor() {
+        assert_eq!(
+            hottest_temperature([25.0, f64::NAN, 61.0, f64::INFINITY].into_iter()),
+            Measurement::available(61.0)
+        );
+        assert_eq!(
+            hottest_temperature([-5.0, 0.0].into_iter()),
+            Measurement::available(0.0)
+        );
+        assert!(!hottest_temperature(std::iter::empty()).is_available());
+        assert!(!hottest_temperature([f64::NAN].into_iter()).is_available());
     }
 
     #[test]

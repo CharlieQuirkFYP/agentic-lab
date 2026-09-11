@@ -137,11 +137,10 @@ impl Transcriber for WhisperTranscriber {
         params.set_logprob_thold(options.decoder.logprob_threshold);
         params.set_no_speech_thold(options.decoder.no_speech_threshold);
         params.set_split_on_word(true);
-        if let Some(language) = options.language.as_deref() {
-            params.set_language(Some(language));
-        } else {
-            params.set_detect_language(true);
-        }
+        // A missing language enables automatic detection during transcription.
+        // detect_language=true instead returns after detection, without decoding text.
+        params.set_language(options.language.as_deref());
+        params.set_detect_language(false);
         if let Some(prompt) = options.dictionary_prompt.as_ref() {
             params.set_initial_prompt(&prompt.text);
         }
@@ -176,7 +175,7 @@ impl Transcriber for WhisperTranscriber {
 
         Ok(RawTranscription {
             text,
-            language: options.language.clone(),
+            language: whisper_rs::get_lang_str(state.full_lang_id_from_state()).map(str::to_owned),
             segments,
             no_speech_probability,
             timings: ModelTimings {

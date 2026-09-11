@@ -41,11 +41,14 @@ impl EnergyAccumulator {
     }
 
     pub fn observe_at(&mut self, power_watts: &Measurement<f64>, at: Instant) -> Measurement<f64> {
-        let Measurement::Available(watts) = power_watts else {
-            self.previous = None;
-            return Measurement::Unavailable {
-                reason: "whole-device power was unavailable".to_owned(),
-            };
+        let watts = match power_watts {
+            Measurement::Available(watts) => watts,
+            Measurement::Unavailable { reason } => {
+                self.previous = None;
+                return Measurement::unavailable(format!(
+                    "energy integration requires whole-device power: {reason}"
+                ));
+            }
         };
         if !watts.is_finite() || *watts < 0.0 {
             self.previous = None;
@@ -78,6 +81,19 @@ impl EnergyAccumulator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unavailable_power_preserves_measurement_boundary_reason() {
+        let mut accumulator = EnergyAccumulator::new();
+        let result = accumulator.observe(&Measurement::unavailable(
+            "only GPU component power is available, not whole-device power",
+        ));
+        let Measurement::Unavailable { reason } = result else {
+            panic!("component power must not produce device energy");
+        };
+        assert!(reason.contains("only GPU component power"));
+        assert!(reason.contains("requires whole-device power"));
+    }
 
     #[test]
     fn integrates_power_using_trapezoids() {
