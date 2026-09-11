@@ -11,11 +11,12 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 
 [features]
 default = []
-whisper = ["va_core/whisper"]
-whisper-metal = ["va_core/whisper-metal"]
-whisper-coreml = ["va_core/whisper-coreml"]
+whisper = ["dep:whispercpp"]
+whisper-metal = ["whisper", "whispercpp/metal"]
+whisper-coreml = ["whisper", "whispercpp/coreml"]
 
 [dependencies]
 metrics = { path = "../metrics", default-features = false }
 serde_json.workspace = true
 va_core = { package = "core", path = "../core" }
+whispercpp = { path = "../models/whispercpp", optional = true }

@@ -122,9 +122,8 @@ fn create_engine(
     language: Option<String>,
     dictionary: Vec<String>,
 ) -> Result<Engine> {
-    use va_core::{
-        DictionaryHints, EngineConfig, RuleBasedFormatter, WhisperConfig, WhisperTranscriber,
-    };
+    use va_core::{DictionaryHints, EngineConfig, RuleBasedFormatter};
+    use whispercpp::{WhisperConfig, WhisperTranscriber};
 
     let transcriber = WhisperTranscriber::from_file(
         model,

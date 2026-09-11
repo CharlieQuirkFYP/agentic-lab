@@ -1,10 +1,13 @@
 use std::path::Path;
 
+use std::time::Instant;
+
 use whisper_rs::{FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters};
 
-use crate::audio::NormalizedAudio;
-use crate::engine::{EngineError, Transcriber};
-use crate::transcript::{RawTranscription, TranscriptSegment, TranscriptionOptions};
+use va_core::{
+    EngineError, ModelTimings, NormalizedAudio, RawTranscription, Transcriber, TranscriptSegment,
+    TranscriptionOptions,
+};
 
 #[derive(Clone, Debug)]
 pub struct WhisperConfig {
@@ -17,7 +20,7 @@ impl Default for WhisperConfig {
     fn default() -> Self {
         Self {
             threads: 4,
-            use_gpu: cfg!(feature = "whisper-metal"),
+            use_gpu: cfg!(feature = "metal"),
             flash_attention: false,
         }
     }
@@ -29,11 +32,23 @@ impl Default for WhisperConfig {
 pub struct WhisperTranscriber {
     context: WhisperContext,
     model_name: String,
+    model_id: String,
+    model_revision: Option<String>,
     config: WhisperConfig,
 }
 
 impl WhisperTranscriber {
     pub fn from_file(path: impl AsRef<Path>, config: WhisperConfig) -> Result<Self, EngineError> {
+        let path = path.as_ref();
+        Self::from_file_with_metadata(path, config, path.display().to_string(), None)
+    }
+
+    pub fn from_file_with_metadata(
+        path: impl AsRef<Path>,
+        config: WhisperConfig,
+        model_id: impl Into<String>,
+        model_revision: Option<String>,
+    ) -> Result<Self, EngineError> {
         let path = path.as_ref();
         let context = load_context(path, &config).map_err(|error| EngineError::Backend {
             message: format!("could not load Whisper model: {error}"),
@@ -41,6 +56,8 @@ impl WhisperTranscriber {
         Ok(Self {
             context,
             model_name: path.display().to_string(),
+            model_id: model_id.into(),
+            model_revision,
             config,
         })
     }
@@ -72,7 +89,15 @@ fn load_context(path: &Path, config: &WhisperConfig) -> Result<WhisperContext, S
 
 impl Transcriber for WhisperTranscriber {
     fn name(&self) -> &str {
-        &self.model_name
+        &self.model_id
+    }
+
+    fn model_family(&self) -> &str {
+        "whisper"
+    }
+
+    fn model_revision(&self) -> Option<&str> {
+        self.model_revision.as_deref()
     }
 
     fn is_ready(&self) -> bool {
@@ -84,6 +109,7 @@ impl Transcriber for WhisperTranscriber {
         audio: &NormalizedAudio,
         options: &TranscriptionOptions,
     ) -> Result<RawTranscription, EngineError> {
+        let started = Instant::now();
         let mut state = self
             .context
             .create_state()
@@ -153,6 +179,11 @@ impl Transcriber for WhisperTranscriber {
             language: options.language.clone(),
             segments,
             no_speech_probability,
+            timings: ModelTimings {
+                feature_extraction_ms: None,
+                inference_ms: Some(started.elapsed().as_secs_f64() * 1_000.0),
+                decoding_ms: None,
+            },
         })
     }
 }
