@@ -37,11 +37,22 @@ impl Default for DecoderOptions {
 }
 
 #[derive(Clone, Debug, Default, Serialize)]
+pub struct ModelTimings {
+    /// Time spent converting normalized audio into model input features.
+    pub feature_extraction_ms: Option<f64>,
+    /// Time spent executing the model runtime.
+    pub inference_ms: Option<f64>,
+    /// Time spent converting model output into text.
+    pub decoding_ms: Option<f64>,
+}
+
+#[derive(Clone, Debug, Default, Serialize)]
 pub struct RawTranscription {
     pub text: String,
     pub language: Option<String>,
     pub segments: Vec<TranscriptSegment>,
     pub no_speech_probability: Option<f32>,
+    pub timings: ModelTimings,
 }
 
 impl RawTranscription {

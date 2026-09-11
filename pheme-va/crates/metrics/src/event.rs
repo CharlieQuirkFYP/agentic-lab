@@ -180,18 +180,23 @@ pub struct MetricBatch {
 pub enum Stage {
     AudioNormalization,
     SpeechGate,
+    Transcription,
+    /// Legacy Whisper-specific stage retained for callers using the old metric.
+    #[deprecated(note = "use Stage::Transcription for model-agnostic timings")]
     WhisperTranscription,
     IncidentAnalysis,
     EndToEndRequest,
 }
 
 impl Stage {
+    #[allow(deprecated)]
     pub(crate) fn sample_details(self) -> (&'static str, MetricScope, bool) {
         match self {
             Self::AudioNormalization => {
                 ("audio_normalization_duration_ms", MetricScope::Run, false)
             }
             Self::SpeechGate => ("speech_gate_duration_ms", MetricScope::Run, false),
+            Self::Transcription => ("transcription_duration_ms", MetricScope::Run, false),
             Self::WhisperTranscription => {
                 ("whisper_transcription_duration_ms", MetricScope::Run, false)
             }

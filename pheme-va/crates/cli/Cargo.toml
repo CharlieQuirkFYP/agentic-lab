@@ -8,14 +8,21 @@ description = "Terminal recorder and WAV transcription client for the Pheme VA"
 
 [features]
 default = []
-whisper = ["va_core/whisper"]
-whisper-metal = ["va_core/whisper-metal"]
-whisper-coreml = ["va_core/whisper-coreml"]
+whisper = ["dep:whispercpp"]
+whisper-metal = ["whisper", "whispercpp/metal"]
+whisper-coreml = ["whisper", "whispercpp/coreml"]
+zipformer = ["dep:zipformer", "zipformer/litert", "dep:litert-sys"]
 
 [dependencies]
 anyhow = "1.0"
 clap = { version = "4.6", features = ["derive", "env"] }
 cpal = "0.15"
 crossterm = "0.29"
-
+serde.workspace = true
+toml = "0.8"
 va_core = { package = "core", path = "../core" }
+whispercpp = { path = "../models/whispercpp", optional = true }
+zipformer = { path = "../models/zipformer", optional = true }
+# Directly depend on the sys crate so its verified runtime cache directory is
+# exposed to this host's build script for an executable rpath.
+litert-sys = { version = "0.2.1", optional = true }

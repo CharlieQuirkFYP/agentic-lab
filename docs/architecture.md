@@ -4,12 +4,11 @@ This is the planned architecture for the [revised requirements](requirements.md)
 
 ## Current Foundation
 
-* `api/`: Gin handlers, services, models, and the `IncidentAnalyzer` boundary. The transcript endpoint delegates to `MockIncidentAnalyzer`.
 * `api/`: Gin handlers, services, models, the `IncidentAnalyzer` boundary, and the separate metrics ingestion repository. The transcript endpoint delegates to `MockIncidentAnalyzer`.
 * `api/internal/benchmark/`: replaceable repository/runner boundaries, an in-memory queue/repository, a background worker, and a mock runner returning hardcoded values.
 * `web/`: React/TypeScript/Vite, routing and reusable UI tooling, with a placeholder home page.
 * Current endpoints: `GET /health`, `POST /api/v1/incidents/analyze`, `POST /api/v1/experiments`, `GET /api/v1/experiments/:id`, and the experiment metrics append/read routes.
-* Existing benchmark storage holds experiments, not incident reports. The `pheme-va/` workspace implements the portable audio/STT core, separate pure incident analyzer, `metrics` pub/sub and batch contract, optional in-process `whisper-rs` backend, development HTTP host, microphone TUI, and mobile-oriented C ABI. Conversation state and persistent reports remain unimplemented.
+* `pheme-va/`: canonical portable audio/STT core, separate pure incident analyzer, `metrics` pub/sub and batch contract, model-agnostic `Transcriber` boundary, separate `whispercpp` and optional LiteRT `zipformer` model crates, development HTTP host, microphone TUI, and mobile-oriented C ABI. Conversation state and persistent reports remain unimplemented.
 
 ## Development Architecture
 
@@ -24,14 +23,14 @@ flowchart TD
     Go <--> AgentAPI[Voice Agent HTTP host]
     subgraph RustAgent[pheme-va — portable Rust core]
         AgentAPI --> Core[Audio normalization and STT pipeline]
-        Core --> WhisperAdapter[Replaceable STT adapter]
+        Core --> STTAdapter[Replaceable STT adapter]
         Core --> LLMAdapter[Optional cleanup/LLM adapter]
         Core --> Draft[Transcript and future incident workflow]
         Core --> Metrics[Metrics pub/sub and resource sampling]
         Metrics --> Batch[Versioned metric batches]
     end
     Batch --> GoMetrics[Go metrics API]
-    WhisperAdapter <--> Whisper[Whisper runtime]
+    STTAdapter <--> STTRuntimes[Whisper now; LiteRT and other native adapters planned]
     LLMAdapter <--> LLM[llama.cpp or another model provider]
     Mobile[iOS/Android native host] --> FFI[Rust C ABI]
     FFI --> Core
@@ -39,7 +38,7 @@ flowchart TD
     Runner --> Results
 ```
 
-The dedicated Voice Agent replaces the previously proposed generic AI service. `voice-agent/` remains the current Python contract scaffold; `pheme-va/` is the portable backend implementation path for audio-to-text and optional text processing. Its core has no UI or microphone ownership: desktop/web hosts may use the HTTP wrapper, while iOS/Android hosts embed the Rust library through the C ABI. Adapter code stays behind traits so Whisper, Parakeet, cloud STT, and cleanup LLMs can be evaluated independently.
+The dedicated Voice Agent replaces the previously proposed generic AI service. `pheme-va/` is the canonical Rust implementation path for audio-to-text and optional text processing; historical Python contract material is reference-only and is not a runtime. Its core has no UI or microphone ownership: desktop/web hosts may use the HTTP wrapper, while iOS/Android hosts embed the Rust library through the C ABI. Adapter code stays behind traits so Whisper, LiteRT Zipformer, and other validated local STT runtimes can be evaluated independently.
 
 The benchmark runner invokes the same Voice Agent API through the shared Go client as interactive requests. Public endpoint/audio/client playback behaviour is also exercised in end-to-end scenarios. Keep benchmark sessions/reports isolated from interactive data.
 
@@ -51,7 +50,7 @@ The benchmark runner invokes the same Voice Agent API through the shared Go clie
 | Go benchmark components      | Experiment configuration, queue/worker, scenario execution, scoring and result storage                                                              |
 | Go metrics repository        | Versioned metric-batch ingestion and separate metric storage                                                                                        |
 | Voice Agent workflow         | Authoritative sessions/drafts, intent, clarification, corrections, validated actions, confirmation, finalization, retrieval and response generation |
-| Voice Agent runtime adapters | Whisper and llama.cpp configuration/calls, cancellation/timeouts, validated inference output                                                        |
+| Voice Agent runtime adapters | Replaceable STT/LLM configuration and calls, cancellation/timeouts, validated inference output                                                      |
 | Voice Agent repositories     | Incident/session persistence and atomic finalization                                                                                                |
 | Rust metrics crate           | Typed events, internal subscriptions, resource-provider boundary, and batch formation                                                               |
 | Web voice client             | Audio capture/playback, speech output, interaction status, development inspection                                                                   |
@@ -63,26 +62,27 @@ Keep the existing `IncidentAnalyzer` interface and public text endpoint. Add `Vo
 
 ## Planned Directory Layout
 
-Create these files only during the corresponding implementation ticket:
+Create files only during the corresponding implementation ticket:
 
 ```text
 api/                            Public API, Voice Agent client, benchmarks
 web/                            Voice console and benchmark dashboard
-voice-agent/                    Dedicated Python service
-  app/
-    main.py                     HTTP service entry point
-    incident_reporting/
-      workflow.py               State transitions and validated actions
-      models.py                 Analysis/session/domain contracts
-      repository.py             Incident/session storage boundary
-      prompts/                  Versioned extraction and response prompts
-    adapters/
-      whisper.py                Transcription runtime adapter
-      llama_cpp.py              Language-model runtime adapter
-  tests/                        Python contract/workflow/adapter tests
+pheme-va/                       Canonical Rust voice-agent implementation
+  crates/core/                  Portable audio, workflow, and adapter traits
+  crates/metrics/               Typed timing/resource metric contract
+  crates/cli/                   Development microphone/WAV host
+  crates/server/                Development HTTP host
+  crates/ffi/                   Native mobile embedding boundary
+  crates/models/whispercpp/     whisper.cpp model adapter
+  crates/models/zipformer/      LiteRT Zipformer CTC adapter
+  scripts/                      Pinned model artifact downloaders
+  models/manifest.toml          Model IDs, paths, revisions, and capabilities
 ```
 
-The Python import package is `app`; `voice-agent/` is a repository directory name, not a Python module identifier. Speech synthesis remains at the client/platform initially. `voice-agent/` now contains the application factory, configuration, stateless schemas/analysis service, a versioned prompt, llama.cpp adapter, and tests. Workflow and repositories in this planned layout remain unimplemented.
+Speech synthesis remains at the client/platform initially. Session workflow,
+repositories, prompts, runtime adapters, and the LiteRT Zipformer adapter are
+implemented incrementally inside the Rust architecture rather than by
+reintroducing a Python runtime.
 
 ## Incident Workflow
 
@@ -122,14 +122,16 @@ For report queries, the Voice Agent validates model-proposed parameters, execute
 
 ## Runtime and Device Strategy
 
-- Whisper is the speech-recognition baseline; whisper.cpp is the provisional implementation. Pin the evaluated model/runtime build.
+- Whisper is the speech-recognition baseline; whisper.cpp is the supported implementation today. Pin the evaluated model/runtime build.
+- LiteRT Zipformer small/medium/large artifacts are pinned with a shared CTC contract and an optional native Rust adapter; target-device performance and quality still require validation.
+- SeaLLMs-Audio is a multimodal audio-language model, not a Whisper-compatible checkpoint. It remains an explicit download-only experiment until a supported native runtime and prompt contract are validated.
 - llama.cpp runs the selected local language model through a persistent local server during development. Keep model selection and quantization configurable.
 - Speech synthesis is replaceable, initially at the client. Verify actual execution location/offline behaviour before including it in local-inference or energy claims.
 - MERaLiON and fine-tuning are evaluation options if baseline local-speech errors justify them.
 
 Jetson can start from the service-based prototype, subject to board/software validation. The Rust workspace now provides the portable core, development HTTP wrapper, microphone TUI, and C ABI for eventual native hosts. Fully local iOS deployment still requires native audio integration, Apple linking/Metal validation, signing, and a physical-device test; do not present the Linux build or a remote HTTP call as on-device inference. Preserve schemas, prompts, state-transition specifications, and shared conformance scenarios for the mobile port. Device selection remains pending.
 
-Upstream implementation references: [llama.cpp](https://github.com/ggml-org/llama.cpp), [local server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), and [Apple speech synthesis](https://developer.apple.com/documentation/avfaudio/avspeechsynthesizer). Validate compatibility against pinned versions during implementation.
+Upstream implementation references: [llama.cpp](https://github.com/ggml-org/llama.cpp), [local server](https://github.com/ggml-org/llama.cpp/tree/master/tools/server), [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [LiteRT](https://ai.google.dev/edge/litert), and [Apple speech synthesis](https://developer.apple.com/documentation/avfaudio/avspeechsynthesizer). Validate compatibility against pinned versions during implementation.
 
 ## Benchmark Dashboard and Storage
 
@@ -137,4 +139,4 @@ Retain the existing asynchronous experiment lifecycle and in-memory queue. Add a
 
 The dashboard will create experiments, poll progress, display quality/performance/device metrics, compare configurations, and export results with metadata. Display unavailable measurements explicitly and highlight differing datasets or methods when comparing runs. The operational focus on speech does not remove this visual research interface.
 
-Add directories only when used: `voice-agent/` for the transitional Python contract scaffold, `pheme-va/` for the portable Rust core and host adapters, Go experiment persistence beside the existing benchmark repository boundary, `tests/` for cross-service scenarios, and `scripts/` for setup. Keep Go unit tests beside source. No distributed queue, additional database service, or top-level benchmark service is required by this plan.
+Add directories only when used: `pheme-va/` for the portable Rust core and host adapters, Go experiment persistence beside the existing benchmark repository boundary, `tests/` for cross-service scenarios, and `scripts/` for setup. Keep Go unit tests beside source. No distributed queue, additional database service, or top-level benchmark service is required by this plan.

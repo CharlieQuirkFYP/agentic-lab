@@ -9,12 +9,30 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use crossterm::event::{self, Event, KeyCode};
 use va_core::{AudioBuffer, Engine, TranscriptionStatus};
 
+mod model;
+
 #[derive(Debug, Parser)]
 #[command(
     name = "pheme-va",
     about = "Record and transcribe speech with the Pheme VA"
 )]
 struct Cli {
+    /// Model ID from the model manifest.
+    #[arg(
+        long,
+        global = true,
+        env = "PHEME_VA_STT_MODEL",
+        default_value = "whisper-large-v3-turbo"
+    )]
+    stt_model: String,
+    /// Model manifest describing paths and runtime requirements.
+    #[arg(
+        long,
+        global = true,
+        env = "PHEME_VA_MODEL_MANIFEST",
+        default_value = "models/manifest.toml"
+    )]
+    model_manifest: PathBuf,
     #[command(subcommand)]
     command: Command,
 }
@@ -23,9 +41,6 @@ struct Cli {
 enum Command {
     /// Record from the default microphone, then transcribe the recording.
     Tui {
-        /// Path to a Whisper GGML/GGUF model supported by whisper.cpp.
-        #[arg(long, env = "PHEME_VA_WHISPER_MODEL")]
-        model: PathBuf,
         /// Maximum duration for one recording.
         #[arg(long, default_value_t = 120)]
         max_seconds: u32,
@@ -40,8 +55,6 @@ enum Command {
     Transcribe {
         /// Path to a WAV file. Any channel count/sample rate is normalized.
         input: PathBuf,
-        #[arg(long, env = "PHEME_VA_WHISPER_MODEL")]
-        model: PathBuf,
         #[arg(long)]
         language: Option<String>,
         #[arg(long, value_delimiter = ',')]
@@ -53,84 +66,54 @@ enum Command {
 
 fn main() -> Result<()> {
     let cli = Cli::parse();
+    let model_id = cli.stt_model;
+    let model_manifest = cli.model_manifest;
     match cli.command {
         Command::Tui {
-            model,
             max_seconds,
             language,
             dictionary,
-        } => run_tui(&model, max_seconds, language, dictionary),
+        } => run_tui(
+            &model_id,
+            &model_manifest,
+            max_seconds,
+            language,
+            dictionary,
+        ),
         Command::Transcribe {
             input,
-            model,
             language,
             dictionary,
             max_seconds,
-        } => run_transcribe(&input, &model, max_seconds, language, dictionary),
+        } => run_transcribe(
+            &input,
+            &model_id,
+            &model_manifest,
+            max_seconds,
+            language,
+            dictionary,
+        ),
     }
-}
-
-#[cfg(feature = "whisper")]
-fn create_agent(
-    model: &Path,
-    max_seconds: u32,
-    language: Option<String>,
-    dictionary: Vec<String>,
-) -> Result<Engine> {
-    use va_core::{
-        DictionaryHints, EngineConfig, RuleBasedFormatter, WhisperConfig, WhisperTranscriber,
-    };
-
-    let transcriber = WhisperTranscriber::from_file(
-        model,
-        WhisperConfig {
-            threads: std::thread::available_parallelism()
-                .map(|threads| threads.get().min(8) as i32)
-                .unwrap_or(4),
-            // GPU backends are opt-in at compile time. CPU is a portable and
-            // predictable default for the first device check.
-            use_gpu: cfg!(feature = "whisper-metal"),
-            flash_attention: false,
-        },
-    )
-    .with_context(|| format!("failed to load Whisper model {}", model.display()))?;
-
-    let config = EngineConfig {
-        max_audio_seconds: Some(max_seconds),
-        language,
-        dictionary: DictionaryHints::with_terms(dictionary),
-        ..EngineConfig::default()
-    };
-    Ok(Engine::with_config(transcriber, config).with_cleaner(RuleBasedFormatter))
-}
-
-#[cfg(not(feature = "whisper"))]
-fn create_agent(
-    _model: &Path,
-    _max_seconds: u32,
-    _language: Option<String>,
-    _dictionary: Vec<String>,
-) -> Result<Engine> {
-    Err(anyhow!(
-        "this binary was built without Whisper support; run with `cargo run --release -p cli --features whisper -- tui --model <path>`"
-    ))
 }
 
 fn run_transcribe(
     input: &Path,
-    model: &Path,
+    model_id: &str,
+    model_manifest: &Path,
     max_seconds: u32,
     language: Option<String>,
     dictionary: Vec<String>,
 ) -> Result<()> {
     let wav =
         std::fs::read(input).with_context(|| format!("could not read {}", input.display()))?;
-    let mut agent = create_agent(model, max_seconds, language, dictionary)?;
+    let mut agent =
+        model::create_engine(model_id, model_manifest, max_seconds, language, dictionary)?;
     let result = agent
         .transcribe_wav(&wav)
         .with_context(|| format!("could not transcribe {}", input.display()))?;
 
     println!("status: {:?}", result.status);
+    println!("model: {} ({})", result.model_id, result.model_family);
     println!("backend: {}", result.stt_backend);
     println!("processing: {} ms", result.processing_time_ms);
     println!("raw: {}", result.raw_text);
@@ -142,13 +125,15 @@ fn run_transcribe(
 }
 
 fn run_tui(
-    model: &Path,
+    model_id: &str,
+    model_manifest: &Path,
     max_seconds: u32,
     language: Option<String>,
     dictionary: Vec<String>,
 ) -> Result<()> {
-    let mut agent = create_agent(model, max_seconds, language, dictionary)?;
-    println!("Whisper model loaded: {}", agent.backend_name());
+    let mut agent =
+        model::create_engine(model_id, model_manifest, max_seconds, language, dictionary)?;
+    println!("Speech model loaded: {}", agent.model_id());
     println!("The model is prewarmed. No audio is sent anywhere by this CLI.");
     println!();
     println!("Press Enter or Space to start recording; press it again to stop.");
@@ -221,8 +206,8 @@ fn print_result(result: va_core::TranscriptionResult) {
     println!("raw transcript: {}", result.raw_text);
     println!("text: {}", result.text);
     println!(
-        "STT: {} | cleanup: {:?}",
-        result.stt_backend, result.cleanup_status
+        "STT: {} ({}) | cleanup: {:?}",
+        result.model_id, result.model_family, result.cleanup_status
     );
     println!("processing: {} ms", result.processing_time_ms);
 }

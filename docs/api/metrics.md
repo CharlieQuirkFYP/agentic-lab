@@ -28,17 +28,23 @@ metrics::MetricsHub
 
 The instrumented `Engine` publishes these events when the run configuration has `enabled: true`:
 
-| Event name                          | Unit                           | Scope | Source               |
-| ----------------------------------- | ------------------------------ | ----- | -------------------- |
-| `audio_normalization_duration_ms`   | `milliseconds`                 | `run` | `core.audio`         |
-| `speech_gate_duration_ms`           | `milliseconds`                 | `run` | `core.audio`         |
-| `whisper_transcription_duration_ms` | `milliseconds`                 | `run` | `core.transcription` |
-| `end_to_end_request_duration_ms`    | `milliseconds`                 | `run` | `core.workflow`      |
-| `retry_count`                       | `count`                        | `run` | `core.engine`        |
-| `transcript_status`                 | `status`                       | `run` | `core.engine`        |
-| `workflow_outcome`                  | `status` (`success`/`failure`) | `run` | `core.workflow`      |
+| Event name                             | Unit                           | Scope | Source               |
+| -------------------------------------- | ------------------------------ | ----- | -------------------- |
+| `audio_normalization_duration_ms`      | `milliseconds`                 | `run` | `core.audio`         |
+| `speech_gate_duration_ms`              | `milliseconds`                 | `run` | `core.audio`         |
+| `transcription_duration_ms`            | `milliseconds`                 | `run` | `core.transcription` |
+| `model_feature_extraction_duration_ms` | `milliseconds`                 | `run` | `core.transcription` |
+| `model_inference_duration_ms`          | `milliseconds`                 | `run` | `core.transcription` |
+| `model_decoding_duration_ms`           | `milliseconds`                 | `run` | `core.transcription` |
+| `model_id`                             | `status`                       | `run` | `core.transcription` |
+| `model_family`                         | `status`                       | `run` | `core.transcription` |
+| `model_revision`                       | `status`                       | `run` | `core.transcription` |
+| `end_to_end_request_duration_ms`       | `milliseconds`                 | `run` | `core.workflow`      |
+| `retry_count`                          | `count`                        | `run` | `core.engine`        |
+| `transcript_status`                    | `status`                       | `run` | `core.engine`        |
+| `workflow_outcome`                     | `status` (`success`/`failure`) | `run` | `core.workflow`      |
 
-`whisper_transcription_duration_ms` is emitted once per recognizer attempt, so a retry produces two attempt timings and one `retry_count` event. The end-to-end timer is the primary latency measure; stage timings are diagnostic.
+`transcription_duration_ms` is emitted once per recognizer attempt, regardless of whether the selected model is Whisper, Zipformer, or another adapter. The model metadata identifies the selected model for the run. Model-specific stage timings are emitted when an adapter supplies them; otherwise the event has `value: null` and an explanation. A retry produces two attempt timings and one `retry_count` event. The end-to-end timer is the primary latency measure; stage timings are diagnostic. The legacy `whisper_transcription_duration_ms` name remains available only when a caller explicitly starts the deprecated `Stage::WhisperTranscription`.
 
 Incident analysis remains separate from transcription. `core::analyze_with_metrics` wraps the existing pure transcript-to-report `IncidentAnalyzer` and publishes `incident_analysis_duration_ms`. That event is marked incident-specific and is filtered unless `MetricsConfig.incident_active` is true. The analyzer still accepts text and returns an `IncidentReport`; no combined workflow endpoint was introduced.
 
