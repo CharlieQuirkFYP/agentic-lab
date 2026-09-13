@@ -2,7 +2,7 @@
 set -euo pipefail
 
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-MODEL_DIR="$SCRIPT_DIR/../models"
+MODEL_DIR="${PHEME_VA_MODEL_DIR:-$SCRIPT_DIR/../models}"
 
 WHISPER_REPO="ggerganov/whisper.cpp"
 WHISPER_REVISION="5359861c739e955e79d9a303bcbc70fb988958b1"

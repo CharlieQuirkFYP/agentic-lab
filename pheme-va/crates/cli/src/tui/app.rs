@@ -11,6 +11,7 @@ use va_core::{AudioBuffer, TranscriptionResult};
 use crate::recorder::Recording;
 
 use super::config::{self, TuiConfig};
+use super::download::{DownloadOutcome, DownloadTask};
 use super::events::{ModelLoadRequest, RequestId, WorkerCommand, WorkerEvent};
 use super::folder::FolderState;
 use super::logs::LogStore;
@@ -38,7 +39,7 @@ pub enum Screen {
 pub enum TelemetryTab {
     Overview,
     Metrics,
-    Graphs,
+    Runs,
     Logs,
 }
 
@@ -47,7 +48,7 @@ impl TelemetryTab {
         match self {
             Self::Overview => 0,
             Self::Metrics => 1,
-            Self::Graphs => 2,
+            Self::Runs => 2,
             Self::Logs => 3,
         }
     }
@@ -93,6 +94,8 @@ pub struct App {
     pub error_message: Option<String>,
     pub telemetry: TelemetryStore,
     pub logs: LogStore,
+    pub metric_detail: bool,
+    pub run_detail: bool,
     pub filter_query: String,
     pub filter_editing: bool,
     pub directory_input: String,
@@ -100,6 +103,7 @@ pub struct App {
     pub scroll: u16,
     pub should_quit: bool,
     pub build: Option<BuildTask>,
+    pub download: Option<DownloadTask>,
     pub restart: Option<(PathBuf, String)>,
     worker_sender: Sender<WorkerCommand>,
     worker_receiver: Receiver<WorkerEvent>,
@@ -185,6 +189,8 @@ impl App {
             error_message: None,
             telemetry: TelemetryStore::default(),
             logs,
+            metric_detail: false,
+            run_detail: false,
             filter_query: String::new(),
             filter_editing: false,
             directory_input,
@@ -192,6 +198,7 @@ impl App {
             scroll: 0,
             should_quit: false,
             build: None,
+            download: None,
             restart: None,
             worker_sender,
             worker_receiver,
@@ -212,12 +219,49 @@ impl App {
     pub fn tick(&mut self) {
         self.drain_metrics();
         self.drain_worker_events();
+        self.poll_download();
         self.poll_build();
         if self.recording.as_ref().is_some_and(|recording| {
             recording.elapsed().as_secs() >= self.config.max_seconds as u64
         }) {
             self.stop_recording();
             self.status_message = "maximum recording duration reached".to_owned();
+        }
+    }
+
+    fn poll_download(&mut self) {
+        let Some(download) = self.download.as_mut() else {
+            return;
+        };
+        match download.poll() {
+            Ok(Some(DownloadOutcome::Completed)) => {
+                let model_id = download.model_id.clone();
+                self.download.take();
+                self.catalog.refresh();
+                if let Some(entry) = self.catalog.entry_by_id(&model_id) {
+                    if !entry.artifacts_available() {
+                        self.error_message = Some(format!(
+                            "download completed but artifacts are still missing: {}",
+                            ModelCatalog::missing_summary(entry)
+                        ));
+                        self.screen = Screen::Picker;
+                    } else if !entry.adapter_compiled {
+                        self.start_adapter_build(&model_id);
+                    } else {
+                        self.send_load_model(
+                            model_id,
+                            self.active_model.as_ref().map(|model| model.id.clone()),
+                        );
+                    }
+                }
+            }
+            Ok(None) => {}
+            Err(error) => {
+                self.error_message = Some(format!("{error:#}"));
+                self.logs.error("model-download", format!("{error:#}"));
+                self.download.take();
+                self.screen = Screen::Picker;
+            }
         }
     }
 
@@ -244,14 +288,24 @@ impl App {
     pub fn handle_terminal_event(&mut self, event: Event) -> Result<()> {
         if let Event::Key(key) = event {
             if key.kind != ratatui::crossterm::event::KeyEventKind::Release {
-                self.handle_key(key.code)?;
+                if key
+                    .modifiers
+                    .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
+                    && key.code == KeyCode::Char('f')
+                    && self.screen == Screen::Telemetry
+                {
+                    self.filter_editing = true;
+                    self.scroll = 0;
+                } else {
+                    self.handle_key(key.code)?;
+                }
             }
         }
         Ok(())
     }
 
     fn handle_key(&mut self, code: KeyCode) -> Result<()> {
-        if self.build.is_some()
+        if (self.build.is_some() || self.download.is_some())
             && !matches!(
                 self.screen,
                 Screen::Loading | Screen::Telemetry | Screen::Help
@@ -337,6 +391,19 @@ impl App {
     }
 
     fn handle_loading_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.download.is_some() {
+            if code == KeyCode::Esc {
+                if let Some(mut download) = self.download.take() {
+                    download.cancel();
+                }
+                self.logs.info(
+                    "model-download",
+                    "download cancelled; partial files were retained",
+                );
+                self.screen = Screen::Picker;
+            }
+            return Ok(());
+        }
         if self.build.is_some() {
             if code == KeyCode::Esc {
                 self.build.take();
@@ -435,6 +502,14 @@ impl App {
                 if let Some(recording) = self.recording.take() {
                     recording.discard();
                 }
+                if let Some(run_id) = self.current_run.clone() {
+                    self.end_run_context(&run_id);
+                    self.telemetry.upsert_report(self.failed_report(
+                        &run_id,
+                        "live microphone",
+                        "recording discarded".to_owned(),
+                    ));
+                }
                 self.status_message = "recording discarded".to_owned();
                 self.screen = Screen::Bench;
             }
@@ -453,14 +528,57 @@ impl App {
     }
 
     fn handle_telemetry_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.filter_editing {
+            return self.handle_filter_key(code);
+        }
+        if self.metric_detail {
+            match code {
+                KeyCode::Esc => self.metric_detail = false,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    self.telemetry.move_metric(&self.filter_query, 1)
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.telemetry.move_metric(&self.filter_query, -1)
+                }
+                KeyCode::Char('f') | KeyCode::Char('/') => self.filter_editing = true,
+                KeyCode::Char('x') => self.filter_query.clear(),
+                KeyCode::Char('n') => self.telemetry.move_metric(&self.filter_query, 1),
+                KeyCode::Char('N') => self.telemetry.move_metric(&self.filter_query, -1),
+                _ => {}
+            }
+            return Ok(());
+        }
+        if self.run_detail {
+            match code {
+                KeyCode::Esc => self.run_detail = false,
+                KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
+                KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
+                KeyCode::Char('[') => self.cycle_run(-1),
+                KeyCode::Char(']') => self.cycle_run(1),
+                KeyCode::Char('f') | KeyCode::Char('/') => self.filter_editing = true,
+                KeyCode::Char('x') => self.filter_query.clear(),
+                KeyCode::Char('n') => self.cycle_run(1),
+                KeyCode::Char('N') => self.cycle_run(-1),
+                _ => {}
+            }
+            return Ok(());
+        }
         let previous_tab = self.telemetry_tab;
         match code {
             KeyCode::Char('1') => self.telemetry_tab = TelemetryTab::Overview,
             KeyCode::Char('2') => self.telemetry_tab = TelemetryTab::Metrics,
-            KeyCode::Char('3') => self.telemetry_tab = TelemetryTab::Graphs,
+            KeyCode::Char('3') => self.telemetry_tab = TelemetryTab::Runs,
             KeyCode::Char('4') => self.telemetry_tab = TelemetryTab::Logs,
             KeyCode::Char('j') | KeyCode::Down => self.move_telemetry(1),
             KeyCode::Char('k') | KeyCode::Up => self.move_telemetry(-1),
+            KeyCode::Enter if self.telemetry_tab == TelemetryTab::Metrics => {
+                self.metric_detail = self.telemetry.selected_metric(&self.filter_query).is_some();
+                self.scroll = 0;
+            }
+            KeyCode::Enter if self.telemetry_tab == TelemetryTab::Runs => {
+                self.run_detail = self.telemetry.selected_run().is_some();
+                self.scroll = 0;
+            }
             KeyCode::Char('[') => self.cycle_run(-1),
             KeyCode::Char(']') => self.cycle_run(1),
             KeyCode::Char('f') | KeyCode::Char('/') => {
@@ -471,9 +589,9 @@ impl App {
                 self.filter_query.clear();
                 self.scroll = 0;
             }
-            KeyCode::Char('c') if self.telemetry_tab == TelemetryTab::Logs => {
-                self.logs.clear();
-            }
+            KeyCode::Char('n') => self.move_telemetry(1),
+            KeyCode::Char('N') => self.move_telemetry(-1),
+            KeyCode::Char('c') if self.telemetry_tab == TelemetryTab::Logs => self.logs.clear(),
             KeyCode::Esc => {
                 self.filter_editing = false;
                 self.return_to_previous_or_bench();
@@ -487,15 +605,11 @@ impl App {
     }
 
     fn move_telemetry(&mut self, delta: isize) {
-        if matches!(
-            self.telemetry_tab,
-            TelemetryTab::Metrics | TelemetryTab::Graphs
-        ) {
-            self.telemetry.move_series(&self.filter_query, delta);
-        } else if delta > 0 {
-            self.scroll_down();
-        } else {
-            self.scroll_up();
+        match self.telemetry_tab {
+            TelemetryTab::Metrics => self.telemetry.move_metric(&self.filter_query, delta),
+            TelemetryTab::Runs => self.cycle_run(delta),
+            _ if delta > 0 => self.scroll_down(),
+            _ => self.scroll_up(),
         }
     }
 
@@ -580,6 +694,53 @@ impl App {
         self.error_message = None;
     }
 
+    fn start_adapter_build(&mut self, model_id: &str) {
+        let Some(entry) = self.catalog.entry_by_id(model_id) else {
+            self.error_message = Some(format!("model `{model_id}` is not in the catalog"));
+            return;
+        };
+        match BuildTask::start(&entry.manifest.family, model_id.to_owned()) {
+            Ok(build) => {
+                self.build = Some(build);
+                self.pending_model_id = Some(model_id.to_owned());
+                self.error_message = None;
+                self.status_message = format!("compiling backend for {model_id}");
+                self.logs
+                    .info("adapter-build", format!("compiling backend for {model_id}"));
+                self.screen = Screen::Loading;
+            }
+            Err(error) => {
+                self.error_message = Some(format!("{error:#}"));
+                self.logs.error("adapter-build", format!("{error:#}"));
+                self.screen = Screen::Picker;
+            }
+        }
+    }
+
+    fn start_model_download(&mut self, model_id: String) {
+        let model_dir = self
+            .config
+            .model_manifest
+            .parent()
+            .unwrap_or_else(|| std::path::Path::new("."));
+        match DownloadTask::start(model_id.clone(), model_dir) {
+            Ok(download) => {
+                self.download = Some(download);
+                self.pending_model_id = Some(model_id.clone());
+                self.error_message = None;
+                self.status_message = format!("downloading model {model_id}");
+                self.logs
+                    .info("model-download", format!("downloading model {model_id}"));
+                self.screen = Screen::Loading;
+            }
+            Err(error) => {
+                self.error_message = Some(format!("{error:#}"));
+                self.logs.error("model-download", format!("{error:#}"));
+                self.screen = Screen::Picker;
+            }
+        }
+    }
+
     fn choose_catalog_model(&mut self) {
         let Some(entry) = self.catalog.entry(self.catalog_index) else {
             self.error_message =
@@ -587,24 +748,19 @@ impl App {
             return;
         };
         let model_id = entry.manifest.id.clone();
-        if !entry.adapter_compiled
-            && entry.artifacts_available()
-            && matches!(entry.manifest.family.as_str(), "whisper" | "zipformer")
-        {
-            match BuildTask::start(&entry.manifest.family, model_id.clone()) {
-                Ok(build) => {
-                    self.build = Some(build);
-                    self.pending_model_id = Some(model_id.clone());
-                    self.error_message = None;
-                    self.status_message = format!("building adapter for {model_id}");
-                    self.logs.info("adapter-build", format!("building {model_id}; successful build restarts the TUI and resets in-memory history"));
-                    self.screen = Screen::Loading;
-                }
-                Err(error) => {
-                    self.error_message = Some(format!("{error:#}"));
-                    self.logs.error("adapter-build", format!("{error:#}"));
-                }
-            }
+        if !matches!(entry.manifest.family.as_str(), "whisper" | "zipformer") {
+            self.error_message = Some(format!(
+                "{} uses unsupported model family `{}`",
+                model_id, entry.manifest.family
+            ));
+            return;
+        }
+        if !entry.artifacts_available() {
+            self.start_model_download(model_id);
+            return;
+        }
+        if !entry.adapter_compiled {
+            self.start_adapter_build(&model_id);
             return;
         }
         if !entry.selectable() {
@@ -631,12 +787,14 @@ impl App {
 
     fn send_load_model(&mut self, model_id: String, switch_from: Option<String>) {
         if let Some(index) = self.catalog.selected_index(&model_id) {
-            if !self.catalog.entries[index].adapter_compiled {
-                self.catalog_index = index;
-                self.screen = Screen::Picker;
-                self.error_message = Some(
-                    "Select this model with Enter to build its adapter and restart.".to_owned(),
-                );
+            self.catalog_index = index;
+            let entry = &self.catalog.entries[index];
+            if !entry.artifacts_available() {
+                self.start_model_download(model_id);
+                return;
+            }
+            if !entry.adapter_compiled {
+                self.start_adapter_build(&model_id);
                 return;
             }
         }
@@ -662,6 +820,106 @@ impl App {
         self.scroll = 0;
     }
 
+    fn begin_run(&mut self, run_id: String, source: String) -> bool {
+        if self
+            .worker_sender
+            .send(WorkerCommand::BeginRun {
+                run_id: run_id.clone(),
+            })
+            .is_err()
+        {
+            self.error_message = Some("inference worker is not available".to_owned());
+            return false;
+        }
+        let now = epoch_millis();
+        let model = self.active_model.clone().unwrap_or(ActiveModel {
+            id: self.config.selected_stt_model.clone(),
+            family: "unknown".to_owned(),
+            backend: "unknown".to_owned(),
+            runtime: None,
+        });
+        self.telemetry.set_active_run(Some(run_id.clone()));
+        self.telemetry.upsert_report(super::telemetry::RunReport {
+            run_id: run_id.clone(),
+            model_id: model.id,
+            model_family: model.family,
+            backend: model.backend,
+            runtime: model.runtime,
+            revision: self
+                .catalog
+                .entry_by_id(&self.config.selected_stt_model)
+                .and_then(|entry| entry.manifest.revision.clone()),
+            source,
+            status: "BUSY".to_owned(),
+            transcript: String::new(),
+            raw_transcript: String::new(),
+            language: None,
+            audio_duration_seconds: 0.0,
+            gate_decision: "pending".to_owned(),
+            segment_count: 0,
+            started_at_ms: now,
+            finished_at_ms: None,
+            error: None,
+            result: None,
+            events: Vec::new(),
+        });
+        true
+    }
+
+    fn end_run_context(&mut self, run_id: &str) {
+        let _ = self.worker_sender.send(WorkerCommand::EndRun {
+            run_id: run_id.to_owned(),
+        });
+        self.telemetry.set_active_run(None);
+    }
+
+    fn failed_report(
+        &self,
+        run_id: &str,
+        source: &str,
+        error: String,
+    ) -> super::telemetry::RunReport {
+        let mut report = self.telemetry.report(run_id).cloned().unwrap_or_else(|| {
+            let model = self.active_model.clone().unwrap_or(ActiveModel {
+                id: self.config.selected_stt_model.clone(),
+                family: "unknown".to_owned(),
+                backend: "unknown".to_owned(),
+                runtime: None,
+            });
+            super::telemetry::RunReport {
+                run_id: run_id.to_owned(),
+                model_id: model.id,
+                model_family: model.family,
+                backend: model.backend,
+                runtime: model.runtime,
+                revision: None,
+                source: source.to_owned(),
+                status: "ERROR".to_owned(),
+                transcript: String::new(),
+                raw_transcript: String::new(),
+                language: None,
+                audio_duration_seconds: 0.0,
+                gate_decision: "unknown".to_owned(),
+                segment_count: 0,
+                started_at_ms: epoch_millis(),
+                finished_at_ms: None,
+                error: None,
+                result: None,
+                events: Vec::new(),
+            }
+        });
+        report.status = "ERROR".to_owned();
+        report.error = Some(error);
+        report.finished_at_ms = Some(epoch_millis());
+        report.events = self
+            .telemetry
+            .events_for(Some(run_id))
+            .into_iter()
+            .cloned()
+            .collect();
+        report
+    }
+
     fn start_file(&mut self, path: PathBuf) {
         if self.current_request.is_some() {
             return;
@@ -669,6 +927,9 @@ impl App {
         let run_id = self.take_run_id();
         let request_id = self.take_request_id();
         let source = path.display().to_string();
+        if !self.begin_run(run_id.clone(), source.clone()) {
+            return;
+        }
         if self
             .worker_sender
             .send(WorkerCommand::TranscribeWav {
@@ -678,6 +939,7 @@ impl App {
             })
             .is_err()
         {
+            self.end_run_context(&run_id);
             self.error_message = Some("inference worker is not available".to_owned());
             return;
         }
@@ -696,14 +958,26 @@ impl App {
         if self.current_request.is_some() || self.recording.is_some() {
             return;
         }
+        let run_id = self.take_run_id();
+        if !self.begin_run(run_id.clone(), "live microphone".to_owned()) {
+            return;
+        }
         match Recording::start() {
             Ok(recording) => {
                 self.recording = Some(recording);
+                self.current_run = Some(run_id);
+                self.current_source = Some("live microphone".to_owned());
                 self.status_message = "recording".to_owned();
                 self.error_message = None;
                 self.screen = Screen::Recording;
             }
             Err(error) => {
+                self.end_run_context(&run_id);
+                self.telemetry.upsert_report(self.failed_report(
+                    &run_id,
+                    "live microphone",
+                    error.to_string(),
+                ));
                 self.error_message = Some(error.to_string());
                 self.logs.error("recorder", error.to_string());
                 self.screen = Screen::Bench;
@@ -722,6 +996,14 @@ impl App {
                 self.status_message = format!("captured {duration:.1} seconds");
             }
             Err(error) => {
+                if let Some(run_id) = self.current_run.clone() {
+                    self.end_run_context(&run_id);
+                    self.telemetry.upsert_report(self.failed_report(
+                        &run_id,
+                        "live microphone",
+                        error.to_string(),
+                    ));
+                }
                 self.error_message = Some(error.to_string());
                 self.logs.error("recorder", error.to_string());
                 self.screen = Screen::Bench;
@@ -733,7 +1015,20 @@ impl App {
         if self.current_request.is_some() {
             return;
         }
-        let run_id = self.take_run_id();
+        let reuse_run = self
+            .current_run
+            .as_deref()
+            .and_then(|run| self.telemetry.report(run))
+            .is_some_and(|report| report.status == "BUSY");
+        let run_id = if reuse_run {
+            self.current_run.clone().expect("checked above")
+        } else {
+            let run_id = self.take_run_id();
+            if !self.begin_run(run_id.clone(), source.clone()) {
+                return;
+            }
+            run_id
+        };
         let request_id = self.take_request_id();
         if self
             .worker_sender
@@ -745,6 +1040,7 @@ impl App {
             })
             .is_err()
         {
+            self.end_run_context(&run_id);
             self.error_message = Some("inference worker is not available".to_owned());
             return;
         }
@@ -793,8 +1089,6 @@ impl App {
                 switch_from,
             } if self.accepts_request(request_id) => {
                 self.pending_model_id = Some(model_id.clone());
-                self.telemetry
-                    .select_run(Some(format!("model-load-{request_id}")));
                 self.status_message = match switch_from.as_deref() {
                     Some(previous) => format!("switching from {previous} to {model_id}"),
                     None => format!("loading {model_id}"),
@@ -875,14 +1169,35 @@ impl App {
                 audio_duration_seconds,
                 result,
             } if self.accepts_request(request_id) => {
+                let result = *result;
+                let mut report = self.telemetry.report(&run_id).cloned().unwrap_or_else(|| {
+                    self.failed_report(&run_id, &source, "missing run context".to_owned())
+                });
+                report.status = result.status.as_str().to_owned();
+                report.transcript = result.text.clone();
+                report.raw_transcript = result.raw_text.clone();
+                report.language = result.language.clone();
+                report.audio_duration_seconds = audio_duration_seconds;
+                report.gate_decision = format!("{:?}", result.gate.decision);
+                report.segment_count = result.segments.len();
+                report.finished_at_ms = Some(epoch_millis());
+                report.error = None;
+                report.events = self
+                    .telemetry
+                    .events_for(Some(&run_id))
+                    .into_iter()
+                    .cloned()
+                    .collect();
+                report.result = Some(result.clone());
+                self.telemetry.upsert_report(report);
+                self.telemetry.set_active_run(None);
                 self.result = Some(ResultState {
                     run_id: run_id.clone(),
                     source,
                     audio_duration_seconds,
-                    result: *result,
+                    result,
                 });
                 self.current_run = Some(run_id.clone());
-                self.telemetry.select_run(Some(run_id));
                 self.current_request = None;
                 self.error_message = None;
                 self.status_message = "transcription complete".to_owned();
@@ -895,9 +1210,12 @@ impl App {
                 source,
                 error,
             } if self.accepts_request(request_id) => {
-                self.current_run = Some(run_id);
-                self.current_source = Some(source);
+                self.current_run = Some(run_id.clone());
+                self.current_source = Some(source.clone());
                 self.current_request = None;
+                self.telemetry
+                    .upsert_report(self.failed_report(&run_id, &source, error.clone()));
+                self.telemetry.set_active_run(None);
                 self.error_message = Some(error.clone());
                 self.logs.error("worker", error);
                 self.screen = Screen::Bench;
@@ -934,7 +1252,7 @@ impl App {
 
     fn open_telemetry(&mut self) {
         self.previous_screen = self.screen;
-        self.telemetry_tab = if self.build.is_some() {
+        self.telemetry_tab = if self.build.is_some() || self.download.is_some() {
             TelemetryTab::Logs
         } else {
             TelemetryTab::Overview
@@ -944,7 +1262,7 @@ impl App {
     }
 
     fn return_to_previous_or_bench(&mut self) {
-        self.screen = if self.build.is_some() {
+        self.screen = if self.build.is_some() || self.download.is_some() {
             Screen::Loading
         } else if self.previous_screen == Screen::Telemetry {
             Screen::Bench
@@ -986,6 +1304,14 @@ impl Default for App {
     fn default() -> Self {
         panic!("App requires runtime channels and configuration")
     }
+}
+
+fn epoch_millis() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
+        .unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -1068,7 +1394,7 @@ pub(super) mod tests {
     }
 
     #[test]
-    fn series_keys_are_shared_between_metrics_and_graphs_and_runs_cycle() {
+    fn metric_selection_is_independent_from_historical_run_selection() {
         let mut app = test_app();
         app.telemetry.push(metric("run-1", "alpha"));
         app.telemetry.push(metric("run-1", "beta"));
@@ -1079,11 +1405,8 @@ pub(super) mod tests {
         app.handle_key(KeyCode::Char('3')).unwrap();
         assert_eq!(app.telemetry.series_index(&app.telemetry.series("")), 1);
         app.handle_key(KeyCode::Char('k')).unwrap();
-        assert_eq!(app.telemetry.series_index(&app.telemetry.series("")), 0);
-        app.handle_key(KeyCode::Char(']')).unwrap();
-        assert_eq!(app.telemetry.selected_run(), Some("run-2"));
-        app.handle_key(KeyCode::Char('[')).unwrap();
-        assert_eq!(app.telemetry.selected_run(), Some("run-1"));
+        assert_eq!(app.telemetry.series_index(&app.telemetry.series("")), 1);
+        assert_eq!(app.telemetry.selected_run(), None);
         app.scroll = 50;
         app.handle_key(KeyCode::Char('4')).unwrap();
         assert_eq!(app.scroll, 0);

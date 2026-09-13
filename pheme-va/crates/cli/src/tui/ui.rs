@@ -199,7 +199,8 @@ fn draw_picker(frame: &mut Frame<'_>, app: &App) {
                     "Unsupported model family; add a matching adapter before selecting it."
                         .to_owned()
                 } else if !entry.artifacts_available() {
-                    "Download or place the required artifacts, then press [r].".to_owned()
+                    "[Enter] download the verified model artifacts automatically. [r] rescan."
+                        .to_owned()
                 } else if !entry.adapter_compiled {
                     "[Enter] build adapter and restart automatically. Requires source checkout, Cargo and native toolchain; may download build dependencies/runtime packages. Settings retained; in-memory results/logs/history reset. [Esc] back.".to_owned()
                 } else {
@@ -239,13 +240,28 @@ fn draw_picker(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_loading(frame: &mut Frame<'_>, app: &App) {
+    if let Some(download) = &app.download {
+        let chunks = base_layout(frame.area());
+        draw_header(frame, app, chunks[0], "DOWNLOADING MODEL");
+        let percent = download.progress.percent.unwrap_or(0);
+        let bar = progress_bar(percent, 32);
+        frame.render_widget(Paragraph::new(format!("Downloading model {}\n\n{} {:>3}%\n\n{}\n\nThe verified partial file is retained if you cancel.\n\n[Esc] cancel download", download.model_id, bar, percent, download.progress.message)).block(Block::default().borders(Borders::ALL).title("MODEL DOWNLOAD")).wrap(Wrap { trim: false }), chunks[1]);
+        draw_footer(
+            frame,
+            app,
+            chunks[2],
+            "[Esc] cancel download  [t] logs  [q] quit",
+        );
+        return;
+    }
     if let Some(build) = &app.build {
         let chunks = base_layout(frame.area());
         draw_header(frame, app, chunks[0], "BUILDING ADAPTER");
         frame.render_widget(
             Paragraph::new(format!(
-                "Building adapter for {}...\n\nCargo is running in the background. The first build may take several minutes.\n\n[t] view compiler progress in Logs.\n\nOn success the TUI restarts with the selected model. Settings are retained; in-memory results and history reset.\n\nOn failure or cancellation, the current model remains available.",
-                build.model_id
+                "Compiling backend for model {}\n\n{}\n\nCargo is running in the background. Cargo does not expose a reliable completion percentage, so this is an indeterminate activity bar rather than a fabricated percent.\n\n[t] view compiler output in Logs.\n\nOn success the TUI restarts with the selected model. Settings are retained; in-memory results and history reset.\n\nOn failure or cancellation, the current model remains available.",
+                build.model_id,
+                indeterminate_bar(32)
             ))
             .block(Block::default().borders(Borders::ALL).title("ADAPTER BUILD"))
             .wrap(Wrap { trim: false }),
@@ -415,6 +431,7 @@ fn draw_bench(frame: &mut Frame<'_>, app: &App) {
     .map(|(label, name)| format!("{label}: {}", compact_metric(&app.telemetry, name, run_id)))
     .collect::<Vec<_>>()
     .join("   ");
+    let compact = format!("{compact}\n{}", monitor_line(app));
     frame.render_widget(
         Paragraph::new(compact)
             .block(Block::default().borders(Borders::ALL).title("METRICS"))
@@ -515,6 +532,7 @@ fn draw_recording(frame: &mut Frame<'_>, app: &App) {
                 format_duration(elapsed),
                 format_duration(max_seconds)
             )),
+            Line::from(monitor_line(app)),
             Line::from("Speak now."),
         ]))
         .block(Block::default().borders(Borders::ALL).title("CAPTURE")),
@@ -551,6 +569,7 @@ fn draw_processing(frame: &mut Frame<'_>, app: &App) {
         Line::from(format!("Run:    {run}")),
         Line::from(""),
         Line::from("Reading audio and running speech recognition..."),
+        Line::from(monitor_line(app)),
         Line::from("The final result will appear when decoding completes."),
         Line::from(""),
         Line::from(Span::styled(
@@ -583,7 +602,7 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(frame.area());
     draw_header(frame, app, chunks[0], "METRICS & LOGS");
-    let titles = ["[1] Overview", "[2] Metrics", "[3] Graphs", "[4] Logs"]
+    let titles = ["[1] Overview", "[2] Metrics", "[3] Runs", "[4] Logs"]
         .into_iter()
         .map(Line::from)
         .collect::<Vec<_>>();
@@ -597,17 +616,22 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
     match app.telemetry_tab {
         TelemetryTab::Overview => draw_overview(frame, app, chunks[2]),
         TelemetryTab::Metrics => draw_metrics(frame, app, chunks[2]),
-        TelemetryTab::Graphs => draw_graphs(frame, app, chunks[2]),
+        TelemetryTab::Runs => {
+            if app.run_detail {
+                draw_run_report(frame, app, chunks[2]);
+            } else {
+                draw_runs(frame, app, chunks[2]);
+            }
+        }
         TelemetryTab::Logs => draw_logs(frame, app, chunks[2]),
     }
     let footer = if app.filter_editing {
         format!(
-            "Live filter: {}_  [Enter/Esc] finish  [Backspace] delete",
+            "Search: {}_  [Enter/Esc] finish  [Backspace] delete",
             app.filter_query
         )
     } else {
-        format!("[1-4] tab  [ and ] run  [j/k ↑/↓] {}  [f /] filter  [x] reset\n[Esc] back  [q] quit{}  Filter: {}",
-            if matches!(app.telemetry_tab, TelemetryTab::Metrics | TelemetryTab::Graphs) { "series" } else { "scroll" },
+        format!("[1-4] tab  [j/k ↑/↓] select/scroll  [Enter] open  [/] search  [x] clear  [Esc] back{}  Search: {}",
             if app.telemetry_tab == TelemetryTab::Logs { "  [c] clear logs" } else { "" },
             if app.filter_query.is_empty() { "(none)" } else { &app.filter_query })
     };
@@ -618,7 +642,7 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
 }
 
 fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let series = app.telemetry.series(&app.filter_query);
+    let series = app.telemetry.series("");
     let mut lines = vec![Line::from(format!(
         "{} matching series / {} retained events / {} logs (all runs)",
         series.len(),
@@ -633,12 +657,11 @@ fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
             model.runtime.as_deref().unwrap_or("unknown runtime"),
             model.backend
         );
-        if active
-            .to_ascii_lowercase()
-            .contains(&app.filter_query.trim().to_ascii_lowercase())
-        {
-            lines.push(Line::from(active));
-        }
+        lines.push(highlighted_line(
+            &active,
+            &app.filter_query,
+            Style::default(),
+        ));
     }
     let mut category = "";
     for series in &series {
@@ -650,18 +673,26 @@ fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
             )));
         }
         let event = series.latest();
-        lines.push(Line::from(format!(
-            "{} [{:?} / {} / {}]",
-            event.name,
-            event.scope,
-            event.source,
-            TelemetryStore::unit_text(event)
-        )));
-        lines.push(Line::from(format!(
-            "  {} ({} samples)",
-            TelemetryStore::value_text(event),
-            series.samples.len()
-        )));
+        lines.push(highlighted_line(
+            &format!(
+                "{} [{:?} / {} / {}]",
+                event.name,
+                event.scope,
+                event.source,
+                TelemetryStore::unit_text(event)
+            ),
+            &app.filter_query,
+            Style::default(),
+        ));
+        lines.push(highlighted_line(
+            &format!(
+                "  {} ({} samples)",
+                TelemetryStore::value_text(event),
+                series.samples.len()
+            ),
+            &app.filter_query,
+            Style::default(),
+        ));
     }
     if series.is_empty() {
         lines.push(Line::from(
@@ -681,13 +712,444 @@ fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
 }
 
 fn draw_metrics(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    draw_series_browser(frame, app, area, false);
+    if app.metric_detail {
+        draw_metric_detail(frame, app, area);
+        return;
+    }
+    let series = app.telemetry.series("");
+    let rows = app.telemetry.metric_rows("");
+    let selected = app.telemetry.selected_metric_index(&rows);
+    let rendered = rows
+        .iter()
+        .enumerate()
+        .map(|(index, row)| match row {
+            super::telemetry::MetricRow::Category(category) => Row::new(vec![
+                Cell::from(format!("▸ {category}")),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+                Cell::from(""),
+            ])
+            .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+            super::telemetry::MetricRow::Metric(key) => {
+                let item = series.iter().find(|item| item.key == *key);
+                let stats = item.map(|item| item.stats());
+                let style = if index == selected {
+                    Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+                } else if !app.filter_query.is_empty()
+                    && !item.is_some_and(|item| item.matches(&app.filter_query))
+                {
+                    Style::default().fg(Color::DarkGray)
+                } else {
+                    Style::default()
+                };
+                let latest = item
+                    .map(|item| {
+                        let event = item.latest();
+                        if event.value.is_none() || event.unavailable_reason.is_some() {
+                            TelemetryStore::value_text(event)
+                        } else {
+                            stats
+                                .as_ref()
+                                .and_then(|stats| stats.latest)
+                                .map(|value| format!("{value:.3}"))
+                                .unwrap_or_else(|| TelemetryStore::value_text(event))
+                        }
+                    })
+                    .unwrap_or_else(|| "—".to_owned());
+                let min = stats
+                    .as_ref()
+                    .and_then(|stats| stats.minimum)
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "—".to_owned());
+                let max = stats
+                    .as_ref()
+                    .and_then(|stats| stats.maximum)
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "—".to_owned());
+                let avg = stats
+                    .as_ref()
+                    .and_then(|stats| stats.average)
+                    .map(|value| format!("{value:.3}"))
+                    .unwrap_or_else(|| "—".to_owned());
+                let count = stats
+                    .map(|stats| stats.count.to_string())
+                    .unwrap_or_else(|| "0".to_owned());
+                Row::new(vec![
+                    Cell::from(highlighted_line(
+                        &format!("  {}", key.name),
+                        &app.filter_query,
+                        style,
+                    )),
+                    Cell::from(highlighted_line(&latest, &app.filter_query, style)),
+                    Cell::from(highlighted_line(&min, &app.filter_query, style)),
+                    Cell::from(highlighted_line(&max, &app.filter_query, style)),
+                    Cell::from(highlighted_line(&avg, &app.filter_query, style)),
+                    Cell::from(count),
+                ])
+                .style(style)
+            }
+        })
+        .collect::<Vec<_>>();
+    frame.render_widget(
+        Table::new(
+            rendered,
+            [
+                Constraint::Percentage(38),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(13),
+                Constraint::Length(7),
+            ],
+        )
+        .header(
+            Row::new(vec!["Category / Metric", "Now", "Min", "Max", "Avg", "N"])
+                .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(format!("LIVE METRICS / {}", live_context(app))),
+        )
+        .column_spacing(1),
+        area,
+    );
 }
 
-fn draw_graphs(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    draw_series_browser(frame, app, area, true);
+fn draw_runs(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let reports = app.telemetry.reports().collect::<Vec<_>>();
+    let selected = app.telemetry.selected_run();
+    let rows = reports.iter().map(|report| {
+        let style = if Some(report.run_id.as_str()) == selected {
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default()
+        };
+        Row::new(vec![
+            Cell::from(highlighted_line(&report.run_id, &app.filter_query, style)),
+            Cell::from(highlighted_line(
+                report.status_text(),
+                &app.filter_query,
+                style,
+            )),
+            Cell::from(highlighted_line(&report.source, &app.filter_query, style)),
+            Cell::from(highlighted_line(&report.model_id, &app.filter_query, style)),
+            Cell::from(format!("{:.2}s", report.audio_duration_seconds)),
+        ])
+        .style(style)
+    });
+    frame.render_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Length(12),
+                Constraint::Length(10),
+                Constraint::Percentage(28),
+                Constraint::Percentage(28),
+                Constraint::Length(10),
+            ],
+        )
+        .header(
+            Row::new(vec!["Run", "Status", "Source", "Model", "Audio"])
+                .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD)),
+        )
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title("RUNS / SELECT A RUN THEN PRESS ENTER"),
+        ),
+        area,
+    );
 }
 
+fn draw_metric_detail(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(super::telemetry::MetricRow::Metric(key)) = app.telemetry.selected_metric("") else {
+        frame.render_widget(
+            Paragraph::new("Select a metric row first.")
+                .block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    };
+    let series = app.telemetry.series("");
+    let Some(series) = series.iter().find(|item| item.key == key) else {
+        return;
+    };
+    let points = series.history(app.telemetry.run_origin_ms());
+    let title = format!("LIVE / {} / {}", key.category, key.name);
+    if points.is_empty() {
+        frame.render_widget(
+            Paragraph::new(format!(
+                "{title}\nNo numeric samples. {}",
+                TelemetryStore::value_text(series.latest())
+            ))
+            .block(Block::default().borders(Borders::ALL).title(title)),
+            area,
+        );
+        return;
+    }
+    let stats = series.stats();
+    let ymin = points
+        .iter()
+        .map(|point| point.1)
+        .fold(f64::INFINITY, f64::min);
+    let ymax = points
+        .iter()
+        .map(|point| point.1)
+        .fold(f64::NEG_INFINITY, f64::max);
+    let pad = if ymin == ymax {
+        (ymin.abs() * 0.05).max(0.001)
+    } else {
+        0.0
+    };
+    let xmax = points.last().map(|point| point.0).unwrap_or(1.0).max(0.001);
+    let inner = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .inner(area);
+    frame.render_widget(
+        Block::default()
+            .borders(Borders::ALL)
+            .title("LIVE METRIC DETAIL"),
+        area,
+    );
+    let parts = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(4)])
+        .split(inner);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Run: {}   Scope: {:?}   Source: {}   Unit: {}   LIVE\nNow {:.3}  Min {:.3}  Max {:.3}  Avg {:.3}  Samples {}",
+            live_context(app),
+            key.scope,
+            key.source,
+            TelemetryStore::unit_text(series.latest()),
+            stats.latest.unwrap_or(0.0),
+            stats.minimum.unwrap_or(0.0),
+            stats.maximum.unwrap_or(0.0),
+            stats.average.unwrap_or(0.0),
+            stats.count
+        )),
+        parts[0],
+    );
+    frame.render_widget(
+        Chart::new(vec![Dataset::default()
+            .name(key.name.clone())
+            .data(&points)
+            .marker(ratatui::symbols::Marker::Braille)
+            .style(Style::default().fg(ACCENT))])
+        .x_axis(
+            Axis::default()
+                .bounds([0.0, xmax])
+                .labels(["0s".to_owned(), format!("{xmax:.1}s")]),
+        )
+        .y_axis(
+            Axis::default()
+                .bounds([ymin - pad, ymax + pad])
+                .labels([format!("{ymin:.2}"), format!("{ymax:.2}")]),
+        ),
+        parts[1],
+    );
+}
+
+fn draw_run_report(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let Some(report) = app.telemetry.selected_report() else {
+        frame.render_widget(
+            Paragraph::new("No run selected.").block(Block::default().borders(Borders::ALL)),
+            area,
+        );
+        return;
+    };
+    let chunks = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(10), Constraint::Min(5)])
+        .split(area);
+    let lines = vec![
+        highlighted_line(
+            &format!("{} / AFTER-ACTION REPORT", report.run_id),
+            &app.filter_query,
+            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
+        ),
+        highlighted_line(
+            &format!(
+                "Model: {} / {} / {} / {}",
+                report.model_id,
+                report.model_family,
+                report.backend,
+                report.runtime.as_deref().unwrap_or("runtime unknown")
+            ),
+            &app.filter_query,
+            Style::default(),
+        ),
+        highlighted_line(
+            &format!(
+                "Source: {}    Status: {}    Language: {}",
+                report.source,
+                report.status_text(),
+                report.language.as_deref().unwrap_or("unknown")
+            ),
+            &app.filter_query,
+            Style::default(),
+        ),
+        Line::from(format!(
+            "Revision: {}    Started: {}    Finished: {}",
+            report.revision.as_deref().unwrap_or("unknown"),
+            report.started_at_ms,
+            report
+                .finished_at_ms
+                .map_or_else(|| "pending".to_owned(), |value| value.to_string())
+        )),
+        highlighted_line(
+            &format!(
+                "Audio: {:.2}s    Segments: {}    Samples: {}    Gate: {}",
+                report.audio_duration_seconds,
+                report.segment_count,
+                report.samples().len(),
+                report.gate_decision
+            ),
+            &app.filter_query,
+            Style::default(),
+        ),
+        Line::from(""),
+        Line::from(Span::styled("TRANSCRIPT", Style::default().fg(ACCENT))),
+        highlighted_line(
+            if report.transcript.is_empty() {
+                "No final transcript."
+            } else {
+                &report.transcript
+            },
+            &app.filter_query,
+            Style::default(),
+        ),
+        Line::from(Span::styled("RAW TRANSCRIPT", Style::default().fg(ACCENT))),
+        highlighted_line(
+            if report.raw_transcript.is_empty() {
+                "No raw transcript."
+            } else {
+                &report.raw_transcript
+            },
+            &app.filter_query,
+            Style::default(),
+        ),
+    ];
+    frame.render_widget(
+        Paragraph::new(Text::from(lines))
+            .block(Block::default().borders(Borders::ALL).title("REPORT"))
+            .scroll((app.scroll, 0))
+            .wrap(Wrap { trim: false }),
+        chunks[0],
+    );
+    let series = app.telemetry.series_for_run(&report.run_id);
+    if series.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No retained metric samples for this run.").block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title("GRAPH DASHBOARD"),
+            ),
+            chunks[1],
+        );
+        return;
+    }
+    let panels = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
+        .split(chunks[1]);
+    for (index, item) in series.iter().take(2).enumerate() {
+        let points = item.history(app.telemetry.run_origin_for(&report.run_id));
+        if points.is_empty() {
+            frame.render_widget(
+                Paragraph::new(format!("{}: unavailable", item.key.name)).block(
+                    Block::default()
+                        .borders(Borders::ALL)
+                        .title(item.category()),
+                ),
+                panels[index],
+            );
+            continue;
+        }
+        let min = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::INFINITY, f64::min);
+        let max = points
+            .iter()
+            .map(|point| point.1)
+            .fold(f64::NEG_INFINITY, f64::max);
+        let xmax = points.last().map(|point| point.0).unwrap_or(1.0).max(0.001);
+        frame.render_widget(
+            Chart::new(vec![Dataset::default()
+                .data(&points)
+                .marker(ratatui::symbols::Marker::Braille)
+                .style(Style::default().fg(ACCENT))])
+            .x_axis(
+                Axis::default()
+                    .bounds([0.0, xmax])
+                    .labels(["0s".into(), format!("{xmax:.1}s")]),
+            )
+            .y_axis(
+                Axis::default()
+                    .bounds([min, max.max(min + 0.001)])
+                    .labels([format!("{min:.1}"), format!("{max:.1}")]),
+            ),
+            panels[index],
+        );
+    }
+}
+
+fn live_context(app: &App) -> String {
+    match (app.telemetry.active_run(), app.current_request.is_some()) {
+        (Some(run), true) => format!("{run} BUSY"),
+        (Some(run), false) => format!("{run} COMPLETE"),
+        _ => "idle".to_owned(),
+    }
+}
+
+fn monitor_line(app: &App) -> String {
+    let value = |name| compact_metric(&app.telemetry, name, None);
+    format!(
+        "CPU {}   RAM {}   GPU {}   TEMP {}   BATTERY {}",
+        value("process_cpu_percent"),
+        value("ram_usage_bytes"),
+        value("gpu_usage_percent"),
+        value("temperature_celsius"),
+        value("battery_drain_percent")
+    )
+}
+
+fn highlighted_line(text: &str, query: &str, base: Style) -> Line<'static> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Line::from(Span::styled(text.to_owned(), base));
+    }
+    let lower = text.to_ascii_lowercase();
+    let needle = query.to_ascii_lowercase();
+    let mut spans = Vec::new();
+    let mut cursor = 0;
+    while let Some(relative) = lower[cursor..].find(&needle) {
+        let start = cursor + relative;
+        if start > cursor {
+            spans.push(Span::styled(text[cursor..start].to_owned(), base));
+        }
+        let end = start + needle.len();
+        spans.push(Span::styled(
+            text[start..end].to_owned(),
+            base.fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+        cursor = end;
+    }
+    if spans.is_empty() {
+        spans.push(Span::styled(text.to_owned(), base));
+    } else if cursor < text.len() {
+        spans.push(Span::styled(text[cursor..].to_owned(), base));
+    }
+    Line::from(spans)
+}
+
+#[allow(dead_code)]
 fn draw_series_browser(frame: &mut Frame<'_>, app: &App, area: Rect, graph_focus: bool) {
     let series = app.telemetry.series(&app.filter_query);
     let selected = app.telemetry.series_index(&series);
@@ -830,7 +1292,7 @@ fn draw_series_browser(frame: &mut Frame<'_>, app: &App, area: Rect, graph_focus
 }
 
 fn draw_logs(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let logs = app.logs.filtered(&app.filter_query);
+    let logs = app.logs.filtered("");
     let header = Row::new(vec!["Time", "Level", "Component", "Message"])
         .style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD));
     let rows = logs
@@ -846,8 +1308,16 @@ fn draw_logs(frame: &mut Frame<'_>, app: &App, area: Rect) {
             Row::new(vec![
                 Cell::from(format_timestamp(entry.timestamp_ms)),
                 Cell::from(entry.level.as_str()).style(Style::default().fg(color)),
-                Cell::from(entry.component.clone()),
-                Cell::from(entry.message.clone()),
+                Cell::from(highlighted_line(
+                    &entry.component,
+                    &app.filter_query,
+                    Style::default(),
+                )),
+                Cell::from(highlighted_line(
+                    &entry.message,
+                    &app.filter_query,
+                    Style::default(),
+                )),
             ])
         });
     frame.render_widget(
@@ -913,12 +1383,12 @@ fn draw_help(frame: &mut Frame<'_>, app: &App) {
         Line::from("[j/k] scroll transcript/details   [?] help   [q] quit"),
         Line::from(""),
         Line::from(Span::styled("Telemetry", Style::default().fg(ACCENT))),
-        Line::from("[1] overview  [2] metric series  [3] history graphs  [4] logs"),
-        Line::from("[j/k or ↑/↓] select series (Metrics/Graphs), otherwise scroll"),
+        Line::from("[1] overview  [2] live metrics  [3] runs/reports  [4] logs"),
+        Line::from("[j/k or ↑/↓] select metrics/runs, otherwise scroll"),
         Line::from("[ and ] previous/next run  [f or /] live shared filter  [x] reset"),
         Line::from("[Enter/Esc] finish filter  [c] clear logs (Logs only)  [Esc] back"),
         Line::from("Filter matches category/name/scope/source/unit/run/value/reason; history stays intact."),
-        Line::from("Graphs show retained numeric samples only; gaps are not zero or interpolated."),
+        Line::from("Live graphs and run reports show numeric samples; gaps are not zero or interpolated."),
         Line::from(""),
         Line::from(Span::styled("Model availability", Style::default().fg(ACCENT))),
         Line::from("A manifest artifact is not active until its adapter is compiled and the engine loads successfully."),
@@ -1051,6 +1521,30 @@ fn side_panel(area: Rect) -> Rect {
     )
 }
 
+fn progress_bar(percent: u8, width: usize) -> String {
+    let filled = width.saturating_mul(percent as usize) / 100;
+    format!(
+        "{}{}",
+        "|".repeat(filled),
+        ".".repeat(width.saturating_sub(filled))
+    )
+}
+
+fn indeterminate_bar(width: usize) -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let tick = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as usize / 120)
+        .unwrap_or(0);
+    let position = tick % width.max(1);
+    let mut chars = vec!['.'; width];
+    chars[position] = '#';
+    if position > 0 {
+        chars[position - 1] = '#';
+    }
+    chars.into_iter().collect()
+}
+
 fn centered(area: Rect, width_percent: u16, height_percent: u16) -> Rect {
     let width = (u32::from(area.width) * u32::from(width_percent.min(100)) / 100) as u16;
     let height = (u32::from(area.height) * u32::from(height_percent.min(100)) / 100) as u16;
@@ -1140,19 +1634,24 @@ mod tests {
         for tab in [
             TelemetryTab::Overview,
             TelemetryTab::Metrics,
-            TelemetryTab::Graphs,
+            TelemetryTab::Runs,
             TelemetryTab::Logs,
         ] {
             app.telemetry_tab = tab;
             let text = rendered(&app, 100, 30);
-            assert!(!text.contains("hide_memory"));
-            assert!(!text.contains("hide_log"));
-            assert!(!text.contains("wrong_run"));
+            assert!(
+                text.contains("hide_memory")
+                    || matches!(tab, TelemetryTab::Runs | TelemetryTab::Logs)
+            );
+            assert!(text.contains("hide_log") || tab != TelemetryTab::Logs);
+            assert!(
+                text.contains("wrong_run")
+                    || matches!(tab, TelemetryTab::Runs | TelemetryTab::Logs)
+            );
             if tab == TelemetryTab::Logs {
                 assert!(text.contains("keep_log"));
-            } else {
-                assert!(text.contains("selected-run"));
-                assert!(text.contains("keep_cpu"));
+            } else if tab != TelemetryTab::Runs {
+                assert!(text.contains("keep_cpu") || tab == TelemetryTab::Overview);
             }
         }
     }
@@ -1160,30 +1659,20 @@ mod tests {
     #[test]
     fn history_and_unavailable_reason_render_at_minimum_size() {
         let mut app = super::super::app::tests::test_app();
-        app.telemetry_tab = TelemetryTab::Graphs;
+        app.telemetry_tab = TelemetryTab::Metrics;
+        app.metric_detail = true;
         let mut event = super::super::app::tests::metric("run-1", "cpu");
         app.telemetry.push(event.clone());
         let text = rendered(&app, 80, 24);
-        assert!(text.contains("seconds since first retained run event"));
+        assert!(text.contains("LIVE METRIC DETAIL"));
         assert!(text.contains("0.250"));
-        assert!(text.contains("[x] reset"));
         event.value = None;
         event.unavailable_reason = Some("sensor offline".into());
-        event.timestamp_ms += 1000;
+        app.telemetry = TelemetryStore::default();
         app.telemetry.push(event);
         let text = rendered(&app, 80, 24);
         assert!(text.contains("sensor offline"));
-        assert!(text.contains("1 numeric, 1 omitted"));
-        app.telemetry = TelemetryStore::default();
-        let mut unavailable = super::super::app::tests::metric("run-2", "power");
-        unavailable.value = None;
-        unavailable.unavailable_reason = Some("no power sensor".into());
-        app.telemetry.push(unavailable);
-        let text = rendered(&app, 80, 24);
-        assert!(text.contains("no power sensor"));
-        assert!(text.contains("No numeric history"));
-        app.filter_query = "no matches".into();
-        assert!(rendered(&app, 80, 24).contains("No matching metrics"));
+        assert!(text.contains("No numeric samples"));
     }
 
     #[test]

@@ -62,6 +62,8 @@ struct Worker {
     engine: Option<Engine>,
     active_model_id: Option<String>,
     resource_context: Arc<Mutex<Option<MetricsContext>>>,
+    idle_metrics: MetricsContext,
+    active_metrics: Option<MetricsContext>,
 }
 
 impl Worker {
@@ -72,20 +74,34 @@ impl Worker {
     ) -> Self {
         Self {
             sender,
-            metrics_hub,
+            metrics_hub: Arc::clone(&metrics_hub),
             metrics_enabled: config.metrics_enabled,
             resource_sampling_enabled: config.resource_sampling_enabled,
             engine: None,
             active_model_id: None,
             resource_context: config.resource_context,
+            idle_metrics: MetricsContext::new(
+                "idle",
+                None,
+                MetricsConfig {
+                    enabled: config.metrics_enabled,
+                    incident_active: false,
+                    resource_sampling: config.resource_sampling_enabled,
+                },
+                Arc::clone(&metrics_hub),
+            ),
+            active_metrics: None,
         }
     }
 
     fn run(&mut self, receiver: Receiver<WorkerCommand>) {
+        self.set_resource_context(Some(self.idle_metrics.clone()));
         self.emit_log(LogEntry::info("worker", "inference worker started"));
         while let Ok(command) = receiver.recv() {
             match command {
                 WorkerCommand::LoadModel(request) => self.load_model(request),
+                WorkerCommand::BeginRun { run_id } => self.begin_run(run_id),
+                WorkerCommand::EndRun { run_id } => self.end_run(&run_id),
                 WorkerCommand::TranscribeWav {
                     request_id,
                     run_id,
@@ -102,6 +118,31 @@ impl Worker {
         }
         self.emit_log(LogEntry::info("worker", "inference worker stopped"));
         let _ = self.sender.send(WorkerEvent::WorkerStopped);
+    }
+
+    fn begin_run(&mut self, run_id: RunId) {
+        let metrics = self.context(&run_id);
+        self.active_metrics = Some(metrics.clone());
+        self.set_resource_context(Some(metrics));
+    }
+
+    fn end_run(&mut self, run_id: &str) {
+        if self
+            .active_metrics
+            .as_ref()
+            .is_some_and(|metrics| metrics.run_id() == run_id)
+        {
+            self.active_metrics = None;
+            self.set_resource_context(Some(self.idle_metrics.clone()));
+        }
+    }
+
+    fn restore_resource_monitor(&self) {
+        self.set_resource_context(Some(
+            self.active_metrics
+                .clone()
+                .unwrap_or_else(|| self.idle_metrics.clone()),
+        ));
     }
 
     fn load_model(&mut self, request: ModelLoadRequest) {
@@ -132,7 +173,7 @@ impl Worker {
         self.set_resource_context(Some(metrics.clone()));
         let candidate =
             model::create_engine(&model_id, &manifest_path, max_seconds, language, dictionary);
-        self.set_resource_context(None);
+        self.restore_resource_monitor();
         let duration_ms = started.elapsed().as_millis();
         self.record_model_load_metrics(
             &metrics,
@@ -229,7 +270,8 @@ impl Worker {
         match result {
             Ok(audio) => self.transcribe_audio(request_id, run_id, source, audio),
             Err(error) => {
-                self.emit_processing_failure(request_id, run_id, source, error.to_string())
+                self.emit_processing_failure(request_id, run_id.clone(), source, error.to_string());
+                self.end_run(&run_id);
             }
         }
     }
@@ -244,10 +286,11 @@ impl Worker {
         if self.engine.is_none() {
             self.emit_processing_failure(
                 request_id,
-                run_id,
+                run_id.clone(),
                 source,
                 "no speech model is active".to_owned(),
             );
+            self.end_run(&run_id);
             return;
         }
 
@@ -259,14 +302,17 @@ impl Worker {
             Some(run_id.clone()),
             self.active_model_id.clone(),
         ));
-        let metrics = self.context(&run_id);
+        let metrics = self
+            .active_metrics
+            .clone()
+            .unwrap_or_else(|| self.context(&run_id));
         self.set_resource_context(Some(metrics.clone()));
         let result = self
             .engine
             .as_mut()
             .expect("engine checked above")
-            .transcribe_with_metrics(audio, metrics.clone());
-        self.set_resource_context(None);
+            .transcribe_with_metrics(audio, metrics);
+        self.restore_resource_monitor();
 
         match result {
             Ok(result) => {
@@ -282,14 +328,16 @@ impl Worker {
                 ));
                 self.emit(WorkerEvent::Result {
                     request_id,
-                    run_id,
+                    run_id: run_id.clone(),
                     source,
                     audio_duration_seconds,
                     result: Box::new(result),
                 });
+                self.end_run(&run_id);
             }
             Err(error) => {
-                self.emit_processing_failure(request_id, run_id, source, error.to_string());
+                self.emit_processing_failure(request_id, run_id.clone(), source, error.to_string());
+                self.end_run(&run_id);
             }
         }
     }

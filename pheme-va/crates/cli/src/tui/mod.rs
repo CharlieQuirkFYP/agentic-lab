@@ -1,5 +1,6 @@
 mod app;
 mod config;
+mod download;
 mod events;
 mod folder;
 mod logs;

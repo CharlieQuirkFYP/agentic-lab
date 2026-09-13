@@ -16,12 +16,12 @@ The telemetry workspace has four tabs:
 [1] Overview    [2] Metrics    [3] Runs    [4] Logs
 ```
 
-| Tab | Meaning | Data context |
-| --- | --- | --- |
-| `Overview` | Current model, current request, transcript, and compact resource summary | Live/current state |
-| `Metrics` | Continuously updating metric table and live metric graphs | Live state; active run shown as context only |
-| `Runs` | Historical run selector and after-action reports | One selected run after pressing `Enter` |
-| `Logs` | Structured application, worker, build, and native diagnostics | Live and retained log history |
+| Tab        | Meaning                                                                  | Data context                                 |
+| ---------- | ------------------------------------------------------------------------ | -------------------------------------------- |
+| `Overview` | Current model, current request, transcript, and compact resource summary | Live/current state                           |
+| `Metrics`  | Continuously updating metric table and live metric graphs                | Live state; active run shown as context only |
+| `Runs`     | Historical run selector and after-action reports                         | One selected run after pressing `Enter`      |
+| `Logs`     | Structured application, worker, build, and native diagnostics            | Live and retained log history                |
 
 The previous `Graphs` tab becomes `Runs`. Historical run selection belongs only to `Runs`; it must not silently filter the live `Metrics` tab.
 
@@ -501,7 +501,7 @@ Build requirements and constraints:
 - The original source checkout and Cargo/Rust toolchain must be available.
 - Native build dependencies may be required.
 - Cargo may download build dependencies and the LiteRT runtime.
-- Model weights are not downloaded automatically.
+- Selecting a known supported model may download its pinned, checksum-verified artifacts automatically before compilation; unsupported/custom artifacts remain manual.
 - The build uses an isolated target directory and does not overwrite the running executable.
 - Already-enabled adapter and acceleration features should be preserved.
 - Only the known adapter families may be requested; no arbitrary shell command may be constructed from a manifest value.
@@ -691,7 +691,7 @@ This plan does not introduce:
 - A separate monitoring service
 - PostgreSQL, Redis, Kafka, Docker, or Kubernetes
 - Cloud inference
-- Automatic model-weight downloads
+- Unrestricted or unverified model-weight downloads; automatic downloads are allowlisted and checksum-verified.
 - Partial streaming transcription
 - Unverified whole-device power estimates
 - Mobile UI implementation

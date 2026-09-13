@@ -1,6 +1,7 @@
 //! Development-checkout adapter builds. Call `restart` only after restoring the
-//! terminal, joining workers, and finishing native-log capture. The caller owns
-//! the warning that restarting resets conversation/history; no models are fetched.
+//! terminal, joining workers, and finishing native-log capture. The caller owns the
+//! warning that restarting resets conversation/history; model downloads are handled
+//! separately by the allowlisted TUI download task.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
