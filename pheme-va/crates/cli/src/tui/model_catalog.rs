@@ -23,10 +23,10 @@ impl CatalogEntry {
     pub fn status(&self) -> &'static str {
         if !model::family_supported(&self.manifest.family) {
             "unsupported model family"
-        } else if !self.adapter_compiled {
-            "adapter not compiled"
         } else if !self.artifacts_available() {
             "artifact missing"
+        } else if !self.adapter_compiled {
+            "adapter not compiled"
         } else {
             "ready to load"
         }

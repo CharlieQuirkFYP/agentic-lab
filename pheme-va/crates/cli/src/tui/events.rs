@@ -19,6 +19,12 @@ pub struct ModelLoadRequest {
 
 pub enum WorkerCommand {
     LoadModel(ModelLoadRequest),
+    BeginRun {
+        run_id: RunId,
+    },
+    EndRun {
+        run_id: RunId,
+    },
     TranscribeWav {
         request_id: RequestId,
         run_id: RunId,
