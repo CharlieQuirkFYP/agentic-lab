@@ -97,6 +97,15 @@ Select a model with Enter. The picker reports whether its adapter is compiled in
 
 Automatic setup requires the original source checkout, Cargo/Rust, and native build dependencies. Known Whisper/Zipformer model IDs can download missing pinned, checksum-verified artifacts through `scripts/download-model.sh`. Cargo may also download dependencies or the LiteRT runtime. Backend cache generations live under `target/tui-adapters/cache-v2/`; Unix builds reuse a locked `target/tui-adapters/build/` for incremental compilation. Neither overwrites the running executable. This is a development convenience, not runtime compilation for mobile deployments.
 
+On some macOS Command Line Tools installations, the Whisper adapter build fails with `fatal error: 'mutex' file not found` or another missing C++ standard header. The TUI may only show `Cargo adapter build failed (exit status: 101)`; press `t` during preparation to see the native logs. If the logs show this header error, point the compiler at the headers in the macOS SDK and retry from `pheme-va/`:
+
+```bash
+export CPLUS_INCLUDE_PATH="$(xcrun --show-sdk-path)/usr/include/c++/v1"
+cargo run --release -p cli --features whisper -- tui
+```
+
+The export applies only to the current shell. Other macOS installations may build without it.
+
 To avoid the initial build/restart, optionally compile both adapters up front:
 
 ```bash
