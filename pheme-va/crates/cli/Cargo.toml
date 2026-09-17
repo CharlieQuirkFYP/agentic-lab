@@ -1,0 +1,31 @@
+[package]
+name = "cli"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Terminal recorder and WAV transcription client for the Pheme VA"
+
+[features]
+default = []
+whisper = ["dep:whispercpp"]
+whisper-metal = ["whisper", "whispercpp/metal"]
+whisper-coreml = ["whisper", "whispercpp/coreml"]
+zipformer = ["dep:zipformer", "zipformer/litert", "dep:litert-sys"]
+
+[dependencies]
+anyhow = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+cpal = "0.15"
+
+metrics = { path = "../metrics", features = ["desktop"] }
+ratatui = { version = "=0.29.0", default-features = false, features = ["crossterm"] }
+serde.workspace = true
+serde_json.workspace = true
+toml = "0.8"
+va_core = { package = "core", path = "../core" }
+whispercpp = { path = "../models/whispercpp", optional = true }
+zipformer = { path = "../models/zipformer", optional = true }
+# Directly depend on the sys crate so its verified runtime cache directory is
+# exposed to this host's build script for an executable rpath.
+litert-sys = { version = "0.2.1", optional = true }
