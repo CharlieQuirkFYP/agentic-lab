@@ -136,7 +136,7 @@ On a later launch with a valid saved configuration, show a short entry menu inst
 │                                                                              │
 │  Current model: whisper-large-v3-turbo                                      │
 │  Manifest:      models/manifest.toml                                        │
-│  Audio folder:  pheme-va/local/audio/                                      │
+│  Audio folder:  pheme-va/samples/                                      │
 │                                                                              │
 │  > Continue with current model                                              │
 │    Choose another model                                                      │
@@ -266,7 +266,7 @@ The central result panel is always visible so both file and microphone runs end 
 │ [f] Select WAV file    │ Choose a source to test the selected model.         │
 │                        │                                                     │
 │ Folder:               │                                                     │
-│ pheme-va/local/audio/ │                                                     │
+│ pheme-va/samples/ │                                                     │
 ├────────────────────────┴─────────────────────────────────────────────────────┤
 │ RUN DETAILS                                                                  │
 │ Status: idle       Source: none       Run: —       Last run: —               │
@@ -300,7 +300,7 @@ Press `[f]` to open the configured audio directory:
 
 ```text
 ┌─ PHEME VA / SELECT WAV FILE ────────────────────────────────────────────────┐
-│ Directory: /home/user/project/pheme-va/local/audio/                         │
+│ Directory: /home/user/project/pheme-va/samples/                         │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │                                                                              │
 │ ..                                                                           │
@@ -898,7 +898,7 @@ Persist only local non-secret preferences:
 ```toml
 selected_stt_model = "whisper-large-v3-turbo"
 model_manifest = "models/manifest.toml"
-audio_directory = "local/audio"
+audio_directory = "samples"
 language = "en"
 dictionary = ["Pheme", "KLASS"]
 max_seconds = 120
@@ -911,10 +911,10 @@ The saved model field must be `selected_stt_model`, not only a raw path. The man
 Use a user-level configuration path rather than writing preferences into the repository. On Unix this can follow `XDG_CONFIG_HOME` and otherwise use the user's config directory; platform-specific resolution can be kept small and local to `tui/config.rs`. The default audio directory remains under the repository's `pheme-va` tree:
 
 ```text
-pheme-va/local/audio/
+pheme-va/samples/
 ```
 
-When invoked from inside `pheme-va/`, this resolves naturally to `local/audio/`. The UI should display the resolved absolute path so the user knows which directory is being used.
+When invoked from inside `pheme-va/`, this resolves naturally to `samples/`. The UI should display the resolved absolute path so the user knows which directory is being used.
 
 Configuration writes should be staged and atomically renamed. A failed write must leave the previous valid configuration intact. Do not persist model weights, recordings, transcripts, credentials, or API keys by default.
 
@@ -1008,7 +1008,7 @@ The implementation is complete when:
 3. The picker distinguishes manifest presence, compiled adapter, required artifacts, and actual load readiness.
 4. `whisper`, `zipformer`, or both families can be selected when their corresponding CLI features are compiled.
 5. A failed model switch leaves the old active engine and saved selection intact.
-6. The TUI defaults to the configurable `pheme-va/local/audio/` directory.
+6. The TUI defaults to the configurable `pheme-va/samples/` directory.
 7. A single WAV file can be selected, processed, retried, and advanced with `[n]`.
 8. A microphone recording can be started, stopped, discarded, and processed.
 9. Both input paths use the same final transcript component.

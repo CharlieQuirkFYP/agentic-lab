@@ -3,6 +3,7 @@ mod config;
 mod download;
 mod events;
 mod folder;
+mod history;
 mod logs;
 mod model_catalog;
 mod native_logs;
@@ -50,6 +51,8 @@ pub fn run(options: TuiOptions) -> Result<()> {
     let mut config = config_loaded.unwrap_or_default();
     apply_options(&mut config, &options);
     let catalog = ModelCatalog::load(config.model_manifest.clone());
+    // Refuse malformed history before starting workers or entering raw mode.
+    let (history, reports) = history::History::open(config::history_path()?)?;
     let mut native_logs =
         native_logs::NativeLogs::start().context("could not capture native stderr")?;
 
@@ -91,6 +94,8 @@ pub fn run(options: TuiOptions) -> Result<()> {
         metric_dropped,
     );
 
+    app.attach_history(history, reports);
+
     let mut terminal = match TerminalSession::enter() {
         Ok(terminal) => terminal,
         Err(error) => {
@@ -103,6 +108,7 @@ pub fn run(options: TuiOptions) -> Result<()> {
             return Err(error);
         }
     };
+    app.start_cache_probe();
     app.start_initial_load();
     let loop_result = run_event_loop(&mut terminal.terminal, &mut app, &native_logs);
     app.build.take();
@@ -113,11 +119,12 @@ pub fn run(options: TuiOptions) -> Result<()> {
     if let Some(resource_join) = resource_join {
         let _ = resource_join.join();
     }
+    let history_result = app.flush_history();
     drop(terminal);
     let capture_result = native_logs
         .finish(&mut app.logs)
         .context("could not restore native stderr");
-    loop_result.and(capture_result)?;
+    loop_result.and(capture_result).and(history_result)?;
     if let Some((binary, model_id)) = app.restart.take() {
         rebuild::restart(&binary, &app.config, &model_id)?;
     }

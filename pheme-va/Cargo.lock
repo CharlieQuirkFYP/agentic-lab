@@ -388,6 +388,7 @@ dependencies = [
  "metrics",
  "ratatui",
  "serde",
+ "serde_json",
  "toml",
  "whispercpp",
  "zipformer",

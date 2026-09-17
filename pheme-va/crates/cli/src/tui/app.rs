@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
@@ -8,6 +9,7 @@ use metrics::MetricEvent;
 use ratatui::crossterm::event::{Event, KeyCode};
 use va_core::{AudioBuffer, TranscriptionResult};
 
+use crate::model;
 use crate::recorder::Recording;
 
 use super::config::{self, TuiConfig};
@@ -16,8 +18,8 @@ use super::events::{ModelLoadRequest, RequestId, WorkerCommand, WorkerEvent};
 use super::folder::FolderState;
 use super::logs::LogStore;
 use super::model_catalog::ModelCatalog;
-use super::rebuild::BuildTask;
-use super::telemetry::TelemetryStore;
+use super::rebuild::{BuildTask, CacheProbeTask, CacheStatus};
+use super::telemetry::{SeriesKey, TelemetryStore};
 use super::TuiOptions;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -41,6 +43,33 @@ pub enum TelemetryTab {
     Metrics,
     Runs,
     Logs,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AdapterAvailability {
+    Unsupported,
+    ArtifactMissing,
+    Compiled,
+    Cached,
+    Checking,
+    Prepare,
+}
+
+impl AdapterAvailability {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Unsupported => "unsupported model family",
+            Self::ArtifactMissing => "artifact missing",
+            Self::Compiled => "compiled",
+            Self::Cached => "cached",
+            Self::Checking => "checking cache",
+            Self::Prepare => "prepare on selection",
+        }
+    }
+
+    pub fn is_ready(self) -> bool {
+        matches!(self, Self::Compiled | Self::Cached)
+    }
 }
 
 impl TelemetryTab {
@@ -96,6 +125,16 @@ pub struct App {
     pub logs: LogStore,
     pub metric_detail: bool,
     pub run_detail: bool,
+    pub clear_runs_pending: bool,
+    clear_runs_inflight: bool,
+    history: Option<super::history::History>,
+    saved_history_revision: u64,
+    run_namespace: String,
+    pub historical_metric: Option<SeriesKey>,
+    pub historical_detail: bool,
+    pub historical_scroll: u16,
+    pub run_table: std::cell::RefCell<ratatui::widgets::TableState>,
+    historical_run: Option<String>,
     pub filter_query: String,
     pub filter_editing: bool,
     pub directory_input: String,
@@ -105,6 +144,8 @@ pub struct App {
     pub build: Option<BuildTask>,
     pub download: Option<DownloadTask>,
     pub restart: Option<(PathBuf, String)>,
+    pub adapter_cache: HashMap<String, CacheStatus>,
+    cache_probe: Option<CacheProbeTask>,
     worker_sender: Sender<WorkerCommand>,
     worker_receiver: Receiver<WorkerEvent>,
     metric_receiver: Receiver<MetricEvent>,
@@ -191,6 +232,23 @@ impl App {
             logs,
             metric_detail: false,
             run_detail: false,
+            clear_runs_pending: false,
+            clear_runs_inflight: false,
+            history: None,
+            saved_history_revision: 0,
+            run_namespace: format!(
+                "{}-{}",
+                std::process::id(),
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_nanos()
+            ),
+            historical_metric: None,
+            historical_detail: false,
+            historical_scroll: 0,
+            run_table: Default::default(),
+            historical_run: None,
             filter_query: String::new(),
             filter_editing: false,
             directory_input,
@@ -200,6 +258,8 @@ impl App {
             build: None,
             download: None,
             restart: None,
+            adapter_cache: HashMap::new(),
+            cache_probe: None,
             worker_sender,
             worker_receiver,
             metric_receiver,
@@ -216,11 +276,103 @@ impl App {
         }
     }
 
+    pub fn start_cache_probe(&mut self) {
+        let families = self
+            .catalog
+            .entries
+            .iter()
+            .filter(|entry| matches!(entry.manifest.family.as_str(), "whisper" | "zipformer"))
+            .map(|entry| entry.manifest.family.clone())
+            .collect::<std::collections::BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        self.adapter_cache.clear();
+        for family in &families {
+            self.adapter_cache
+                .insert(family.clone(), CacheStatus::Checking);
+        }
+        self.cache_probe = None;
+        if families.is_empty() {
+            return;
+        }
+        match CacheProbeTask::start(families.clone()) {
+            Ok(probe) => self.cache_probe = Some(probe),
+            Err(error) => {
+                for family in families {
+                    self.adapter_cache.insert(family, CacheStatus::Unavailable);
+                }
+                self.logs.warn(
+                    "adapter-cache",
+                    format!("could not start cache probe: {error:#}"),
+                );
+            }
+        }
+    }
+
+    fn poll_cache_probe(&mut self) {
+        let Some(mut probe) = self.cache_probe.take() else {
+            return;
+        };
+        match probe.poll() {
+            Ok(Some(results)) => {
+                for (family, cached) in results {
+                    self.adapter_cache.insert(
+                        family,
+                        if cached {
+                            CacheStatus::Cached
+                        } else {
+                            CacheStatus::Missing
+                        },
+                    );
+                }
+                self.logs.info("adapter-cache", "validated adapter cache");
+            }
+            Ok(None) => self.cache_probe = Some(probe),
+            Err(error) => {
+                for status in self.adapter_cache.values_mut() {
+                    if *status == CacheStatus::Checking {
+                        *status = CacheStatus::Unavailable;
+                    }
+                }
+                self.logs
+                    .warn("adapter-cache", format!("cache probe failed: {error:#}"));
+            }
+        }
+    }
+
+    pub fn adapter_availability(
+        &self,
+        entry: &super::model_catalog::CatalogEntry,
+    ) -> AdapterAvailability {
+        if !model::family_supported(&entry.manifest.family) {
+            AdapterAvailability::Unsupported
+        } else if !entry.artifacts_available() {
+            AdapterAvailability::ArtifactMissing
+        } else if entry.adapter_compiled {
+            AdapterAvailability::Compiled
+        } else {
+            match self
+                .adapter_cache
+                .get(&entry.manifest.family)
+                .copied()
+                .unwrap_or(CacheStatus::Checking)
+            {
+                CacheStatus::Cached => AdapterAvailability::Cached,
+                CacheStatus::Checking => AdapterAvailability::Checking,
+                CacheStatus::Missing | CacheStatus::Unavailable => AdapterAvailability::Prepare,
+            }
+        }
+    }
+
     pub fn tick(&mut self) {
         self.drain_metrics();
         self.drain_worker_events();
+        self.poll_cache_probe();
         self.poll_download();
         self.poll_build();
+        self.sync_historical_selection();
+        self.persist_history();
+        self.poll_history();
         if self.recording.as_ref().is_some_and(|recording| {
             recording.elapsed().as_secs() >= self.config.max_seconds as u64
         }) {
@@ -293,6 +445,8 @@ impl App {
                     .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
                     && key.code == KeyCode::Char('f')
                     && self.screen == Screen::Telemetry
+                    && !self.clear_runs_pending
+                    && !self.clear_runs_inflight
                 {
                     self.filter_editing = true;
                     self.scroll = 0;
@@ -305,6 +459,29 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.clear_runs_inflight {
+            return Ok(());
+        }
+        if self.clear_runs_pending {
+            match code {
+                KeyCode::Char('y') => {
+                    self.clear_runs_pending = false;
+                    if !self.run_active() {
+                        if let Some(history) = self.history.as_mut() {
+                            self.clear_runs_inflight = true;
+                            history.clear();
+                            self.status_message = "clearing saved runs…".into();
+                        }
+                    }
+                }
+                KeyCode::Esc => {
+                    self.clear_runs_pending = false;
+                    self.status_message = "clear runs cancelled".into();
+                }
+                _ => {}
+            }
+            return Ok(());
+        }
         if (self.build.is_some() || self.download.is_some())
             && !matches!(
                 self.screen,
@@ -376,6 +553,7 @@ impl App {
                     .catalog
                     .selected_index(&self.config.selected_stt_model)
                     .unwrap_or(0);
+                self.start_cache_probe();
                 self.logs.info("manifest", "rescanned model manifest");
             }
             KeyCode::Esc => {
@@ -531,6 +709,19 @@ impl App {
         if self.filter_editing {
             return self.handle_filter_key(code);
         }
+        if code == KeyCode::Char('c') && self.telemetry_tab == TelemetryTab::Runs {
+            if self.run_active() {
+                self.status_message =
+                    "cannot clear runs during an active request or recording".into();
+            } else if self.history.is_some() {
+                self.clear_runs_pending = true;
+                self.status_message =
+                    "Clear ALL saved runs and transcripts? [y] confirm · [Esc] cancel".into();
+            } else {
+                self.status_message = "run history storage is unavailable".into();
+            }
+            return Ok(());
+        }
         if self.metric_detail {
             match code {
                 KeyCode::Esc => self.metric_detail = false,
@@ -549,10 +740,24 @@ impl App {
             return Ok(());
         }
         if self.run_detail {
+            self.sync_historical_selection();
             match code {
+                KeyCode::Esc if self.historical_detail => self.historical_detail = false,
                 KeyCode::Esc => self.run_detail = false,
-                KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
-                KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
+                KeyCode::Enter => {
+                    self.historical_detail = self.historical_metric.is_some();
+                    self.historical_scroll = 0;
+                }
+                KeyCode::Char('j') | KeyCode::Down => self.move_historical_metric(1),
+                KeyCode::Char('k') | KeyCode::Up => self.move_historical_metric(-1),
+                KeyCode::PageDown if self.historical_detail => {
+                    self.historical_scroll = self.historical_scroll.saturating_add(5);
+                }
+                KeyCode::PageUp if self.historical_detail => {
+                    self.historical_scroll = self.historical_scroll.saturating_sub(5);
+                }
+                KeyCode::PageDown => self.scroll = self.scroll.saturating_add(5),
+                KeyCode::PageUp => self.scroll = self.scroll.saturating_sub(5),
                 KeyCode::Char('[') => self.cycle_run(-1),
                 KeyCode::Char(']') => self.cycle_run(1),
                 KeyCode::Char('f') | KeyCode::Char('/') => self.filter_editing = true,
@@ -576,7 +781,9 @@ impl App {
                 self.scroll = 0;
             }
             KeyCode::Enter if self.telemetry_tab == TelemetryTab::Runs => {
-                self.run_detail = self.telemetry.selected_run().is_some();
+                self.run_detail = self.telemetry.selected_report().is_some();
+                self.sync_historical_selection();
+                self.historical_detail = false;
                 self.scroll = 0;
             }
             KeyCode::Char('[') => self.cycle_run(-1),
@@ -704,9 +911,9 @@ impl App {
                 self.build = Some(build);
                 self.pending_model_id = Some(model_id.to_owned());
                 self.error_message = None;
-                self.status_message = format!("compiling backend for {model_id}");
+                self.status_message = format!("preparing backend for {model_id}");
                 self.logs
-                    .info("adapter-build", format!("compiling backend for {model_id}"));
+                    .info("adapter-build", format!("preparing backend for {model_id}"));
                 self.screen = Screen::Loading;
             }
             Err(error) => {
@@ -1169,6 +1376,7 @@ impl App {
                 audio_duration_seconds,
                 result,
             } if self.accepts_request(request_id) => {
+                self.drain_metrics();
                 let result = *result;
                 let mut report = self.telemetry.report(&run_id).cloned().unwrap_or_else(|| {
                     self.failed_report(&run_id, &source, "missing run context".to_owned())
@@ -1213,6 +1421,7 @@ impl App {
                 self.current_run = Some(run_id.clone());
                 self.current_source = Some(source.clone());
                 self.current_request = None;
+                self.drain_metrics();
                 self.telemetry
                     .upsert_report(self.failed_report(&run_id, &source, error.clone()));
                 self.telemetry.set_active_run(None);
@@ -1245,9 +1454,13 @@ impl App {
     }
 
     fn take_run_id(&mut self) -> String {
-        let run_id = format!("run-{:04}", self.next_run_id);
-        self.next_run_id = self.next_run_id.saturating_add(1);
-        run_id
+        loop {
+            let run_id = format!("run-{}-{:04}", self.run_namespace, self.next_run_id);
+            self.next_run_id = self.next_run_id.wrapping_add(1);
+            if self.telemetry.report(&run_id).is_none() {
+                return run_id;
+            }
+        }
     }
 
     fn open_telemetry(&mut self) {
@@ -1280,6 +1493,48 @@ impl App {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
+    fn sync_historical_selection(&mut self) {
+        let run = self.telemetry.selected_run().map(str::to_owned);
+        if self.historical_run != run {
+            self.historical_run = run.clone();
+            self.historical_metric = None;
+            self.historical_detail = false;
+            self.historical_scroll = 0;
+            self.scroll = 0;
+            *self.run_table.borrow_mut() = Default::default();
+        }
+        let series = run
+            .as_deref()
+            .map(|run| self.telemetry.series_for_run(run))
+            .unwrap_or_default();
+        if !series
+            .iter()
+            .any(|item| Some(&item.key) == self.historical_metric.as_ref())
+        {
+            self.historical_metric = series.first().map(|item| item.key.clone());
+            self.historical_detail = false;
+            self.historical_scroll = 0;
+        }
+    }
+
+    fn move_historical_metric(&mut self, delta: isize) {
+        self.sync_historical_selection();
+        let Some(run) = self.telemetry.selected_run() else {
+            return;
+        };
+        let series = self.telemetry.series_for_run(run);
+        if series.is_empty() {
+            return;
+        }
+        let current = series
+            .iter()
+            .position(|item| Some(&item.key) == self.historical_metric.as_ref())
+            .unwrap_or(0);
+        let next = (current as isize + delta).clamp(0, series.len() as isize - 1) as usize;
+        self.historical_metric = Some(series[next].key.clone());
+        self.historical_scroll = 0;
+    }
+
     fn cycle_run(&mut self, delta: isize) {
         let runs = self.telemetry.run_ids();
         if runs.is_empty() {
@@ -1292,7 +1547,92 @@ impl App {
             .unwrap_or(0) as isize;
         let next = (current + delta).rem_euclid(runs.len() as isize) as usize;
         self.telemetry.select_run(runs.get(next).cloned());
+        self.sync_historical_selection();
         self.scroll = 0;
+    }
+
+    pub fn attach_history(
+        &mut self,
+        history: super::history::History,
+        reports: Vec<super::telemetry::RunReport>,
+    ) {
+        for report in reports.into_iter().rev() {
+            self.telemetry.upsert_report(report);
+        }
+        self.saved_history_revision = self.telemetry.history_revision;
+        self.history = Some(history);
+    }
+
+    fn run_active(&self) -> bool {
+        self.current_request.is_some()
+            || self.recording.is_some()
+            || self.telemetry.active_run().is_some()
+    }
+
+    fn persist_history(&mut self) {
+        if self.clear_runs_inflight
+            || self.saved_history_revision == self.telemetry.history_revision
+        {
+            return;
+        }
+        if let Some(history) = self.history.as_mut() {
+            history.save(
+                self.telemetry
+                    .reports()
+                    .filter(|report| report.status != "BUSY")
+                    .cloned()
+                    .collect(),
+            );
+            self.saved_history_revision = self.telemetry.history_revision;
+        }
+    }
+
+    fn poll_history(&mut self) {
+        let Some(history) = self.history.as_mut() else {
+            return;
+        };
+        history.pump();
+        let outcomes = history.outcomes();
+        for (clear, result) in outcomes {
+            if clear {
+                self.clear_runs_inflight = false;
+            }
+            match result {
+                Ok(()) if clear => {
+                    self.telemetry.clear_runs();
+                    self.saved_history_revision = self.telemetry.history_revision;
+                    self.result = None;
+                    self.current_run = None;
+                    self.current_source = None;
+                    self.run_detail = false;
+                    self.historical_run = None;
+                    self.historical_metric = None;
+                    self.historical_detail = false;
+                    self.historical_scroll = 0;
+                    self.scroll = 0;
+                    *self.run_table.borrow_mut() = Default::default();
+                    self.status_message = "all saved runs cleared".into();
+                }
+                Err(error) => {
+                    self.status_message = error.clone();
+                    self.error_message = Some(error.clone());
+                    self.logs.error("history", error);
+                }
+                _ => {}
+            }
+        }
+    }
+
+    pub fn flush_history(&mut self) -> Result<()> {
+        self.drain_metrics();
+        self.drain_worker_events();
+        self.persist_history();
+        let result = self
+            .history
+            .as_mut()
+            .map_or(Ok(()), |history| history.flush());
+        self.poll_history();
+        result
     }
 
     pub fn shutdown_worker(&self) {
@@ -1351,6 +1691,44 @@ pub(super) mod tests {
         app
     }
 
+    #[test]
+    fn adapter_availability_reports_a_validated_cache_separately() {
+        let mut app = test_app();
+        let manifest: crate::model::ModelEntry = toml::from_str(
+            r#"
+            id = "fixture"
+            family = "whisper"
+            model = "fixture.bin"
+            "#,
+        )
+        .unwrap();
+        let entry = super::super::model_catalog::CatalogEntry {
+            manifest,
+            model_path: PathBuf::from("fixture.bin"),
+            missing_paths: Vec::new(),
+            // Force the fixture to represent a featureless launcher regardless
+            // of the features used to compile this test binary.
+            adapter_compiled: false,
+        };
+
+        assert_eq!(
+            app.adapter_availability(&entry),
+            AdapterAvailability::Checking
+        );
+        app.adapter_cache
+            .insert("whisper".into(), CacheStatus::Cached);
+        assert_eq!(
+            app.adapter_availability(&entry),
+            AdapterAvailability::Cached
+        );
+        app.adapter_cache
+            .insert("whisper".into(), CacheStatus::Missing);
+        assert_eq!(
+            app.adapter_availability(&entry),
+            AdapterAvailability::Prepare
+        );
+    }
+
     pub fn metric(run: &str, name: &str) -> MetricEvent {
         MetricEvent {
             schema_version: metrics::METRICS_SCHEMA_VERSION,
@@ -1365,6 +1743,161 @@ pub(super) mod tests {
             source: "test-sensor".into(),
             unavailable_reason: None,
         }
+    }
+
+    pub fn report(run: &str, events: Vec<MetricEvent>) -> super::super::telemetry::RunReport {
+        super::super::telemetry::RunReport {
+            run_id: run.into(),
+            model_id: "test-model".into(),
+            model_family: "test-family".into(),
+            backend: "test-backend".into(),
+            runtime: Some("local".into()),
+            revision: Some("abc123".into()),
+            source: "fixture.wav".into(),
+            status: "speech".into(),
+            transcript: "Keep this transcript".into(),
+            raw_transcript: "raw words".into(),
+            language: Some("en".into()),
+            audio_duration_seconds: 2.5,
+            gate_decision: "speech".into(),
+            segment_count: 1,
+            started_at_ms: 1000,
+            finished_at_ms: Some(3500),
+            error: None,
+            result: None,
+            events,
+        }
+    }
+
+    #[test]
+    fn history_restart_ids_and_confirmed_clear() {
+        use super::super::history::{tests::TestPath, History};
+        let path = TestPath::new();
+        let mut app = test_app();
+        let (history, reports) = History::open(path.file()).unwrap();
+        app.attach_history(history, reports);
+        let id = app.take_run_id();
+        app.telemetry
+            .upsert_report(report(&id, vec![metric(&id, "cpu")]));
+        app.flush_history().unwrap();
+        drop(app);
+
+        let mut app = test_app();
+        let (history, reports) = History::open(path.file()).unwrap();
+        app.attach_history(history, reports);
+        assert!(app.telemetry.report(&id).is_some());
+        assert_ne!(app.take_run_id(), id);
+        let collision = format!("run-{}-{:04}", app.run_namespace, app.next_run_id);
+        app.telemetry.upsert_report(report(&collision, vec![]));
+        assert_ne!(app.take_run_id(), collision);
+        app.telemetry_tab = TelemetryTab::Runs;
+        app.current_request = Some(1);
+        app.handle_key(KeyCode::Char('c')).unwrap();
+        assert!(!app.clear_runs_pending);
+        app.current_request = None;
+        app.handle_key(KeyCode::Char('c')).unwrap();
+        assert!(app.clear_runs_pending);
+        app.handle_key(KeyCode::Esc).unwrap();
+        assert!(!app.clear_runs_pending);
+        assert!(app.telemetry.report(&id).is_some());
+        app.handle_key(KeyCode::Char('c')).unwrap();
+        app.handle_key(KeyCode::Char('y')).unwrap();
+        assert!(app.clear_runs_inflight);
+        app.flush_history().unwrap();
+        assert_eq!(app.telemetry.reports().count(), 0);
+        assert!(app.telemetry.selected_run().is_none());
+        assert!(!app.clear_runs_inflight);
+        app.flush_history().unwrap();
+        drop(app);
+        assert!(History::open(path.file()).unwrap().1.is_empty());
+    }
+
+    #[test]
+    fn failed_worker_report_drains_queued_metrics_and_is_saved_on_tick() {
+        use super::super::history::{tests::TestPath, History};
+        let path = TestPath::new();
+        let mut app = test_app();
+        let (history, reports) = History::open(path.file()).unwrap();
+        app.attach_history(history, reports);
+        app.current_request = Some(7);
+        let (sender, receiver) = mpsc::channel();
+        app.metric_receiver = receiver;
+        sender.send(metric("failed-run", "queued sample")).unwrap();
+        app.apply_worker_event(WorkerEvent::ProcessingFailed {
+            request_id: 7,
+            run_id: "failed-run".into(),
+            source: "fixture.wav".into(),
+            error: "test failure".into(),
+        });
+        app.tick();
+        app.history.as_mut().unwrap().flush().unwrap();
+        let (_, restored) = History::open(path.file()).unwrap();
+        assert_eq!(restored[0].error.as_deref(), Some("test failure"));
+        assert_eq!(restored[0].events[0].name, "queued sample");
+    }
+
+    #[test]
+    fn failed_clear_keeps_visible_reports_and_does_not_claim_success() {
+        use super::super::history::{tests::TestPath, History};
+        let path = TestPath::new();
+        let mut app = test_app();
+        let (history, reports) = History::open(path.file()).unwrap();
+        app.attach_history(history, reports);
+        app.telemetry.upsert_report(report("run-1", vec![]));
+        app.flush_history().unwrap();
+        std::fs::remove_file(path.file()).unwrap();
+        std::fs::create_dir(path.file()).unwrap();
+        app.telemetry_tab = TelemetryTab::Runs;
+        app.handle_key(KeyCode::Char('c')).unwrap();
+        app.handle_key(KeyCode::Char('y')).unwrap();
+        assert!(app.flush_history().is_err());
+        assert!(app.telemetry.report("run-1").is_some());
+        assert!(app.status_message.contains("history"));
+        assert!(!app.status_message.contains("all saved runs cleared"));
+    }
+
+    #[test]
+    fn report_navigation_preserves_selection_and_resets_on_run_change() {
+        let mut app = test_app();
+        app.telemetry.push(metric("live", "live_cpu"));
+        let live = app.telemetry.selected_metric("");
+        app.telemetry.upsert_report(report(
+            "old",
+            vec![metric("old", "alpha"), metric("old", "beta")],
+        ));
+        app.telemetry
+            .upsert_report(report("other", vec![metric("other", "gamma")]));
+        app.handle_key(KeyCode::Char('3')).unwrap();
+        app.handle_key(KeyCode::Enter).unwrap();
+        assert!(app.run_detail);
+        assert!(!app.historical_detail);
+        assert_eq!(app.historical_metric.as_ref().unwrap().name, "alpha");
+        app.handle_key(KeyCode::Char('j')).unwrap();
+        assert_eq!(app.historical_metric.as_ref().unwrap().name, "beta");
+        app.handle_key(KeyCode::PageDown).unwrap();
+        assert_eq!(app.scroll, 5);
+        app.handle_key(KeyCode::Enter).unwrap();
+        assert!(app.historical_detail);
+        app.handle_key(KeyCode::PageDown).unwrap();
+        assert_eq!(app.historical_scroll, 5);
+        app.handle_key(KeyCode::Esc).unwrap();
+        assert!(app.run_detail);
+        assert!(!app.historical_detail);
+        assert_eq!(app.scroll, 5);
+        assert_eq!(app.historical_metric.as_ref().unwrap().name, "beta");
+        app.handle_key(KeyCode::Esc).unwrap();
+        app.handle_key(KeyCode::Enter).unwrap();
+        assert_eq!(app.historical_metric.as_ref().unwrap().name, "beta");
+        app.handle_key(KeyCode::Enter).unwrap();
+        app.handle_key(KeyCode::Char(']')).unwrap();
+        assert!(!app.historical_detail);
+        assert_eq!(app.scroll, 0);
+        assert_eq!(app.historical_metric.as_ref().unwrap().name, "gamma");
+        assert_eq!(app.telemetry.selected_metric(""), live);
+        app.telemetry.select_run(Some("evicted".into()));
+        app.sync_historical_selection();
+        assert!(app.historical_metric.is_none());
+        assert!(!app.historical_detail);
     }
 
     #[test]

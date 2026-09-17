@@ -1,7 +1,15 @@
 //! Development-checkout adapter builds. Call `restart` only after restoring the
 //! terminal, joining workers, and finishing native-log capture. The caller owns the
-//! warning that restarting resets conversation/history; model downloads are handled
-//! separately by the allowlisted TUI download task.
+//! warning that restarting resets in-memory conversation and live telemetry;
+//! saved run reports are flushed first. Model downloads are handled separately by
+//! the allowlisted TUI download task.
+//!
+//! App integration: call `BuildTask::start(family, model_id)` even in a fresh
+//! featureless launcher when an adapter is unavailable, then keep polling. A
+//! cache hit and a successful build both yield `Some(binary)`; feed either into
+//! the existing terminal-cleanup/restart path. `None` includes cache validation,
+//! not just compilation, so UI status should say "preparing backend". No caller
+//! should infer availability from a target-directory executable's existence.
 
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -11,12 +19,27 @@ use anyhow::{bail, Context, Result};
 
 use super::config::{self, TuiConfig};
 
+#[path = "rebuild_cache.rs"]
+mod cache;
+
+enum CacheEvent {
+    Prepared(
+        Box<cache::Cache>,
+        Option<PathBuf>,
+        String,
+        Vec<&'static str>,
+    ),
+    Published(PathBuf),
+}
+
 pub struct BuildTask {
     pub model_id: String,
     child: Option<Child>,
     binary: PathBuf,
     outcome: Option<std::result::Result<PathBuf, String>>,
     preparation: Option<BuildPreparation>,
+    cache: Option<cache::Cache>,
+    cache_rx: Option<std::sync::mpsc::Receiver<Result<CacheEvent>>>,
 }
 
 struct BuildPreparation {
@@ -27,28 +50,110 @@ struct BuildPreparation {
     output: Option<std::io::Result<String>>,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CacheStatus {
+    Checking,
+    Cached,
+    Missing,
+    Unavailable,
+}
+
+/// Checks the validated adapter cache without starting Cargo. Fingerprinting is
+/// deliberately kept off the TUI event loop because it walks the checkout.
+pub struct CacheProbeTask {
+    receiver: std::sync::mpsc::Receiver<Result<Vec<(String, bool)>>>,
+}
+
+impl CacheProbeTask {
+    pub fn start(families: Vec<String>) -> Result<Self> {
+        let (workspace, target) = workspace_and_target()?;
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("adapter-cache-probe".into())
+            .spawn(move || {
+                let result = probe_cache(&workspace, &target, &families);
+                let _ = sender.send(result);
+            })
+            .context("could not start adapter cache probe")?;
+        Ok(Self { receiver })
+    }
+
+    /// Nonblocking; the result contains one cache-hit flag per requested family.
+    pub fn poll(&mut self) -> Result<Option<Vec<(String, bool)>>> {
+        match self.receiver.try_recv() {
+            Ok(result) => result.map(Some),
+            Err(std::sync::mpsc::TryRecvError::Empty) => Ok(None),
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                bail!("adapter cache probe stopped unexpectedly")
+            }
+        }
+    }
+}
+
+fn workspace_and_target() -> Result<(PathBuf, PathBuf)> {
+    let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .context("CLI manifest has no workspace parent")?;
+    anyhow::ensure!(
+        workspace.join("Cargo.toml").is_file()
+            && workspace.join("Cargo.lock").is_file()
+            && workspace.join("crates/cli/Cargo.toml").is_file(),
+        "adapter rebuilding requires the original development checkout at {}",
+        workspace.display()
+    );
+    let workspace = workspace
+        .canonicalize()
+        .context("could not resolve workspace")?;
+    let target = workspace.join("target/tui-adapters");
+    Ok((workspace, target))
+}
+
+fn probe_cache(
+    workspace: &Path,
+    target: &Path,
+    families: &[String],
+) -> Result<Vec<(String, bool)>> {
+    // Use the same toolchain and normalized environment as an actual build, but
+    // do not start Cargo. This only obtains the compiler identity for the cache
+    // fingerprint and validates existing immutable cache generations.
+    let mut command = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+    cache::configure_command(&mut command, workspace);
+    let output = command
+        .current_dir(workspace)
+        .arg("-vV")
+        .stdin(Stdio::null())
+        .output()
+        .context("could not query the native Rust target for the adapter cache")?;
+    anyhow::ensure!(
+        output.status.success(),
+        "native Rust target query failed ({}): {}",
+        output.status,
+        String::from_utf8_lossy(&output.stderr).trim()
+    );
+    let compiler =
+        String::from_utf8(output.stdout).context("Rust target query returned non-UTF-8 output")?;
+    native_host(&compiler)?;
+
+    families
+        .iter()
+        .map(|family| {
+            let requested_features = features(family)?;
+            let cache = cache::Cache::prepare(workspace, target, &requested_features, &compiler)?;
+            Ok((family.clone(), cache.lookup().is_some()))
+        })
+        .collect()
+}
+
 impl BuildTask {
     pub fn start(family: &str, model_id: String) -> Result<Self> {
         let features = features(family)?;
-        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
-            .parent()
-            .and_then(Path::parent)
-            .context("CLI manifest has no workspace parent")?;
-        anyhow::ensure!(
-            workspace.join("Cargo.toml").is_file()
-                && workspace.join("Cargo.lock").is_file()
-                && workspace.join("crates/cli/Cargo.toml").is_file(),
-            "adapter rebuilding requires the original development checkout at {}",
-            workspace.display()
-        );
-        let workspace = workspace
-            .canonicalize()
-            .context("could not resolve workspace")?;
-        let target = workspace.join("target/tui-adapters");
+        let (workspace, target) = workspace_and_target()?;
 
         // Probe asynchronously: even rustup/toolchain discovery must not block
         // the event loop. An explicit host triple overrides cross-target config.
         let mut command = Command::new(std::env::var_os("RUSTC").unwrap_or_else(|| "rustc".into()));
+        cache::configure_command(&mut command, &workspace);
         command
             .current_dir(&workspace)
             .arg("-vV")
@@ -63,6 +168,8 @@ impl BuildTask {
             binary: PathBuf::new(),
             outcome: None,
             preparation: None,
+            cache: None,
+            cache_rx: None,
         };
         let output_rx = probe_output(task.child.as_mut().expect("probe child exists"))?;
         task.preparation = Some(BuildPreparation {
@@ -81,6 +188,46 @@ impl BuildTask {
             return match outcome {
                 Ok(binary) => Ok(Some(binary.clone())),
                 Err(message) => bail!("{message}"),
+            };
+        }
+        if let Some(receiver) = &self.cache_rx {
+            let event = match receiver.try_recv() {
+                Ok(event) => event,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return Ok(None),
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    Err(anyhow::anyhow!("adapter cache worker stopped unexpectedly"))
+                }
+            };
+            self.cache_rx = None;
+            let result = (|| -> Result<()> {
+                match event? {
+                    CacheEvent::Published(binary) | CacheEvent::Prepared(_, Some(binary), _, _) => {
+                        self.outcome = Some(Ok(binary));
+                    }
+                    CacheEvent::Prepared(cache, None, host, features) => {
+                        self.binary = cache
+                            .target
+                            .join(&host)
+                            .join("release")
+                            .join(format!("cli{}", std::env::consts::EXE_SUFFIX));
+                        let mut command =
+                            build_command(cache.workspace(), &cache.target, &features, &host);
+                        self.child = Some(
+                            spawn_isolated(&mut command)
+                                .context("could not start Cargo adapter build")?,
+                        );
+                        self.cache = Some(*cache);
+                    }
+                }
+                Ok(())
+            })();
+            if let Err(error) = result {
+                self.outcome = Some(Err(format!("{error:#}")));
+            }
+            return if self.outcome.is_some() {
+                self.poll()
+            } else {
+                Ok(None)
             };
         }
         if let Some(preparation) = self.preparation.as_mut() {
@@ -106,7 +253,7 @@ impl BuildTask {
         };
         self.child.take();
         if let Some(preparation) = self.preparation.take() {
-            let next = (|| -> Result<Child> {
+            let next = (|| -> Result<()> {
                 anyhow::ensure!(
                     status.success(),
                     "native Rust target query failed ({status})"
@@ -115,31 +262,48 @@ impl BuildTask {
                     .output
                     .context("missing Rust target query output")?
                     .context("could not read native Rust target")?;
-                let host = native_host(&output)?;
-                self.binary = preparation
-                    .target
-                    .join(host)
-                    .join("release")
-                    .join(format!("cli{}", std::env::consts::EXE_SUFFIX));
-                let mut command = build_command(
-                    &preparation.workspace,
-                    &preparation.target,
-                    &preparation.features,
-                    host,
-                );
-                spawn_isolated(&mut command).context("could not start Cargo adapter build")
+                let host = native_host(&output)?.to_owned();
+                self.cache_work(move || {
+                    let mut cache = cache::Cache::prepare(
+                        &preparation.workspace,
+                        &preparation.target,
+                        &preparation.features,
+                        &output,
+                    )?;
+                    let mut hit = cache.lookup();
+                    if hit.is_none() {
+                        cache.lock_build()?;
+                        hit = cache.lookup();
+                    }
+                    Ok(CacheEvent::Prepared(
+                        Box::new(cache),
+                        hit,
+                        host,
+                        preparation.features,
+                    ))
+                })
             })();
             match next {
-                Ok(child) => {
-                    self.child = Some(child);
-                    return Ok(None);
-                }
+                Ok(()) => return Ok(None),
                 Err(error) => {
                     self.outcome = Some(Err(format!("{error:#}")));
                     return self.poll();
                 }
             }
         }
+        if status.success() && self.binary.is_file() {
+            if let Some(cache) = self.cache.take() {
+                let binary = self.binary.clone();
+                if let Err(error) =
+                    self.cache_work(move || cache.publish(&binary).map(CacheEvent::Published))
+                {
+                    self.outcome = Some(Err(format!("{error:#}")));
+                    return self.poll();
+                }
+                return Ok(None);
+            }
+        }
+        self.cache.take();
         self.outcome = Some(if !status.success() {
             Err(format!(
                 "Cargo adapter build failed ({status}); see native logs"
@@ -155,14 +319,35 @@ impl BuildTask {
         self.poll()
     }
 
+    fn cache_work(
+        &mut self,
+        work: impl FnOnce() -> Result<CacheEvent> + Send + 'static,
+    ) -> Result<()> {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("adapter-cache".into())
+            .spawn(move || {
+                let _ = sender.send(work());
+            })
+            .context("could not start adapter cache worker")?;
+        self.cache_rx = Some(receiver);
+        Ok(())
+    }
+
     /// Kill the isolated process group immediately, then reap off the UI thread.
     /// Idempotent; cancelling an already completed build preserves its outcome.
     pub fn cancel(&mut self) {
+        if self.cache_rx.take().is_some() {
+            self.outcome = Some(Err("adapter build cancelled".to_owned()));
+        }
         if let Some(mut child) = self.child.take() {
             terminate(&mut child);
             // Never wait on Cargo (or a stuck filesystem) in the event loop.
+            let cache = self.cache.take();
             std::thread::spawn(move || {
                 let _ = child.wait();
+                // Keep our publication lock until the terminated Cargo exits.
+                drop(cache);
             });
             self.outcome = Some(Err("adapter build cancelled".to_owned()));
         }
@@ -236,6 +421,7 @@ fn native_host(output: &str) -> Result<&str> {
 
 fn build_command(workspace: &Path, target: &Path, features: &[&str], host: &str) -> Command {
     let mut command = Command::new("cargo");
+    cache::configure_command(&mut command, workspace);
     command
         .current_dir(workspace)
         .args([
@@ -332,6 +518,206 @@ fn restart_command(binary: &Path, config: &TuiConfig, model_id: &str) -> Command
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Opt-in real Cargo/Zipformer check; uses already downloaded LiteRT and no
+    /// model weights. A Cargo runner enters this test with the actual launcher
+    /// environment, rather than an approximation of Cargo's injected variables.
+    #[cfg(unix)]
+    #[test]
+    #[ignore = "builds a real release Zipformer adapter; requires cached LiteRT"]
+    fn real_cargo_launcher_round_trip() {
+        use std::time::{Duration, Instant};
+        if let Some(result) = std::env::var_os("PHEME_REAL_REBUILD_CHILD") {
+            let mut task = BuildTask::start("zipformer", "runtime-smoke-test".into()).unwrap();
+            let mut built = false;
+            let deadline = Instant::now() + Duration::from_secs(240);
+            let binary = loop {
+                let result = task.poll().unwrap();
+                built |= task.cache.is_some();
+                if let Some(binary) = result {
+                    break binary;
+                }
+                assert!(Instant::now() < deadline, "real adapter build timed out");
+                std::thread::sleep(Duration::from_millis(10));
+            };
+            // No Cargo-provided library path may conceal a broken copied rpath.
+            assert!(Command::new(&binary)
+                .arg("--help")
+                .env_remove("LD_LIBRARY_PATH")
+                .env_remove("DYLD_FALLBACK_LIBRARY_PATH")
+                .status()
+                .unwrap()
+                .success());
+            std::fs::write(result, format!("{built}\n{}", binary.display())).unwrap();
+            return;
+        }
+        let workspace = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let review = workspace
+            .join("target")
+            .join(format!("rebuild-review-{}", std::process::id()));
+        std::fs::create_dir_all(&review).unwrap();
+        let script = review.join("runner.sh");
+        let test_name = format!(
+            "{}::real_cargo_launcher_round_trip",
+            module_path!().split_once("::").unwrap().1
+        );
+        let executable = std::env::current_exe()
+            .unwrap()
+            .to_string_lossy()
+            .replace('\'', "'\\''");
+        std::fs::write(
+            &script,
+            format!("#!/bin/sh\nexec '{executable}' --ignored --exact '{test_name}' --nocapture\n"),
+        )
+        .unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&script, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let compiler = Command::new("rustc").arg("-vV").output().unwrap();
+        let output = String::from_utf8(compiler.stdout).unwrap();
+        let host = native_host(&output).unwrap();
+        let mut results = Vec::new();
+        for run in 0..2 {
+            let result = review.join(format!("result-{run}"));
+            let mut command = Command::new("cargo");
+            cache::configure_command(&mut command, workspace);
+            let status = command
+                .current_dir(workspace)
+                .args(["run", "--offline", "--release", "-p", "cli", "--", "--help"])
+                .env(
+                    format!(
+                        "CARGO_TARGET_{}_RUNNER",
+                        host.replace('-', "_").to_uppercase()
+                    ),
+                    &script,
+                )
+                .env("PHEME_REAL_REBUILD_CHILD", &result)
+                .env("LITERT_NO_DOWNLOAD", "1")
+                .status()
+                .unwrap();
+            assert!(status.success());
+            results.push(std::fs::read_to_string(result).unwrap());
+        }
+        assert!(
+            results[1].starts_with("false\n"),
+            "fresh Cargo launcher rebuilt: {}",
+            results[1]
+        );
+        assert_eq!(
+            results[0].split_once('\n').unwrap().1,
+            results[1].split_once('\n').unwrap().1
+        );
+        println!(
+            "first launcher: {}\nsecond launcher: {}",
+            results[0], results[1]
+        );
+        std::fs::remove_dir_all(review).unwrap();
+    }
+
+    #[test]
+    fn cache_hit_flows_through_poll_without_starting_cargo() {
+        use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+        let workspace = std::env::temp_dir().join(format!(
+            "pheme-rebuild-hit-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&workspace).unwrap();
+        std::fs::write(workspace.join("Cargo.toml"), "[workspace]\n").unwrap();
+        std::fs::write(workspace.join("Cargo.lock"), "fixture").unwrap();
+        let target = workspace.join("target/tui-adapters");
+        let output = "host: x86_64-unknown-linux-gnu\n";
+        let selected = features("whisper").unwrap();
+        let cache = cache::Cache::prepare(&workspace, &target, &selected, output).unwrap();
+        let release = cache
+            .target
+            .join(native_host(output).unwrap())
+            .join("release");
+        std::fs::create_dir_all(&release).unwrap();
+        let executable = release.join(format!("cli{}", std::env::consts::EXE_SUFFIX));
+        std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        if selected.contains(&"zipformer") {
+            // Feature-enabled launchers preserve Zipformer, so publication must
+            // validate its runtime too. Keep this fixture independent of actual
+            // downloads and the test executable's deps/ directory layout.
+            let runtime = cache.target.join("fixture-runtime");
+            let build_output = release.join("build/cli-fixture");
+            std::fs::create_dir_all(&runtime).unwrap();
+            std::fs::create_dir_all(&build_output).unwrap();
+            std::fs::write(
+                runtime.join(format!("libLiteRt.{}", std::env::consts::DLL_EXTENSION)),
+                "fixture runtime; never loaded",
+            )
+            .unwrap();
+            std::fs::write(
+                build_output.join("output"),
+                format!("cargo:rustc-link-arg=-Wl,-rpath,{}\n", runtime.display()),
+            )
+            .unwrap();
+        }
+        let binary = cache.publish(&executable).unwrap();
+        // Each task represents a fresh launcher. The fixture workspace cannot
+        // build a CLI, so accidentally invoking Cargo would fail this test.
+        for _ in 0..2 {
+            let mut command = fixture_command("success");
+            command.stdout(Stdio::null()).stderr(Stdio::null());
+            let (_, output_rx) = std::sync::mpsc::channel();
+            let mut task = BuildTask {
+                model_id: "different-model-same-family".into(),
+                child: Some(spawn_isolated(&mut command).unwrap()),
+                binary: PathBuf::new(),
+                outcome: None,
+                cache: None,
+                cache_rx: None,
+                preparation: Some(BuildPreparation {
+                    workspace: workspace.clone(),
+                    target: target.clone(),
+                    features: selected.clone(),
+                    output_rx,
+                    output: Some(Ok(output.into())),
+                }),
+            };
+            let deadline = Instant::now() + Duration::from_secs(10);
+            loop {
+                if let Some(result) = task.poll().unwrap() {
+                    assert_eq!(result, binary);
+                    assert_eq!(task.poll().unwrap(), Some(binary.clone()));
+                    assert!(task.child.is_none());
+                    break;
+                }
+                assert!(Instant::now() < deadline);
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+        std::fs::remove_dir_all(workspace).unwrap();
+    }
+
+    #[test]
+    fn cancelling_cache_work_cannot_start_a_build_or_restart() {
+        let (sender, receiver) = std::sync::mpsc::channel();
+        let mut task = BuildTask {
+            model_id: "fixture".into(),
+            child: None,
+            binary: PathBuf::new(),
+            outcome: None,
+            preparation: None,
+            cache: None,
+            cache_rx: Some(receiver),
+        };
+        assert!(task.poll().unwrap().is_none());
+        task.cancel();
+        assert!(sender
+            .send(Ok(CacheEvent::Published(PathBuf::from("unused"))))
+            .is_err());
+        assert!(task.poll().unwrap_err().to_string().contains("cancelled"));
+        task.cancel();
+    }
 
     #[test]
     fn allowlist_and_compiled_feature_union() {
@@ -489,6 +875,8 @@ mod tests {
                 child: Some(child),
                 binary: PathBuf::new(),
                 outcome: None,
+                cache: None,
+                cache_rx: None,
                 preparation: Some(BuildPreparation {
                     workspace: PathBuf::new(),
                     target: PathBuf::new(),
@@ -537,6 +925,8 @@ mod tests {
                 binary: binary.clone(),
                 outcome: None,
                 preparation: None,
+                cache: None,
+                cache_rx: None,
             };
             let deadline = Instant::now() + Duration::from_secs(5);
             let result = loop {
@@ -574,6 +964,8 @@ mod tests {
                 binary: PathBuf::from("unused"),
                 outcome: None,
                 preparation: None,
+                cache: None,
+                cache_rx: None,
             };
             let (ready_tx, ready_rx) = std::sync::mpsc::channel();
             let (done_tx, done_rx) = std::sync::mpsc::channel();

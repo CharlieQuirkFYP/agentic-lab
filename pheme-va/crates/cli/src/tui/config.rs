@@ -105,15 +105,28 @@ pub fn config_path() -> PathBuf {
         .unwrap_or_else(|| PathBuf::from(".pheme-va").join("tui.toml"))
 }
 
+pub fn history_path() -> Result<PathBuf> {
+    if let Some(path) = std::env::var_os("XDG_STATE_HOME").map(PathBuf::from) {
+        if path.is_absolute() {
+            return Ok(path.join("pheme-va/tui-history.json"));
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .context("TUI history requires an absolute XDG_STATE_HOME or HOME")?;
+    Ok(home.join(".local/state/pheme-va/tui-history.json"))
+}
+
 pub fn default_manifest_path() -> PathBuf {
     PathBuf::from("models/manifest.toml")
 }
 
 pub fn default_audio_directory() -> PathBuf {
     if Path::new("pheme-va").is_dir() {
-        PathBuf::from("pheme-va/local/audio")
+        PathBuf::from("pheme-va/samples")
     } else {
-        PathBuf::from("local/audio")
+        PathBuf::from("samples")
     }
 }
 

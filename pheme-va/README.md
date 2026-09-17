@@ -91,11 +91,11 @@ On Linux, install the system audio development package required by `cpal` if it 
 cargo run --release -p cli -- tui
 ```
 
-The first launch opens onboarding and lets you choose a manifest model ID. The WAV browser defaults to `local/audio/` when launched from `pheme-va` (`pheme-va/local/audio/` when launched from the repository root). Use `--audio-directory` to override it or `tui --reconfigure` to reopen setup.
+The first launch opens onboarding and lets you choose a manifest model ID. The WAV browser defaults to `samples/` when launched from `pheme-va` (`pheme-va/samples/` when launched from the repository root). Use `--audio-directory` to override it or `tui --reconfigure` to reopen setup.
 
-Select a model with Enter. If its adapter is not compiled, the TUI builds it in the background, preserving already-enabled adapters, then automatically restarts with that model. Press `t` for compiler logs or Escape on the build screen to cancel; build failure leaves the current model available. Settings are retained, but restart clears in-memory results, metrics, and logs.
+Select a model with Enter. The picker reports whether its adapter is compiled into the launcher, already cached, being checked, or needs preparation. A cached status means the validated backend can be reused without invoking Cargo build; selecting it performs the quick launcher restart needed to enter that feature-enabled executable. Cache misses build in the background, preserving already-enabled adapters, then restart automatically. Existing pre-cache builds require one new build to populate the cache. On Unix, the preparation screen streams actual Cargo/native output and automatically follows the newest lines. Press `t` for full logs or Escape on the preparation screen to cancel; failure leaves the current model available. Settings and saved run reports survive normal exits and automatic backend restarts. Live metrics, logs, and retry audio remain in memory only.
 
-Automatic builds require the original source checkout, Cargo/Rust, and the native build dependencies. Cargo may download dependencies or the LiteRT runtime; **model weights are not downloaded automatically**. Builds use `target/tui-adapters/<host-triple>/release/cli` and do not overwrite the original executable. This is a development convenience, not runtime compilation for mobile deployments.
+Automatic setup requires the original source checkout, Cargo/Rust, and native build dependencies. Known Whisper/Zipformer model IDs can download missing pinned, checksum-verified artifacts through `scripts/download-model.sh`. Cargo may also download dependencies or the LiteRT runtime. Backend cache generations live under `target/tui-adapters/cache-v2/`; Unix builds reuse a locked `target/tui-adapters/build/` for incremental compilation. Neither overwrites the running executable. This is a development convenience, not runtime compilation for mobile deployments.
 
 To avoid the initial build/restart, optionally compile both adapters up front:
 
@@ -106,15 +106,27 @@ cargo run --release -p cli --features 'whisper,zipformer' -- \
   tui
 ```
 
-If the Zipformer artifacts are not present, download one explicitly before selecting it:
+You can also download Zipformer artifacts manually:
 
 ```bash
 ./scripts/download-model.sh zipformer-small
 ```
 
-The test bench supports `[f]` WAV selection, `[l]` microphone recording, `[n]` next WAV, `[r]` retry, `[m]` manifest model switching, and `[t]` metrics/logs. In telemetry, `[1–4]` changes tabs, `[` / `]` selects a retained run, and arrows or `j/k` select categorized metric series in Metrics/Graphs. Each series shows its latest value and timestamped progression, distinguished by scope, source, and unit. `[f]` or `/` edits one shared filter across Overview, Metrics, Graphs, and Logs; `[x]` clears it. Missing readings are not plotted as zero. On Unix, native stderr (including Whisper/ALSA diagnostics) is captured into bounded logs instead of corrupting the screen; capture is not yet implemented on other platforms.
+The test bench supports `[f]` WAV selection, `[l]` microphone recording, `[n]` next WAV, `[r]` retry, `[m]` model switching, and `[t]` telemetry. `[1–4]` selects Overview, Metrics, Runs, or Logs. Runs opens a list first; Enter opens a report with individually spaced metadata, transcript/raw transcript, and a scrollable run-only metric snapshot. Arrows or `j/k` select a snapshot metric; Enter opens its history/details and Escape returns to the report. PageUp/PageDown scroll metadata/details; `[` / `]` switches reports. Graphs are not shown until requested. `[f]`, `/`, or Ctrl+F edits shared search; `[x]` clears it. Missing readings remain unavailable, not zero. On Unix, native stderr (including Whisper/ALSA diagnostics) is captured into bounded logs instead of corrupting the screen; capture is not yet implemented on other platforms.
+
+#### Saved run history and privacy
+
+Completed and failed Runs reports persist locally, including processed/raw transcripts, source filenames, model/runtime/revision metadata, timestamps, errors, and raw metric events (including unavailable reasons). **This can contain sensitive speech and paths.** No recordings or audio buffers are written to history. The backend-specific `TranscriptionResult` is not restored; historical report display uses the saved metadata and events.
+
+History is a versioned JSON snapshot at `$XDG_STATE_HOME/pheme-va/tui-history.json` (absolute XDG path), falling back to `$HOME/.local/state/pheme-va/tui-history.json`. This is bounded development-console history, not the planned SQLite incident/session database; it reuses the existing JSON dependency rather than adding a database runtime. Keep one TUI session per history path. On Unix, newly created state directories use mode `0700` and snapshot files `0600`; this is not encryption. Existing parent directory permissions are not changed.
+
+The newest 100 reports and newest 10,000 events per report are retained. Snapshots have a 64 MiB size ceiling; an oversized save reports an error and retains the previous snapshot. Writes run on a background thread, coalesce pending snapshots, and use file sync plus atomic replacement. Completed/failed reports are queued on the next TUI tick; shutdown drains worker results and flushes history before any automatic restart. Forced termination can still lose an unflushed update. Malformed, oversized, or unsupported history prevents startup without overwriting the file: move it aside for inspection or explicitly remove it to start fresh. Write/clear failures appear in status and logs, and a failed shutdown flush prevents automatic restart.
+
+In Runs, press `c`, then `y` to delete **all** saved reports (not only filtered reports); Escape cancels. Clearing is disabled while a request or recording is active. Reports disappear only after deletion succeeds; other input is paused while deletion is in flight. This does not delete source WAVs, memory-only retry audio, or external backups, and is not secure erasure.
 
 Resource readings include process/system CPU and RAM, available component temperatures, and Linux DRM GPU utilization and single-battery capacity drain. Process CPU can exceed 100% because it sums core utilization. GPU is the busiest readable card, not per-process use; temperature is the hottest reported component, not ambient temperature. Battery drain is a signed percentage-point decrease since the sampler's first valid reading (negative while charging), with coarse sensor resolution. Whole-device power and energy remain unavailable without a verified provider; component or battery-terminal power is not silently relabeled.
+
+The current desktop sampler deliberately does not implement a whole-device power provider: it returns unavailable even if Linux exposes RAPL or battery `power_now`. RAPL measures CPU package/core domains, while battery power measures battery-terminal charge/discharge (particularly misleading as total consumption while plugged in). Joules and watt-hours are integrated from verified whole-device watts, so they are unavailable for the same reason. Enabling these metrics requires a calibrated power provider with a documented measurement boundary, not elevated permissions or a model change.
 
 Current manifest models return a final transcript after a complete clip; they do not provide partial live words. This is intentionally a local development and model-evaluation console, not the production UI or a global desktop hotkey implementation.
 

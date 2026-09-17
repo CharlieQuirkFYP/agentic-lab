@@ -174,7 +174,7 @@ pub enum MetricRow {
     Metric(SeriesKey),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct RunReport {
     pub run_id: String,
     pub model_id: String,
@@ -193,7 +193,9 @@ pub struct RunReport {
     pub started_at_ms: u64,
     pub finished_at_ms: Option<u64>,
     pub error: Option<String>,
+    #[serde(skip)]
     pub result: Option<TranscriptionResult>,
+    #[serde(deserialize_with = "super::history::deserialize_events")]
     pub events: Vec<MetricEvent>,
 }
 
@@ -209,6 +211,7 @@ impl RunReport {
 
 #[derive(Debug)]
 pub struct TelemetryStore {
+    pub history_revision: u64,
     events: VecDeque<MetricEvent>,
     reports: VecDeque<RunReport>,
     max_events: usize,
@@ -222,10 +225,11 @@ pub struct TelemetryStore {
 impl TelemetryStore {
     pub fn new(max_events: usize) -> Self {
         Self {
+            history_revision: 0,
             events: VecDeque::with_capacity(max_events.min(512)),
             reports: VecDeque::with_capacity(64),
             max_events: max_events.max(1),
-            max_reports: 100,
+            max_reports: super::history::MAX_REPORTS,
             selected_run: None,
             active_run: None,
             last_dropped: 0,
@@ -242,6 +246,9 @@ impl TelemetryStore {
             .iter_mut()
             .find(|report| report.status == "BUSY" && report.run_id == event.run_id)
         {
+            if report.events.len() == super::history::MAX_EVENTS {
+                report.events.remove(0);
+            }
             report.events.push(event.clone());
         }
         self.events.push_back(event);
@@ -457,7 +464,23 @@ impl TelemetryStore {
         self.active_run.as_deref()
     }
 
-    pub fn upsert_report(&mut self, report: RunReport) {
+    pub fn clear_runs(&mut self) {
+        self.reports.clear();
+        self.events.clear();
+        self.selected_run = None;
+        self.selected_series = None;
+        self.active_run = None;
+    }
+
+    pub fn upsert_report(&mut self, mut report: RunReport) {
+        if report.status != "BUSY" {
+            self.history_revision = self.history_revision.wrapping_add(1);
+        }
+        let excess = report
+            .events
+            .len()
+            .saturating_sub(super::history::MAX_EVENTS);
+        report.events.drain(..excess);
         if let Some(existing) = self
             .reports
             .iter_mut()

@@ -19,18 +19,6 @@ impl CatalogEntry {
     pub fn selectable(&self) -> bool {
         self.adapter_compiled && self.artifacts_available()
     }
-
-    pub fn status(&self) -> &'static str {
-        if !model::family_supported(&self.manifest.family) {
-            "unsupported model family"
-        } else if !self.artifacts_available() {
-            "artifact missing"
-        } else if !self.adapter_compiled {
-            "adapter not compiled"
-        } else {
-            "ready to load"
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -149,7 +137,7 @@ mod tests {
         assert!(entry.artifacts_available());
         assert!(!entry.adapter_compiled);
         assert!(!entry.selectable());
-        assert_eq!(entry.status(), "unsupported model family");
+        assert!(!model::family_supported(&entry.manifest.family));
 
         fs::remove_dir_all(directory).unwrap();
     }
