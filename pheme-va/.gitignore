@@ -1,5 +1,4 @@
 /target/
-*.wav
 *.gguf
 *.bin
 *.part
