@@ -1,10 +1,14 @@
 # Pheme VA TUI Implementation Plan
 
+## Status
+
+The baseline described by this document is implemented in `pheme-va/crates/cli/`. The TUI now has a worker/event-loop architecture, manifest model selection, model switching and preparation, WAV and microphone input, metrics, logs, and bounded persistent run history. The remaining sections describe the implemented behavior and the enhancements that should be added without changing the Pheme core boundary.
+
 ## Purpose
 
-This document describes one cohesive implementation of a Rust terminal user interface for Pheme VA. It is intentionally written as an implementation blueprint rather than a list of numbered phases.
+This document describes the Rust terminal user interface for Pheme VA. It is an implementation reference rather than a list of numbered phases.
 
-The TUI is a local developer and model-evaluation console. It will make it easy to select a manifest-defined speech model, send it individual WAV files or microphone recordings, read the final transcript, and inspect the detailed behaviour of each run. It is not a replacement for the production web console, the Go API, the Pheme VA server, or the mobile FFI host.
+The TUI is a local developer and model-evaluation console. It lets users select a manifest-defined speech model, send it individual WAV files or microphone recordings, read the final transcript, and inspect the detailed behavior of each run. It is not a replacement for the production web console, the Go API, the Pheme VA server, or the mobile FFI host.
 
 The onboarding experience is inspired by the useful parts of OpenClaw's setup flow: make first-run configuration explicit, explain what is happening, keep the current working configuration on later launches, and provide a clear reconfiguration path. The implementation should not copy OpenClaw's runtime or introduce a dependency on it.
 
@@ -17,16 +21,16 @@ The relevant code is under `pheme-va/`:
 - `crates/core/` owns audio normalization, speech gating, transcription, transcript guards, and the shared `Transcriber` boundary.
 - `crates/metrics/` provides typed `MetricEvent`, `MetricSample`, `MetricsContext`, `MetricsHub`, `ResourceCollector`, and the desktop `SysinfoResourceSampler`.
 - `crates/models/whispercpp/` and `crates/models/zipformer/` are separate optional model adapters.
-- The current TUI loads one engine before entering raw mode, records one microphone clip, transcribes synchronously, prints the result, and exits.
+- The current TUI starts a Ratatui event loop, owns a worker for model loading and transcription, supports multiple WAV/microphone runs, exposes telemetry and logs, and stays open until the user exits. Completed and failed run reports are also persisted in bounded local JSON history.
 
 The current model manifest contains:
 
-| ID | Family | Runtime metadata | Artifact(s) | Timestamps | Streaming |
-|---|---|---|---|---:|---:|
-| `whisper-large-v3-turbo` | `whisper` | `whispercpp` | Whisper model file | yes | no |
-| `zipformer-small` | `zipformer` | `litert` | TFLite model, tokenizer, tokens | no | no |
-| `zipformer-medium` | `zipformer` | `litert` | TFLite model, tokenizer, tokens | no | no |
-| `zipformer-large` | `zipformer` | `litert` | TFLite model, tokenizer, tokens | no | no |
+| ID                       | Family      | Runtime metadata | Artifact(s)                     | Timestamps | Streaming |
+| ------------------------ | ----------- | ---------------- | ------------------------------- | ---------: | --------: |
+| `whisper-large-v3-turbo` | `whisper`   | `whispercpp`     | Whisper model file              |        yes |        no |
+| `zipformer-small`        | `zipformer` | `litert`         | TFLite model, tokenizer, tokens |         no |        no |
+| `zipformer-medium`       | `zipformer` | `litert`         | TFLite model, tokenizer, tokens |         no |        no |
+| `zipformer-large`        | `zipformer` | `litert`         | TFLite model, tokenizer, tokens |         no |        no |
 
 The `runtime` field is useful metadata for the UI, but the current loader dispatches by `family`. The TUI must preserve this distinction rather than treating `whispercpp` or `litert` as the dispatch key.
 
@@ -34,7 +38,7 @@ The `runtime` field is useful metadata for the UI, but the current loader dispat
 
 ## Model selection and swapping: the current reality
 
-The current CLI supports model selection at process startup, not hot-swapping inside an already-running process.
+The CLI supports model selection through the manifest at startup, and the TUI also supports selecting another model while it is running. If the requested adapter is compiled into the current binary, the worker loads and commits the replacement engine without changing the core `Engine` API. If the adapter is not compiled, the TUI prepares a cached feature-enabled executable and restarts after restoring the terminal.
 
 Run the commands below from `pheme-va/`.
 
@@ -67,9 +71,9 @@ cargo run --release -p cli --features 'whisper,zipformer' -- \
   tui
 ```
 
-A binary built with both features can select either family through `--stt-model`. A binary built with only one feature should show entries from the other family as unavailable and explain the rebuild command, for example `--features zipformer`.
+A binary built with both features can select either family through `--stt-model`. A binary built with only one feature can prepare the missing adapter automatically from the model picker; the picker reports the preparation state and the TUI restarts into the cached feature-enabled executable after a successful build. Existing settings and saved run reports are retained across that restart, while in-memory live metrics and logs are not.
 
-There is currently no `switch-model`, `reload-model`, HTTP model-switch, or FFI reload command. The existing commands only facilitate comparison by starting a new process with another manifest ID. The server still uses a direct Whisper model path, and the FFI is still direct-path Whisper based; neither should be used as the TUI's model-switching path.
+There is currently no `switch-model`, reload, HTTP model-switch, or FFI reload command. The server still uses a direct Whisper model path, and the FFI is still direct-path Whisper based. Those hosts should not be confused with the TUI's worker-side model selection and adapter-preparation path.
 
 The TUI can support live switching without changing `core`:
 
@@ -213,7 +217,7 @@ Example:
 
 The UI should show the complete artifact path in a details pane or when the entry is selected. Paths should be resolved using the same helper as `model::create_engine(...)`; the TUI must not duplicate manifest path semantics.
 
-The manifest contains SHA-256 metadata, but the current CLI loader does not verify it. The picker must not label an artifact as checksum-verified until verification is implemented. A later integrity check can add SHA-256 verification for the model and its supporting files without changing the selector contract.
+The manifest contains SHA-256 metadata. The CLI loader and picker use the metadata for model identity and artifact status but do not verify checksums during ordinary loading. The allowlisted model downloader does verify SHA-256 before promoting a downloaded artifact. The UI must distinguish an artifact downloaded and verified by that task from an arbitrary file that merely exists on disk; a future load-time integrity check can add verification without changing the selector contract.
 
 ### Model load result
 
@@ -279,7 +283,7 @@ The central result panel is always visible so both file and microphone runs end 
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-`[t]` opens the metrics and logs workspace. It is separate from the compact metrics summary and can be opened while a model is loading, while a request is processing, or after a completed run. `[j/k]` scrolls the currently focused long panel; arrow keys can remain available for lists and tabs.
+[t] opens the metrics and logs workspace. It is separate from the compact metrics summary and can be opened while a model is loading, while a request is processing, or after a completed run. The workspace has `Overview`, `Metrics`, `Runs`, and `Logs` tabs. [j/k] scrolls or selects within the focused panel; arrow keys remain available for lists and tabs.
 
 The main screen should expose these states explicitly:
 
@@ -438,7 +442,7 @@ No speech is a valid result rather than an unexplained application failure:
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The result view should preserve the exact status names exposed by `TranscriptionStatus`:
+The result view preserves the status names exposed by `TranscriptionStatus` (the TUI displays its own uppercase status text where appropriate):
 
 - `speech`;
 - `no_speech`;
@@ -467,7 +471,7 @@ Model-load and request errors should be recoverable and should not terminate the
 The compact metrics section on the test bench is only a summary. `[t]` opens a dedicated telemetry view with four subviews:
 
 ```text
-[1] Overview     [2] Metrics     [3] Graphs     [4] Logs
+[1] Overview     [2] Metrics     [3] Runs      [4] Logs
 ```
 
 This view must keep receiving worker and resource events while it is open. It should be possible to open it after a run, during model loading, or while processing audio. `[Esc]` returns to the previous screen without stopping the worker.
@@ -478,7 +482,7 @@ This view must keep receiving worker and resource events while it is open. It sh
 ┌─ PHEME VA / METRICS & LOGS ─────────────────────────────────────────────────┐
 │ Run: run-004     Model: zipformer-small     Source: incident-001.wav        │
 │                                                                              │
-│ [1] Overview     [2] Metrics     [3] Graphs     [4] Logs                  │
+│ [1] Overview     [2] Metrics     [3] Runs      [4] Logs                  │
 ├──────────────────────────────────────────────────────────────────────────────┤
 │ CURRENT RUN                                                                  │
 │ Status: speech                                                               │
@@ -497,7 +501,7 @@ This view must keep receiving worker and resource events while it is open. It sh
 └──────────────────────────────────────────────────────────────────────────────┘
 ```
 
-The overview should select the current run by default and provide a clear empty state when the user opens telemetry before any transcription has completed. It should also show the active model-switch operation when one exists.
+The overview selects the current run by default and provides a clear empty state before any transcription has completed. It also shows the active model-switch operation when one exists.
 
 ### Granular metrics table
 
@@ -581,7 +585,7 @@ energy_joules
 energy_watt_hours
 ```
 
-Whisper may not provide feature-extraction or decoding timings. The table must render those as unavailable with the reason `model did not provide this timing`; it must never convert them to zero. The generic desktop sampler currently provides process/system CPU and process/system RAM. GPU, temperature, battery, power, and energy are unavailable from that sampler and must be labelled accordingly.
+Whisper may not provide feature-extraction or decoding timings. The table renders those as unavailable with the reason `model did not provide this timing`; it never converts them to zero. The desktop sampler provides process/system CPU and RAM, and may provide component temperature. Its Linux extension can additionally provide DRM GPU utilisation and signed single-battery capacity change. GPU, temperature, or battery readings remain unavailable when the host has no readable sensor. Whole-device power and energy remain unavailable without a verified provider.
 
 ### Graphs
 
@@ -634,20 +638,13 @@ Only `MetricValue::Number` and `MetricValue::Integer` events should be chartable
 
 #### Resource time series
 
-The current metrics crate does not sample resources automatically. The TUI must periodically call `ResourceCollector::sample_and_record(...)` with a desktop `SysinfoResourceSampler` while:
+The current TUI starts a dedicated resource-sampler thread when resource sampling is enabled. It calls `ResourceCollector::sample_and_record(...)` with a desktop `SysinfoResourceSampler` approximately every 250 ms. The worker switches the sampler between an idle context, model-load operation context, and active run context, so sampling continues while the TUI is idle, loading/switching models, recording, and processing a request without blocking the event loop or inference worker.
 
-- loading a model;
-- switching models;
-- recording, if useful for the benchmark;
-- processing a transcription request.
-
-A dedicated sampler thread is preferable so a synchronous native inference call cannot stop CPU/RAM samples. It can publish samples using the active run's `MetricsContext` and a host-operation context during model load/switch operations. A sampling interval around 250–500 ms is appropriate for the first implementation and should be configurable if it affects benchmark overhead.
-
-The desktop collector currently advertises process CPU, system CPU, process RAM, and system RAM. GPU, temperature, battery, whole-device power, and energy should be displayed as unavailable with their provider reason. Missing data is not zero data.
+The desktop collector provides process/system CPU and RAM, may provide component temperature, and on Linux can provide DRM GPU utilisation and single-battery capacity change. Whole-device power and energy remain unavailable with the current provider. Missing data is not zero data.
 
 ### Logs
 
-There is currently no structured logging subsystem for the CLI; the TUI should add a CLI-owned bounded `LogStore` rather than mixing log strings into metric events.
+The CLI now has a bounded `LogStore` separate from metric events. On Unix, `NativeLogs` captures native stderr during model loading, recording, inference, retries, adapter preparation, and shutdown so Whisper/GGML, ALSA, and Cargo diagnostics do not overwrite the TUI. Other platforms use the fallback path and do not yet provide native stderr capture.
 
 Each entry should contain:
 
@@ -774,7 +771,7 @@ If the replacement fails, log the reason and record a failed switch while retain
 
 ## Worker and event-loop architecture
 
-The current monolithic CLI should be split so the existing one-shot `transcribe` command remains available while `tui` gets a reusable asynchronous host.
+The CLI has already been split so the existing one-shot `transcribe` command remains available while `tui` uses a reusable asynchronous host. Future changes should extend the existing modules rather than restore blocking model work to the UI event loop.
 
 ```text
 crossterm input ───────┐
@@ -802,12 +799,16 @@ pheme-va/crates/cli/src/
     events.rs
     ui.rs
     worker.rs
-    onboarding.rs
     model_catalog.rs
     config.rs
     folder.rs
     telemetry.rs
     logs.rs
+    history.rs
+    native_logs.rs
+    download.rs
+    rebuild.rs
+    rebuild_cache.rs
 ```
 
 Responsibilities:
@@ -820,10 +821,14 @@ Responsibilities:
 - `tui/ui.rs`: contain ratatui layout and widgets only; do not perform I/O or inference.
 - `tui/worker.rs`: own `Option<Engine>`, active model metadata, model loading/switching, WAV parsing, transcription, and shutdown.
 - `tui/model_catalog.rs`: load manifest entries and calculate displayable compiled/artifact/load statuses.
-- `tui/onboarding.rs`: welcome, selection, verification, and first-run transitions.
+- `tui/app.rs`: welcome, selection, verification, and first-run transitions are currently reduced into the app state/reducer; keep that logic here unless a separate module becomes necessary.
 - `tui/config.rs`: read, validate, and atomically write local preferences.
 - `tui/folder.rs`: navigate directories, sort/filter WAV files, and track the next-file index.
-- `tui/telemetry.rs`: subscribe to metric events, retain bounded per-run history, aggregate chart data, and coordinate resource samples.
+- `tui/telemetry.rs`: subscribe to metric events, retain bounded per-run history, aggregate chart data, and expose current/historical series.
+- `tui/history.rs`: load, bound, asynchronously write, atomically replace, and clear local JSON run-history snapshots.
+- `tui/native_logs.rs`: capture and restore Unix process stderr around the TUI session.
+- `tui/download.rs`: download allowlisted model artifacts with checksum verification.
+- `tui/rebuild.rs` and `tui/rebuild_cache.rs`: prepare, cache, validate, and restart feature-enabled adapter binaries.
 - `tui/logs.rs`: define `LogEntry`, bounded `LogStore`, filtering, and display data.
 
 The UI thread must never call `Engine::transcribe`, `Engine::transcribe_wav`, `model::create_engine`, or `cpal` setup synchronously. It should poll input and channels, reduce events, draw, and sleep/poll at a fixed interval when idle.

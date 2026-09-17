@@ -1,80 +1,230 @@
-# Voice Agent Service Boundary and API Contract
+# Pheme VA Host and Voice-Agent API Contract
 
-Status: the T03 Python scaffold implements request/response validation, sanitized errors, timeout/cancellation, and an injectable analyzer. Its default analyzer returns `503 runtime_unavailable`; T04b adds an opt-in `llama_cpp` backend with real inference. Go still uses `MockIncidentAnalyzer` until T05 connects it. See [architecture](../architecture.md) and [roadmap](../roadmap.md).
+This document describes the current Rust Pheme VA development host and the planned stateful workflow boundary. The former Python `voice-agent/` runtime was removed and is not an active service.
 
-## Service Identity and Ownership
+## Current status
 
-**Voice Agent** is the dedicated Python service in `voice-agent/` implementing Voice-Based Incident Reporting. Its workflow owns conversation/session state, clarification, corrections, confirmation, incident storage/retrieval, and response generation. Its adapters own Whisper and llama.cpp integration. Runtime processes may execute separately; their integration code lives inside the service.
+Implemented in `pheme-va/`:
 
-Go owns the public API, a service client behind `IncidentAnalyzer`, and benchmark orchestration/configurations/results. It must not implement another incident state machine or access Voice Agent tables. Web owns voice interaction/playback and the benchmark dashboard. Each service owns its data/repositories; planned SQLite storage is separate by owner.
+- a portable Rust audio/transcription core with replaceable `Transcriber` and cleanup/model seams;
+- optional in-process `whispercpp` and Zipformer CLI adapters;
+- an Axum development server with stateless transcription, deterministic incident extraction, health/readiness, and an in-memory metrics-batch drain;
+- a direct-path Whisper C ABI for future native hosts; and
+- a local TUI that provides developer run history and metrics, not operational incident sessions.
 
-The initial operation below is stateless analysis: it produces an unconfirmed report-shaped result. It does not create a session, save a report, confirm an incident, or dispatch a recommended action. Multi-turn state and persistence come later.
+The Go API remains a separate public API. It is currently wired to `MockIncidentAnalyzer`, and no Go-to-Pheme client is configured. Stateful sessions, clarification, revision-bound confirmation, incident persistence/retrieval, speech synthesis, and action execution remain planned.
 
-## Current Public API — Preserve in T03–T05
+## Service identity and ownership
 
-```http
-POST /api/v1/incidents/analyze
-Content-Type: application/json
+**Pheme VA** is the canonical Rust implementation under `pheme-va/`. The current core owns audio normalization, transcription adapter boundaries, transcript guards, cleanup boundaries, and the conservative rule-based incident extractor. The future Pheme workflow will own conversation/session state, drafts, clarification, corrections, confirmation, incident storage/retrieval, and response generation.
+
+The current development server is not yet the complete workflow service. It loads a Whisper model at startup and exposes stateless HTTP operations. The CLI can additionally select the optional Zipformer adapter by manifest ID. The FFI is direct-path Whisper based and does not implement manifest selection or model reload.
+
+Go owns its public HTTP contract, benchmark orchestration, experiment configuration/results, and separate metrics storage. Web owns the future voice interaction/playback client and benchmark dashboard. Services must access their own repositories only once persistence is added.
+
+## Current Rust HTTP API
+
+The development server requires a model path through `--model` or `PHEME_VA_WHISPER_MODEL` and listens on `127.0.0.1:8000` by default. Build it with the `whisper` feature:
+
+```bash
+cargo run --release -p server --features whisper -- \
+  --model models/whisper/ggml-large-v3-turbo.bin
 ```
 
-The current Go request contains `transcript` and its success response contains five string fields: `incident_type`, `location`, `severity`, `summary`, and `recommended_action`. No response wrapper is added by this ticket.
+Current routes:
 
-Current binding failures return `400` with `{"error":"transcript is required"}`. Analyzer errors return `500` with `{"error":"failed to analyze incident"}`. The current mock returns unknown type/location/severity, echoes the transcript as summary, and uses `Pending AI analysis` as the recommended action.
+| Method | Route                 | Purpose                                   |
+| ------ | --------------------- | ----------------------------------------- |
+| `GET`  | `/health`             | Liveness                                  |
+| `GET`  | `/ready`              | In-process Whisper readiness              |
+| `POST` | `/v1/transcribe`      | One complete WAV request                  |
+| `POST` | `/v1/analyze`         | Stateless transcript-to-report extraction |
+| `GET`  | `/v1/metrics/batches` | Drain buffered metric batches             |
 
-Current validation is Gin's required-string binding, not the stricter internal validation below. Unknown public JSON fields are not currently rejected, and whitespace-only text is not explicitly rejected. Do not silently claim those public behaviours have changed. Any future public validation/status improvements require an explicit implementation change and tests.
+These routes are separate from the Go routes under `/api/v1/...`.
 
-## Internal Text Analysis API
+### `GET /health`
 
-```http
-POST /v1/incidents/analyze
-Content-Type: application/json
-```
-
-Go's planned `VoiceAgentIncidentAnalyzer` calls this endpoint using a configured `VOICE_AGENT_URL`. The initial service boundary uses HTTP/JSON on the local development environment; exposing it to an untrusted network is outside this ticket.
-
-### Request
+The liveness response is always unwrapped JSON when the process is serving:
 
 ```json
 {
-  "transcript": "A vehicle collided with a barrier near the west entrance."
+  "status": "ok"
 }
 ```
 
-| Field | Type | Rule |
-| --- | --- | --- |
-| `transcript` | string | Required; strip surrounding whitespace before analysis; 1–16,000 Unicode code points after stripping |
+It does not inspect the model.
 
-For the internal endpoint, reject malformed JSON, non-object input, extra keys, absent/null/non-string transcript, blank text, and text exceeding the limit. Do not coerce numbers or booleans to strings. Require an application/json media type (parameters such as charset are allowed). The 16,000-character limit is an initial application limit, not a guarantee that every candidate model supports that context size; the configured runtime must accommodate it or return a controlled error without silently truncating input.
+### `GET /ready`
 
-### Success — 200 OK
+A successfully loaded Whisper engine reports:
+
+```json
+{
+  "status": "ready"
+}
+```
+
+If the engine is unavailable, the custom response is `503 Service Unavailable`:
+
+```json
+{
+  "error": {
+    "code": "runtime_unavailable",
+    "message": "Analysis runtime is unavailable."
+  }
+}
+```
+
+Model-load failures occur before the listener starts, so they are startup errors rather than `/ready` responses.
+
+### `POST /v1/transcribe`
+
+The body is one complete WAV file. JSON and multipart uploads are not accepted.
+
+Accepted content types are:
+
+- `audio/wav`
+- `audio/x-wav`
+
+Media-type parameters are tolerated. The body must be a WAV container; bare PCM is not accepted. The core supports 8-, 16-, 24-, and 32-bit integer WAV input and 32-bit floating-point WAV input, with arbitrary supported sample rates and channel counts. It downmixes to mono and resamples to 16 kHz before invoking the selected model. `--max-seconds` applies to the original WAV duration.
+
+Example:
+
+```bash
+curl -i -X POST http://127.0.0.1:8000/v1/transcribe \
+  -H 'Content-Type: audio/wav' \
+  --data-binary @recording.wav
+```
+
+A successful response is an unwrapped serialized `TranscriptionResult`. The exact enum values use Rust variant casing because the current types do not apply a serde rename rule:
+
+```json
+{
+  "status": "Speech",
+  "raw_text": "vehicle collided near the west entrance",
+  "text": "Vehicle collided near the west entrance",
+  "language": "en",
+  "model_id": "whisper-large-v3-turbo",
+  "model_family": "whisper",
+  "model_revision": null,
+  "segments": [
+    {
+      "start_ms": 0,
+      "end_ms": 1840,
+      "text": "vehicle collided near the west entrance",
+      "no_speech_probability": 0.02
+    }
+  ],
+  "gate": {
+    "decision": "SpeechDetected",
+    "peak_rms": 0.12,
+    "peak_amplitude": 0.74,
+    "window_count": 92,
+    "speech_window_count": 61,
+    "max_consecutive_speech_windows": 37
+  },
+  "dictionary_prompt": null,
+  "stt_backend": "whisper-large-v3-turbo",
+  "cleanup_backend": "rule-based-formatter",
+  "cleanup_status": "Applied",
+  "recovery_attempted": false,
+  "processing_time_ms": 742
+}
+```
+
+The current server's direct Whisper wiring reports the manifest/model identifier supplied to the adapter, `model_family: "whisper"`, and no revision unless a future server wiring change supplies one. The CLI's manifest-based loader can provide model revision metadata for supported adapters.
+
+Important fields:
+
+| Field                                          | Current behavior                                                                                               |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `status`                                       | `Speech`, `NoSpeech`, `InsufficientSpeech`, `DictionaryPromptEcho`, `KnownSilenceMarker`, or `EmptyTranscript` |
+| `raw_text`                                     | Normalized recognizer output before cleanup                                                                    |
+| `text`                                         | Final returned transcript; rule-based cleanup only normalizes whitespace/capitalization                        |
+| `language`                                     | Detected or configured language, if available                                                                  |
+| `model_id` / `model_family` / `model_revision` | Selected model metadata                                                                                        |
+| `segments`                                     | Recognizer segments with millisecond timestamps when the adapter supplies them                                 |
+| `gate`                                         | Speech-gate decision and energy statistics                                                                     |
+| `dictionary_prompt`                            | Prompt generated from configured dictionary terms, or `null`                                                   |
+| `stt_backend`                                  | Adapter identifier                                                                                             |
+| `cleanup_backend` / `cleanup_status`           | Cleanup implementation and outcome                                                                             |
+| `recovery_attempted`                           | Whether the dictionary-prompt recovery attempt ran                                                             |
+| `processing_time_ms`                           | End-to-end core processing time                                                                                |
+
+A silent or insufficient-speech WAV is a valid processed result and returns `200`, commonly with empty text and `gate.decision` of `Silence` or `InsufficientSpeech`. It is not an HTTP failure.
+
+Transcription error mapping:
+
+| Condition                                                                                 | Status | Code                     |
+| ----------------------------------------------------------------------------------------- | -----: | ------------------------ |
+| Missing or unsupported content type                                                       |  `415` | `unsupported_media_type` |
+| Empty request body                                                                        |  `400` | `invalid_request`        |
+| WAV exceeds `--max-seconds`                                                               |  `400` | `audio_too_long`         |
+| Runtime is unavailable                                                                    |  `503` | `runtime_unavailable`    |
+| Invalid WAV, unsupported WAV data, backend failure, poisoned engine lock, or task failure |  `500` | `transcription_failed`   |
+
+Malformed or unsupported WAV data currently maps to the generic `500` response rather than a structured `400` response. The server buffers a complete body before parsing and processing it; there is no WebSocket, live microphone, partial-transcript, or incremental audio endpoint.
+
+### `POST /v1/analyze`
+
+This route runs `RuleBasedIncidentAnalyzer` against a transcript. It does not call an LLM, create a session, save an incident, ask clarification questions, confirm a report, or execute `recommended_action`. There is no combined audio-to-analysis route: call `/v1/transcribe` first and send its text here if needed.
+
+Request:
+
+```http
+POST /v1/analyze
+Content-Type: application/json
+```
+
+```json
+{
+  "transcript": "A vehicle collided with a barrier near the west entrance. Severity is low. Please notify the site supervisor."
+}
+```
+
+Request rules:
+
+- `transcript` is required and must be a string;
+- surrounding whitespace is removed before validation;
+- the trimmed transcript must be non-empty and at most 16,000 Unicode characters; and
+- unknown JSON fields are rejected.
+
+The successful response has exactly five string fields:
 
 ```json
 {
   "incident_type": "collision",
-  "location": "west entrance",
-  "severity": "unknown",
-  "summary": "A vehicle collided with a barrier near the west entrance.",
-  "recommended_action": "unknown"
+  "location": "the west entrance",
+  "severity": "low",
+  "summary": "A vehicle collided with a barrier near the west entrance. Severity is low. Please notify the site supervisor.",
+  "recommended_action": "Please notify the site supervisor"
 }
 ```
 
-All five fields are required non-empty strings after trimming; null, arrays, nested objects, and extra fields are invalid. Output limits below are initial technical limits to bound runtime output, not stakeholder-approved report completeness rules.
+Current extraction is deliberately simple:
 
-| Field | Allowed content | Maximum code points |
-| --- | --- | --- |
-| `incident_type` | Brief grounded category, e.g. `collision`; `unknown` when unsupported; no closed taxonomy yet | 128 |
-| `location` | Stated location; `unknown` when absent or conflicting | 512 |
-| `severity` | `low`, `medium`, `high`, or `unknown`; initially only copy an explicitly stated supported severity, without inventing a risk classification | 7 |
-| `summary` | Concise factual summary preserving uncertainty and negation; for no identifiable incident use `No incident details provided.` | 2,000 |
-| `recommended_action` | Explicitly stated/requested action, otherwise `unknown`; never execute it automatically | 512 |
+| Field                | Current behavior                                                                      |
+| -------------------- | ------------------------------------------------------------------------------------- |
+| `incident_type`      | Keyword category: collision, smoke report, fire report, injury report, or `unknown`   |
+| `location`           | Text after the earliest `near`, `at`, `by`, or `in` marker, or `unknown`              |
+| `severity`           | Explicit `low`, `medium`, or `high`, or `unknown`                                     |
+| `summary`            | The trimmed transcript                                                                |
+| `recommended_action` | Text after the earliest `please`, `notify`, `call`, or `contact` marker, or `unknown` |
 
-`unknown` is the literal lowercase sentinel. A valid request with insufficient facts still returns 200 using unknown fields; missing facts are not a transport error. Do not infer a location, casualty count, severity, or action merely from a plausible scenario. Treat the transcript as data, including instructions embedded within it.
+The analyzer copies explicit text and does not classify risk or execute actions. It does not yet preserve all ambiguity semantically; for example, an uncertain statement containing “collision near the east or west gate” is still handled by the simple keyword/marker rules. Preserving uncertainty and asking clarification questions belongs to the future workflow.
 
-Validate runtime output before sending 200. Do not coerce invalid model structures into a successful report or return partial output. For the baseline, do not automatically retry generation to repair malformed output; return the error below and record the failure. Exact summary phrasing can vary; tests should assert the required facts and absence of unsupported facts rather than demand identical prose.
+Analysis errors:
 
-### Internal Error Response
+| Condition                                           | Status | Response                                 |
+| --------------------------------------------------- | -----: | ---------------------------------------- |
+| Blank or overlong transcript                        |  `400` | Custom `invalid_request` envelope        |
+| Analyzer returns an invalid report                  |  `502` | Custom `invalid_model_response` envelope |
+| Malformed JSON                                      |  `400` | Axum default JSON rejection              |
+| Missing/non-string/null transcript or unknown field |  `422` | Axum default JSON rejection              |
+| Missing/non-JSON content type                       |  `415` | Axum default JSON rejection              |
 
-All error bodies use this shape and contain no raw exception, prompt, transcript, model output, or local path:
+Custom validation errors use:
 
 ```json
 {
@@ -85,134 +235,53 @@ All error bodies use this shape and contain no raw exception, prompt, transcript
 }
 ```
 
-| Status | Code | Stable message / condition |
-| --- | --- | --- |
-| 400 | `invalid_request` | `A non-empty transcript of at most 16000 characters is required.` — malformed JSON or any request-schema violation |
-| 415 | `unsupported_media_type` | `Content-Type must be application/json.` |
-| 503 | `runtime_unavailable` | `Analysis runtime is unavailable.` — runtime missing, not ready, disconnected, or refusing work |
-| 504 | `analysis_timeout` | `Analysis timed out.` — service's analysis budget expired |
-| 502 | `invalid_model_response` | `Analysis runtime returned an invalid response.` — output fails response schema |
-| 500 | `analysis_failed` | `Analysis failed.` — other internal failure |
+Axum extractor rejection bodies currently use their default plain-text responses rather than this custom envelope.
 
-Go validates the upstream success schema as well. Any non-200 response, malformed/incomplete success response, connection failure, or timeout becomes an analyzer error. The existing public handler continues returning its generic 500; internal errors are not forwarded to users. In particular, stricter internal rejection of a whitespace-only or overly long transcript currently maps to that public 500 if Gin accepted it. Improving this is a separate public API validation change, not hidden in this contract ticket.
+## Metrics correlation and drain
 
-### Timeout and Cancellation Policy
+The Rust transcription and analysis routes accept optional headers for metric correlation:
 
-Configuration defaults (Python implemented; Go client pending T05; tunable for evaluation):
+| Header              | Behavior                                                              |
+| ------------------- | --------------------------------------------------------------------- |
+| `X-Run-ID`          | Trimmed non-empty value becomes the metrics run ID                    |
+| `X-Experiment-ID`   | Optional experiment correlation ID                                    |
+| `X-Incident-Active` | Accepts `true`, `1`, `yes`, `false`, `0`, or `no`, case-insensitively |
 
-* Go `VOICE_AGENT_TIMEOUT_SECONDS=60` covers the complete upstream HTTP call; an earlier request-context deadline wins.
-* Voice Agent `VOICE_AGENT_ANALYSIS_TIMEOUT_SECONDS=55` covers its analysis operation, including inference. Keep this below the configured Go timeout to leave response overhead.
-* Propagate Go request cancellation to the upstream call. Voice Agent should cancel pending work on disconnect or its own timeout and close/cancel runtime work where the runtime supports it. Cancellation does not guarantee immediate GPU preemption.
-* No automatic retries for initial analysis. A caller can resubmit a stateless request; it cannot create duplicate saved reports because analysis performs no persistence.
+If `X-Run-ID` is absent, the server generates a process-local ID such as `run_<epoch_milliseconds>_<counter>`. These headers affect metrics only and are not authentication credentials.
 
-Record stage duration and runtime configuration in internal traces for later benchmarks; do not add metrics fields to the existing public report response. Do not include transcript contents in ordinary error logs.
+Metric collection is disabled by default. Enable application events with `--metrics-enabled` or `PHEME_VA_METRICS_ENABLED=true`; resource snapshots additionally require `--resource-sampling` or `PHEME_VA_RESOURCE_SAMPLING=true`. `/v1/analyze` enables incident-only metrics by default unless a valid `X-Incident-Active: false` header overrides them. `/v1/transcribe` uses the startup `--incident-metrics` setting unless overridden.
 
-## Contract Examples
+`GET /v1/metrics/batches` drains all currently buffered batches as a JSON array and removes them from the in-memory batcher. It has no filters, acknowledgements, retry queue, or persistence. Events can be forwarded by an external exporter to the Go route `POST /api/v1/experiments/:id/metrics`; the Rust server does not know the Go URL or forward automatically. See [the metrics contract](metrics.md) for event fields and resource availability.
 
-These are canonical examples of valid outputs. Summary wording is illustrative; grounding and unknown-value rules are binding.
+## Current Go public API
 
-### Complete for the Initial Extraction Contract
+The Go endpoint remains unchanged while Pheme integration is planned:
 
-Input:
-
-```json
-{
-  "transcript": "A vehicle collided with a barrier at the west entrance. The incident severity is low. Please notify the site supervisor."
-}
+```http
+POST /api/v1/incidents/analyze
+Content-Type: application/json
 ```
 
-Expected facts:
+The request contains `transcript`. Its success response contains the five fields `incident_type`, `location`, `severity`, `summary`, and `recommended_action`. The current `MockIncidentAnalyzer` returns `unknown` for type/location/severity, echoes the transcript as `summary`, and returns `Pending AI analysis` as `recommended_action`. Binding failures return `400` with a simple error; analyzer failures return a generic `500` response. The public handler does not forward Rust internal errors because no Pheme client is wired yet.
 
-```json
-{
-  "incident_type": "collision",
-  "location": "west entrance",
-  "severity": "low",
-  "summary": "A vehicle collided with a barrier at the west entrance. The reporter stated low severity and requested notification of the site supervisor.",
-  "recommended_action": "Notify the site supervisor."
-}
-```
+## Future session and retrieval outline
 
-This fills extraction fields; it does not constitute human confirmation or stakeholder-approved completeness for finalization.
+The routes below are planned Pheme-owned Rust routes, not current endpoints. The Go routes would be thin public delegations once implemented.
 
-### Incomplete Report
+| Planned Rust route              | Planned Go route                    | Purpose                                    |
+| ------------------------------- | ----------------------------------- | ------------------------------------------ |
+| `POST /v1/sessions`             | `POST /api/v1/sessions`             | Allocate a service-owned session           |
+| `GET /v1/sessions/:id`          | `GET /api/v1/sessions/:id`          | Read state and current draft               |
+| `POST /v1/sessions/:id/turns`   | `POST /api/v1/sessions/:id/turns`   | Submit text or later audio with a retry ID |
+| `POST /v1/sessions/:id/confirm` | `POST /api/v1/sessions/:id/confirm` | Confirm a specific draft revision          |
+| `POST /v1/sessions/:id/cancel`  | `POST /api/v1/sessions/:id/cancel`  | Abandon a draft                            |
+| `GET /v1/incidents`             | `GET /api/v1/incidents`             | Query finalized reports                    |
+| `GET /v1/incidents/:id`         | `GET /api/v1/incidents/:id`         | Retrieve one report                        |
 
-Input:
+The future state machine should use `collecting`, `awaiting_confirmation`, `saved`, and `cancelled` states. A correction increments the revision and invalidates prior confirmation. Ambiguous consent remains unconfirmed. Retry IDs replay the prior result for an identical request; conflicting reuse and stale revisions return explicit conflicts. Finalization must be transactional and idempotent. Exact schemas, completeness policy, concurrency behavior, audio envelope, retention, and session expiry remain implementation decisions for the workflow milestone.
 
-```json
-{
-  "transcript": "There is smoke."
-}
-```
+Future retrieval should use validated time/count filters and parameterized queries inside Pheme-owned repositories. The proposed baseline for recorded-time queries is UTC, inclusive `from`, exclusive `to`, newest-first ordering with a stable ID tie-breaker, and a limit of five for the example query. Summaries must use only records returned by the repository and retain their IDs for grounding checks.
 
-Expected facts:
+## Boundaries and next steps
 
-```json
-{
-  "incident_type": "smoke report",
-  "location": "unknown",
-  "severity": "unknown",
-  "summary": "Smoke was reported; no location was provided.",
-  "recommended_action": "unknown"
-}
-```
-
-Do not change smoke into a confirmed fire. The later conversation workflow should ask for location; this one-shot response has no clarification field.
-
-### Ambiguous Report
-
-Input:
-
-```json
-{
-  "transcript": "Someone said there may have been a collision near the east or west gate. I haven't checked."
-}
-```
-
-Expected facts:
-
-```json
-{
-  "incident_type": "possible collision",
-  "location": "unknown",
-  "severity": "unknown",
-  "summary": "An unverified possible collision was reported near either the east or west gate; the location is uncertain.",
-  "recommended_action": "unknown"
-}
-```
-
-Do not select one gate or turn the report into a verified event. A valid greeting with no incident details returns unknown fields and the no-details summary, rather than fabricated facts.
-
-## Future Session and Retrieval Contract Outline
-
-The routes/fields below guide T06/T10; they are not frozen schemas or currently available endpoints. Keep state in Voice Agent, not in the Go client or model runtime.
-
-| Public Go route | Proposed Voice Agent route | Outline |
-| --- | --- | --- |
-| `POST /api/v1/sessions` | `POST /v1/sessions` | Allocate a service-owned session ID and initial state |
-| `POST /api/v1/sessions/:id/turns` | `POST /v1/sessions/:id/turns` | Request ID, expected draft revision, text or later audio; return transcript, reply text, state, draft revision, and report ID when saved |
-| `POST /api/v1/sessions/:id/confirm` | `POST /v1/sessions/:id/confirm` | Request ID and draft revision; same confirmation logic as a spoken turn |
-| `GET /api/v1/incidents` | `GET /v1/incidents` | Validated time range/count filters; return records and IDs |
-| `GET /api/v1/incidents/:id` | `GET /v1/incidents/:id` | Retrieve a service-owned report |
-
-Outline states: `collecting`, `awaiting_confirmation`, `saved`, `cancelled`. Model proposals do not bypass transition rules. A correction increments the revision and invalidates prior confirmation. Ambiguous consent prompts clarification. Retry IDs must replay the prior result for identical requests; conflicting payload reuse and stale revisions must produce an explicit conflict rather than duplicate state changes. Define exact conflict schemas, revision increments, concurrency ordering, audio encoding, and session expiry in T06/T08.
-
-For recorded-time retrieval, the proposed baseline uses an inclusive start and exclusive end (`from <= recorded_at < to`), UTC RFC3339 timestamps, newest first with a stable ID tie-breaker, and limit five for the example query. Voice Agent resolves “last hour” once using its clock and retains the resolved interval in the trace; explicit occurrence-time queries use a separate field. Finalize pagination/filter schemas and policy for unknown occurrence times in T10.
-
-Required transition examples for T06:
-
-* Missing location → ask for location → apply answer → read back when the agreed completeness policy is satisfied.
-* “West gate, not east gate” → correct the draft → increment revision → read back the revised draft before confirmation.
-* “Maybe” while awaiting confirmation → remain unconfirmed and ask again.
-* Explicit confirmation of the current read-back draft → save exactly once and return the report ID.
-* Confirmation for a stale revision → conflict, no save.
-* “Cancel this report” → mark cancelled, no finalized report.
-
-No Python scaffold, runtime integration, Go behaviour change, or database migration is included in T02. T03 now provides the scaffold; T04b now connects local inference; Go integration is T05.
-
-## Scaffold Health and Readiness
-
-* `GET /health`: `200 {"status":"ok"}` indicates the HTTP service is live.
-* `GET /ready`: `200 {"status":"ready"}` when the injected analyzer is ready; otherwise the documented 503 runtime-unavailable error. Readiness failures/timeouts also return 503.
-
-Select `VOICE_AGENT_ANALYZER=llama_cpp` to connect the configured runtime URL; the default `unavailable` backend remains offline. The runtime process owns model loading. Schema validation does not establish semantic grounding, even with the real adapter. See [local analysis behaviour, errors, and traces](../../voice-agent/docs/local-analysis.md). See [setup](../../voice-agent/README.md).
+Do not add a Python runtime, database server, distributed queue, or unrestricted action executor to satisfy this contract. The next implementation steps are a Go Pheme client, an opt-in validated language-model adapter if needed, the Pheme-owned session state machine, SQLite persistence, audio turns, retrieval, and then client/dashboard integration. The current stateless routes remain compatibility/development operations while that work proceeds.

@@ -74,16 +74,15 @@ let result = engine.transcribe_with_metrics(audio, run);
 - process RAM bytes (`ram_usage_bytes`, process scope)
 - system RAM bytes (`ram_usage_bytes`, system scope)
 
-The following fields exist in the schema and are emitted as `value: null` with an `unavailable_reason` until a host-specific provider supplies them:
+The current desktop provider may also expose component temperature. Its Linux extension can expose peak utilisation across readable DRM cards and signed single-battery capacity change. Those values have important scope limits: GPU utilisation is not process-specific, temperature is a component reading, and battery drain is a coarse capacity delta.
 
-- `gpu_usage_percent`
-- `temperature_celsius`
-- `battery_drain_percent`
+The following fields remain unavailable from the current provider and are emitted as `value: null` with an `unavailable_reason`:
+
 - `whole_device_power_watts`
 - `energy_joules`
 - `energy_watt_hours`
 
-This is intentional. CPU percentage is not power, and unsupported power/energy/thermal values must not be represented as zero. `ResourceSampler` is the extension point for native iOS/Android measurements. `EnergyAccumulator` integrates available whole-device power samples with the trapezoidal rule and resets across unavailable intervals.
+On platforms or hosts without a readable sensor, GPU, temperature, or battery events are also unavailable with that provider's reason. This is intentional. CPU percentage is not power, and unsupported power/energy/thermal values must not be represented as zero. `ResourceSampler` is the extension point for native iOS/Android measurements. `EnergyAccumulator` integrates available whole-device power samples with the trapezoidal rule and resets across unavailable intervals.
 
 The Rust development server samples resources before and after a request when started with `--metrics-enabled --resource-sampling`. It does not claim that desktop `sysinfo` can measure every device sensor.
 
@@ -114,8 +113,8 @@ An unavailable value is explicit:
   "value": null,
   "unit": "watts",
   "scope": "device",
-  "source": "sysinfo",
-  "unavailable_reason": "not provided by the desktop sampler"
+  "source": "sysinfo+linux-sysfs",
+  "unavailable_reason": "no verified whole-device power meter; component power and battery-terminal power are not whole-device measurements"
 }
 ```
 
@@ -196,7 +195,7 @@ Use `X-Run-ID` and `X-Experiment-ID` headers on Rust requests to control correla
 
 When built with the `whisper` feature, the C ABI exposes:
 
-- `pheme_va_metrics_set_enabled` to toggle future event collection
+- `pheme_va_metrics_set_enabled` to toggle event collection for future calls
 - `pheme_va_metrics_drain` to receive JSON batches as an owned C string
 
 The native Swift/Kotlin host owns HTTP transport and can forward each drained batch to the same Go endpoint. Native platform code should implement `ResourceSampler` in a future host integration rather than adding iOS/Android APIs to the portable metrics crate.

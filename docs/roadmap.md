@@ -1,92 +1,92 @@
 # Implementation Roadmap
 
-These are local planning references, not Linear issue IDs. Tickets are not created in Linear. Estimates are relative: S small, M medium, L large. T01 and T02 document the scope, service boundary, and initial API contract. T03 implements the validated scaffold; T04a/T04b add the runtime setup and opt-in text inference. Conversation and speech workflows remain planned.
+These are local planning references, not Linear issue IDs. Estimates are relative: S small, M medium, L large. The former Python Voice Agent plan no longer describes the implementation path: `pheme-va/` is the canonical Rust workspace, and the Python runtime was removed.
 
-See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally, retaining existing public contracts unless a ticket explicitly changes them.
+See [requirements](requirements.md), [architecture](architecture.md), and [benchmark methodology](benchmark-methodology.md). Build incrementally and retain existing public contracts unless an implementation ticket explicitly changes them.
 
-## Rust backend migration — implemented foundation
+## Current implementation status
 
-The empty `pheme-va/` directory now contains the first portable backend slice. This does not claim that the complete incident workflow or mobile application is finished.
+The following foundation is implemented on this branch:
 
-- `core`: audio/WAV validation, mono/16 kHz resampling, configurable energy gate, dictionary prompt construction, Whisper decoder settings, silence/prompt-echo guards, raw/processed transcript results, swappable STT and language-model cleanup traits, and a conservative rule-based incident extractor.
-- `cli`: WAV transcription command and a small prewarmed-model terminal microphone recorder.
-- `server`: development HTTP wrapper around the same core (`/health`, `/ready`, `/v1/transcribe`, `/v1/analyze`).
-- `ffi`: C ABI bridge for eventual Swift/Kotlin hosts.
-- Tests use generated WAV audio and local fakes. The ignored real-model test accepts externally supplied speech/model files; weights are not committed. The downloaded `large-v3-turbo` model has also been verified through the release CLI against a real speech sample.
+- `pheme-va/crates/core`: WAV/PCM validation, 8/16/24/32-bit integer and 32-bit float WAV decoding, downmixing, windowed-sinc resampling to mono 16 kHz, configurable energy gating, dictionary prompts, decoder options, transcript guards, cleanup traits, model-neutral transcription, and conservative rule-based incident extraction.
+- `pheme-va/crates/metrics`: versioned scalar events, per-run contexts, synchronous pub/sub, stage timers, resource snapshots, explicit unavailable values, desktop sampling, Linux GPU/temperature/battery extensions, and batch formation.
+- `pheme-va/crates/models/whispercpp`: optional prewarmed in-process whisper.cpp adapter with model metadata and model timing support.
+- `pheme-va/crates/models/zipformer`: optional LiteRT Zipformer CTC adapter for the manifest's small/medium/large variants.
+- `pheme-va/crates/cli`: manifest-driven `transcribe` and `tui` commands; TUI onboarding, WAV browsing, live microphone capture, worker-owned model loading/switching, metric graphs/details, structured logs, allowlisted model downloads, adapter cache/build/restart, and bounded JSON run history.
+- `pheme-va/crates/server`: development Axum host with `/health`, `/ready`, `/v1/transcribe`, `/v1/analyze`, and `/v1/metrics/batches`.
+- `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
+- `api/`: Gin public API, asynchronous in-memory benchmark lifecycle, and separate in-memory metric-batch ingestion.
+- `web/`: React/Vite toolchain scaffold and placeholder page.
 
-The `voice-agent/` Python service remains the current contract scaffold until Rust contract parity, workflow coverage, and mobile/device validation justify a deliberate cutover. The next Rust work is to add a concrete llama.cpp-compatible cleanup adapter and run the pipeline on a physical iPhone.
+This foundation does not include the stateful incident workflow, confirmed-report persistence, retrieval, speech synthesis, Go-to-Pheme integration, a real benchmark runner, or a completed web console/dashboard.
 
-## Milestone 1 — Real Local Incident Analysis
+## Completed documentation and foundation milestones
 
-### T01 — Update project scope and architecture documentation (S)
+### T01 — Confirm project scope and research direction (S) — complete
 
-Update AGENTS.md and README for the student-built incident workflow, removed Use Case 3, Whisper/llama.cpp baseline, and both web roles. Document requirements, architecture, evaluation, and delivery sequence; distinguish implemented behaviour and pending decisions.
+Document the student-built speech incident workflow, removed vision/licence-plate use case, deferred interview work, local-deployment research objective, pending device decisions, and both web roles.
 
-**Acceptance:** documentation consistently reflects the KLASS direction and links to detailed plans. **Dependencies:** none. **Status:** covered by this documentation update.
+### T02 — Define the Pheme VA boundary and stateless host contract (M) — complete
 
-### T02 — Define the Voice Agent service boundary and API contracts (M)
+Document Pheme VA as the Rust owner of the portable audio/transcription foundation and future workflow. Record the current Rust HTTP routes, request/response shapes, errors, metrics correlation, and the future session/retrieval outline without presenting those future routes as available.
 
-Name the dedicated Python service `voice-agent/`. Assign incident state, confirmation, storage/retrieval, and runtime adapters to it; retain the Go public API/client and benchmark responsibilities. Define the initial text-analysis request/response, unknown values, errors, timeouts/cancellation, and complete/incomplete/ambiguous examples. Outline future sessions and revision-bound confirmation without implementing them.
+### T03 — Build the portable Rust audio and transcription foundation (M) — complete
 
-**Acceptance:** documentation has one owner for each state/data type and a precise initial analysis contract, while preserving the public endpoint. **Dependencies:** T01. **Status:** documented in [Voice Agent API](api/voice-agent.md) and [architecture](architecture.md). Future session schemas and finalization-completeness policy are explicitly deferred to T06.
+Implement the reusable core, optional whisper.cpp and Zipformer adapter boundaries, model manifest, development server, CLI, FFI bridge, tests, and reproducible ignored model setup. Keep model weights and recordings outside Git.
 
-### T03 — Scaffold the Voice Agent service with a validated text-analysis API (S)
+### T04 — Build the local evaluation TUI and metrics foundation (L) — complete baseline
 
-Create `voice-agent/` with the [initial API contract](api/voice-agent.md), health/readiness endpoints, runtime/path/timeout configuration, tests, Python CI, and local setup instructions. Use a fake analyzer for contract tests; until T04 connects a runtime, return the documented unavailable error rather than presenting mock output as real analysis. Keep weights outside Git.
+Implement the Ratatui developer console, manifest model picker, WAV/microphone paths, asynchronous worker, live model switching, telemetry tabs, metric details, historical run reports, bounded logs, native diagnostics on Unix, allowlisted artifact downloads, adapter preparation/cache restart, persistent local run history, resource sampling, and retry/error states.
 
-**Acceptance:** the service starts locally and validates requests; tests do not require downloaded models. **Dependencies:** T02. **Status:** implemented with health/readiness, configuration, tests, Ruff, and Python CI; real inference is T04b.
+The TUI is a development/model-evaluation console. It does not implement the production incident workflow, partial streaming transcription, or verified whole-device power measurement. The Rust server and FFI remain direct-path Whisper hosts even though the CLI can select Zipformer.
 
-### T04a — Set up the local llama.cpp runtime (S)
+## Milestone 1 — Connect the Go API to Pheme VA
 
-Pin the upstream runtime revision, document installation outside the repository, and add a configurable launcher with executable/model path validation, port/context/thread/offload settings, version checks, and dry-run output. Defer final model selection; distinguish installation checks from model-backed inference checks.
+### T05 — Connect the Go incident analyzer to Pheme VA (S)
 
-**Acceptance:** pinned installation/version are verifiable, launcher tests need no model, and startup/shutdown instructions are reproducible. **Dependencies:** T03. **Status:** setup and launcher implemented; see [runtime instructions](../voice-agent/docs/llama-cpp.md). Model-backed verification is deferred.
+Implement a Pheme-backed analyzer/client behind the existing Go `IncidentAnalyzer` interface, configure concrete wiring in `api/cmd/server/main.go`, propagate request cancellation/timeouts, validate the upstream response, and preserve simple public HTTP errors. Retain `MockIncidentAnalyzer` for isolated tests and local mock mode.
 
-### T04b — Connect Voice Agent to llama.cpp (M)
+**Acceptance:** the existing Go text endpoint can perform the current stateless Rust analysis when configured, without changing its public request/response contract. **Dependencies:** T02, T03.
 
-Use a provisional compatible model without committing to the final SLM. Add the Python runtime adapter, structured extraction prompts, output validation, real readiness checks, and timeout/unavailable-runtime handling. Record model, quantization, prompt/runtime revisions, and stage timing; run a model-backed smoke test.
+### T05b — Add a replaceable structured language-model adapter (M)
 
-**Acceptance:** Python returns real structured reports and handles invalid model output and runtime failures. **Dependencies:** T04a. **Status:** implemented with an opt-in adapter, tests, and provisional-model smoke checks; see [local analysis](../voice-agent/docs/local-analysis.md). Final model quality/selection remain evaluation work.
+Add a concrete local language-model adapter only after the runtime, model, prompt, output validation, timeout, and semantic-grounding contract are selected. Keep deterministic rule-based analysis as the offline default and record model/runtime metadata. This is not currently implemented; no llama.cpp runtime or Python adapter is assumed.
 
-### T05 — Connect the Go incident analyzer to Voice Agent (S)
+**Acceptance:** model-backed extraction is opt-in, validated, cancellable within the documented budget, and tested with local fakes plus a separately supplied smoke-test model. **Dependencies:** T05 and a runtime/model decision.
 
-Implement VoiceAgentIncidentAnalyzer behind the existing interface, configure concrete wiring in main, propagate cancellation, and preserve simple HTTP errors. Add adapter tests and a cross-service smoke test.
-
-**Acceptance:** the existing text endpoint performs real local analysis without changing its contract; mock mode remains usable. **Dependencies:** T04b.
-
-## Milestone 2 — Complete Voice Reporting Workflow
+## Milestone 2 — Complete the voice reporting workflow
 
 ### T06 — Implement conversation state and human confirmation (L)
 
-Finalize the session/turn schemas and report-completeness policy outlined in T02. Implement the state machine and session/turn APIs in `voice-agent/`, initially using in-memory state. Add thin Go handlers/client methods that delegate to those APIs without duplicating transitions. Support clarification, correction, readback, cancellation, and confirmation of the current revision. Deduplicate retried turns.
+Add Pheme-owned session/turn APIs and an explicit state machine, initially using in-memory state if useful. Support clarification, correction, readback, cancellation, confirmation of the current draft revision, and idempotent retry handling. Add thin Go handlers/client methods only when the Pheme routes exist; do not duplicate transitions in Go.
 
 **Acceptance:** text scenarios complete the workflow; stale or ambiguous confirmation cannot finalize a report, and corrections invalidate prior confirmation. **Dependencies:** T02, T05.
 
 ### T07 — Persist sessions and confirmed incident reports (M)
 
-Add SQLite migrations and repositories inside `voice-agent/` for sessions, turns, and reports; Go must not access that database directly. Separate occurrence, recording, and confirmation timestamps. Make finalization atomic and idempotent.
+Add Pheme-owned SQLite migrations and repositories for sessions, turns, draft revisions, and reports. Keep Go away from Pheme tables. Separate occurrence, recording, and confirmation timestamps; make finalization atomic and idempotent.
 
-**Acceptance:** reports survive restart, sessions resume consistently, and retries cannot create duplicates. **Dependencies:** T06.
+**Acceptance:** reports survive restart, sessions resume consistently, and retries cannot create duplicate reports. **Dependencies:** T06.
 
-### T08 — Add Whisper transcription and audio turns (M)
+### T08 — Add audio turns to the stateful workflow (M)
 
-Implement a replaceable transcription adapter inside `voice-agent/`, provisionally whisper.cpp. Forward audio through the Go client to the Voice Agent. Accept/normalize supported audio formats; enforce limits and handle silence, cancellation, and invalid input. Record runtime configuration and transcription duration.
+Route WAV/audio turns through Pheme's existing normalization and transcription path into the same session workflow as text. Enforce body/duration limits, handle silence, cancellation, invalid audio, and model errors, and record transcription/runtime metadata. The stateless Rust `/v1/transcribe` endpoint and CLI already provide the underlying audio path; this ticket connects it to sessions rather than creating a second recognizer.
 
-**Acceptance:** audio enters the same conversation workflow as text and failures are recoverable. **Dependencies:** T03, T06.
+**Acceptance:** audio enters the same clarification/correction/confirmation workflow as text and failures are recoverable. **Dependencies:** T03, T06.
 
 ### T09 — Build the web voice console and spoken responses (M)
 
-Add push-to-talk, speech output through an adapter, listening/processing/speaking status, and development views of transcript/draft/state. Route spoken corrections and confirmation through the application workflow. Document speech-synthesis execution location.
+Add push-to-talk, WAV/audio handling, speech output through a replaceable client/platform adapter, listening/processing/speaking status, and development views of transcript/draft/state. Route spoken corrections and confirmation through the Pheme-owned workflow. Document where speech synthesis executes.
 
-**Acceptance:** a user reports, corrects, and confirms an incident through spoken turns; offline/local claims match the implementation. **Dependencies:** T07, T08.
+**Acceptance:** a user can report, correct, and confirm an incident through spoken turns; offline/local claims match the implementation. **Dependencies:** T07, T08.
 
 ### T10 — Implement incident retrieval and spoken summaries (M)
 
-Add Voice Agent listing/detail APIs, thin Go delegation, and validated time/count filters with parameterized queries in Voice Agent repositories. Interpret spoken requests and summarize only retrieved records, retaining IDs for verification. Cover empty and partial result sets.
+Add Pheme listing/detail routes, thin Go delegation, validated time/count filters, parameterized queries, and grounded summaries over returned records. Retain record IDs for verification and cover empty and partial result sets.
 
-**Acceptance:** “last five reports in the last hour” returns the correct records and grounded spoken answer. **Dependencies:** T07, T09.
+**Acceptance:** “last five reports in the last hour” returns the correct records and a grounded spoken answer. **Dependencies:** T07, T09.
 
-## Milestone 3 — Benchmarking and Research Dashboard
+## Milestone 3 — Benchmarking and research dashboard
 
 ### T11 — Create the incident evaluation dataset and scoring rules (M)
 
@@ -96,19 +96,19 @@ Collect consented local-speech examples covering terminology, noise, missing fac
 
 ### T12 — Replace the mock benchmark runner with an incident runner (L)
 
-Run real versioned scenarios against the Voice Agent service API through the shared Go client; include separate public-API end-to-end checks. Collect stage/resource metrics, outcomes, and full runtime configuration. Distinguish execution errors and output-quality failure. Explicitly remove licence-plate monitoring from supported benchmark requests and update affected tests/API docs; interview development remains deferred.
+Run real versioned scenarios against the Pheme VA service through the shared Go client, including separate public-API end-to-end checks. Collect existing Rust/host stage and resource metrics, workflow outcomes, and full runtime configuration. Distinguish execution errors from output-quality failures. Remove `license-plate-monitoring` from accepted benchmark requests in the Go code and tests when this ticket is implemented; interview development remains deferred.
 
-**Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11. Basic timing instrumentation starts in T04b/T08.
+**Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11.
 
 ### T13 — Persist experiments and expose dashboard query APIs (M)
 
-Add a Go-owned SQLite experiment/result repository, paginated history and filters. Keep experiment storage separate from Voice Agent incident/session storage. Preserve create/get contracts and define interrupted-run handling after restart without assuming the in-memory queue is durable.
+Add a Go-owned SQLite experiment/result repository, paginated history and filters, and defined interrupted-run handling after restart. Keep experiment storage separate from Pheme incident/session storage and preserve existing create/get contracts.
 
-**Acceptance:** historical runs survive restart and can be queried; interrupted runs have a defined visible outcome. **Dependencies:** T07, T12.
+**Acceptance:** historical runs survive restart and can be queried; interrupted runs have a defined visible outcome. **Dependencies:** T12.
 
 ### T14 — Build the benchmark dashboard (L)
 
-Add experiment configuration/creation, history, progress polling, and result details. Show quality, latency, memory, and available device metrics with clear loading/empty/error/unavailable states. Follow existing frontend conventions.
+Add experiment configuration/creation, history, progress polling, and result details to the web app. Show quality, latency, memory, and available device metrics with clear loading/empty/error/unavailable states.
 
 **Acceptance:** researchers can create a run and inspect measured results without curl. **Dependencies:** T13.
 
@@ -118,7 +118,7 @@ Compare selected models, quantization, runtimes, and devices. Display configurat
 
 **Acceptance:** researchers can compare compatible runs and export results with configuration and measurement context. **Dependencies:** T14.
 
-## Milestone 4 — Target-Device Evaluation
+## Milestone 4 — Target-device evaluation
 
 ### T16 — Confirm target hardware and deployment constraints (S)
 
@@ -128,7 +128,7 @@ Obtain device/OS/RAM/accelerator/storage/battery details, local/offline requirem
 
 ### T17 — Deploy the baseline workflow to the selected device (L)
 
-After selection, split into device-specific tasks: service packaging for Jetson or native inference/workflow integration for iOS. Reuse schemas, prompts, and conformance scenarios. Validate the whole speech/report/retrieval loop and document setup.
+After selection, split into device-specific tasks: service packaging for Jetson or native inference/workflow integration for iOS. Reuse schemas, prompts, and conformance scenarios. Validate the complete speech/report/retrieval loop and document setup.
 
 **Acceptance:** the baseline runs on the actual target at the agreed execution location; remote inference is not presented as on-device execution. **Dependencies:** T10, T16.
 
@@ -138,8 +138,8 @@ Implement device measurement collection and compare a bounded set of model/runti
 
 **Acceptance:** repeated measurements, configurations, and workload definitions support a reproducible deployment recommendation; whole-device and component measurements are distinguished. **Dependencies:** T11, T12, T15, T17.
 
-## Recommended Starting Sequence and Checks
+## Recommended sequence and checks
 
-With T01/T02 documented and T03 scaffolded, continue with T05, start T11 using the contract examples, and request T16 information in parallel with development. Then complete the spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
+Continue from the implemented Rust/TUI/metrics foundation with T05 and T11 in parallel, and request T16 information alongside development. Then complete the Pheme-owned spoken workflow before expanding dashboard comparisons and device optimization. Do not assign calendar deadlines until team capacity and device availability are known.
 
-For implementation tickets, use meaningful Go/Python unit tests at integration/state boundaries and shared cross-service scenarios. Run gofmt, go vet, and Go tests for backend changes, and lint/build for frontend changes. Ordinary CI should use fakes/small fixtures; model and device evaluations run separately with recorded configurations. For documentation-only updates, verify diff whitespace, links, current-code claims, and consistency; no runtime tests are required.
+For implementation tickets, keep Go unit tests beside Go packages and Rust tests beside the relevant crate. Run `gofmt`, `go vet`, and Go tests for backend changes; run Rust formatting, Clippy, and workspace tests for Rust changes; and run lint/build for frontend changes. Ordinary CI should use fakes/small fixtures. Model and device evaluations run separately with recorded configurations. For documentation-only updates, verify links, current-code claims, and consistency; no runtime tests are required.
