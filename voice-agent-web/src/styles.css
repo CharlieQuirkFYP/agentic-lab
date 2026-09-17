@@ -7,7 +7,7 @@ button { font: inherit; }
 .eyebrow { margin: 0; color: #4169a8; font-size: .75rem; font-weight: 750; letter-spacing: .09em; text-transform: uppercase; }
 h1 { margin: 8px 0 10px; font-size: clamp(2rem, 7vw, 3rem); letter-spacing: -.055em; line-height: 1.02; }
 .intro, .help, footer { color: #5b6b82; line-height: 1.55; }
-.intro { margin: 0; max-width: 520px; }
+.intro { margin: 0; max-width: 720px; font-size: 1rem; }
 .clear-button { flex: none; border: 1px solid #dbe4f0; border-radius: 9px; background: #fff; color: #4169a8; padding: 9px 12px; cursor: pointer; font-size: .82rem; font-weight: 700; }
 .chat { flex: 1; width: 100%; margin-top: clamp(22px, 4vw, 36px); padding: 4px clamp(0px, 2vw, 14px) 16px; }
 .empty-chat { padding: 72px 20px; color: #5b6b82; text-align: center; }
@@ -16,12 +16,12 @@ h1 { margin: 8px 0 10px; font-size: clamp(2rem, 7vw, 3rem); letter-spacing: -.05
 .empty-icon { margin: auto; width: 48px; height: 48px; display: grid; place-items: center; border-radius: 50%; background: #e7effa; color: #4169a8; font-size: 2rem; }
 .bubble-row { display: flex; margin: 12px 0; }
 .bubble-row.user { justify-content: flex-end; }
-.bubble { width: fit-content; max-width: min(88%, 620px); padding: 14px 16px 10px; border-radius: 18px; box-shadow: 0 5px 18px rgba(37, 66, 108, .06); }
+.bubble { width: fit-content; max-width: min(88%, 780px); padding: 16px 18px 11px; border-radius: 18px; box-shadow: 0 5px 18px rgba(37, 66, 108, .06); }
 .bubble.user { border-bottom-right-radius: 5px; background: #173d74; color: white; }
 .bubble.assistant { border: 1px solid #dbe4f0; border-bottom-left-radius: 5px; background: #fff; }
 .bubble time { display: block; margin-top: 8px; opacity: .65; font-size: .7rem; text-align: right; }
 .bubble-label, .voice-label { margin: 0 0 7px; font-size: .7rem; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; opacity: .72; }
-.bubble-text { margin: 0; line-height: 1.52; white-space: pre-wrap; overflow-wrap: anywhere; }
+.bubble-text { margin: 0; font-size: 1rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
 .voice-message { width: min(100%, 360px); min-width: 230px; }
 .voice-message audio { display: block; width: 100%; height: 38px; margin: 2px 0 4px; }
 .duration { font-size: .75rem; opacity: .72; }
@@ -29,7 +29,7 @@ h1 { margin: 8px 0 10px; font-size: clamp(2rem, 7vw, 3rem); letter-spacing: -.05
 .report dl { margin-top: 10px; }
 .report div { padding: 10px; background: #f5f8fc; }
 .report dt { color: #63738a; font-size: .68rem; font-weight: 700; text-transform: uppercase; letter-spacing: .07em; }
-.report dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .88rem; font-weight: 650; line-height: 1.35; }
+.report dd { margin: 4px 0 0; overflow-wrap: anywhere; font-size: .95rem; font-weight: 650; line-height: 1.4; }
 .composer, .message { margin-top: 14px; border: 1px solid #dbe4f0; border-radius: 20px; background: #fff; box-shadow: 0 8px 25px rgba(37, 66, 108, .06); }
 .composer { display: grid; justify-items: center; padding: 18px 20px 17px; text-align: center; }
 .state { display: flex; align-items: center; gap: 8px; margin: 0 0 13px; color: #52637a; font-size: .85rem; font-weight: 650; }
@@ -54,5 +54,5 @@ dl { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 footer { margin: 18px 4px 0; font-size: .75rem; text-align: center; }
 @keyframes blink { 50% { opacity: .35; transform: scale(.82); } }
 @media (min-width: 900px) { .shell { padding-bottom: 44px; } .chat { padding-inline: 22px; } .composer { padding-block: 20px; } .record-button { min-height: 88px; } }
-@media (max-width: 600px) { .shell { padding-top: 24px; padding-bottom: max(22px, env(safe-area-inset-bottom)); } .chat-header { align-items: flex-start; gap: 12px; } .intro { font-size: .9rem; } .clear-button { padding: 8px 9px; white-space: nowrap; } .chat { margin-top: 20px; padding-inline: 0; } .bubble { max-width: 94%; padding: 13px 14px 9px; } .voice-message { min-width: min(230px, calc(100vw - 92px)); } .report dl { grid-template-columns: 1fr; } .wide { grid-column: auto; } .composer { position: sticky; bottom: 10px; z-index: 2; margin-inline: -2px; border-radius: 16px; padding: 15px 14px 14px; } .record-button { width: 100%; min-height: 76px; } .help { max-width: 280px; } }
+@media (max-width: 600px) { .shell { padding: 24px 12px max(22px, env(safe-area-inset-bottom)); } .chat-header { align-items: flex-start; gap: 12px; } .intro { font-size: .96rem; } .clear-button { padding: 8px 9px; white-space: nowrap; } .chat { margin-top: 20px; padding-inline: 0; } .bubble { max-width: 94%; padding: 13px 14px 9px; } .bubble-text { font-size: .98rem; } .voice-message { min-width: min(230px, calc(100vw - 88px)); } .report dl { grid-template-columns: 1fr; } .report dd { font-size: .92rem; } .wide { grid-column: auto; } .composer { position: sticky; bottom: 10px; z-index: 2; margin-inline: -2px; border-radius: 16px; padding: 15px 14px 14px; } .record-button { width: 100%; min-height: 76px; } .help { max-width: 280px; } }
 @media (max-width: 380px) { .shell { padding: 18px 8px max(18px, env(safe-area-inset-bottom)); } .chat-header { display: block; } .clear-button { margin-top: 14px; } .bubble { max-width: 98%; } .composer { bottom: 6px; } .record-button { min-height: 70px; } }
