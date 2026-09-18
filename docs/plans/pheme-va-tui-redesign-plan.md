@@ -1,12 +1,16 @@
 # Pheme VA TUI Redesign Plan
 
+## Status
+
+The core redesign is implemented in `pheme-va/crates/cli/src/tui/`: the workspace has `Overview`, `Metrics`, `Runs`, and `Logs` tabs, separate live and historical telemetry contexts, worker-side model preparation/switching, bounded logs, search/highlighting, and persistent bounded run history. This document records that baseline and the remaining presentation/testing enhancements.
+
 ## Purpose
 
-This plan defines the next version of the Pheme VA terminal test bench. It keeps the TUI focused on local speech-model evaluation while making the distinction between live monitoring and historical run analysis explicit.
+This document defines the current and next version of the Pheme VA terminal test bench. It keeps the TUI focused on local speech-model evaluation while making the distinction between live monitoring and historical run analysis explicit.
 
-The TUI remains a development voice console and benchmark dashboard. It is not a production desktop hotkey application and does not provide partial live transcription. A completed recording still produces one final transcription result.
+The TUI is a development voice console and local benchmark-inspection surface. It is not a production desktop hotkey application and does not provide partial live transcription. A completed recording still produces one final transcription result.
 
-The existing Rust, Ratatui, `metrics`, and Pheme VA worker architecture should be retained. The redesign should not add a monitoring daemon, database server, distributed queue, or new UI framework.
+The existing Rust, Ratatui, `metrics`, and Pheme VA worker architecture is retained. The redesign does not add a monitoring daemon, database server, distributed queue, or new UI framework.
 
 ## Core navigation model
 
@@ -23,7 +27,7 @@ The telemetry workspace has four tabs:
 | `Runs`     | Historical run selector and after-action reports                         | One selected run after pressing `Enter`      |
 | `Logs`     | Structured application, worker, build, and native diagnostics            | Live and retained log history                |
 
-The previous `Graphs` tab becomes `Runs`. Historical run selection belongs only to `Runs`; it must not silently filter the live `Metrics` tab.
+The current navigation uses `Runs` instead of the earlier `Graphs` tab. Historical run selection belongs only to `Runs`; it does not silently filter the live `Metrics` tab.
 
 In a terminal, “click” means selecting an item with the keyboard and pressing `Enter`.
 
@@ -75,18 +79,18 @@ The run label is informational. It must not cause the live screen to display an 
 
 ## Runtime data model
 
-The telemetry store should retain two related but separate views of data.
+The telemetry store retains two related but separate views of data.
 
 ### Live sample store
 
-The live store contains a bounded rolling window of samples from the current TUI session. It is used by `Overview`, `Metrics`, and live metric graphs.
+The live store contains a bounded rolling window of samples from the current TUI session. It is used by `Overview`, `Metrics`, and live metric details.
 
-Each metric series is identified by all of the following:
+Each metric series is identified by all of the following (the current implementation stores `category` as a derived string):
 
 ```rust
-struct MetricKey {
+struct SeriesKey {
     name: String,
-    category: MetricCategory,
+    category: String,
     scope: MetricScope,
     source: String,
     unit: MetricUnit,
@@ -95,7 +99,7 @@ struct MetricKey {
 
 The source and scope are part of the identity so that, for example, process CPU and system CPU cannot be merged into one graph accidentally.
 
-Each live series should expose:
+Each live series exposes:
 
 - Latest value
 - Minimum
@@ -107,11 +111,11 @@ Each live series should expose:
 - Last unavailable reason, when applicable
 - Numeric samples for graphing
 
-The live store must be bounded so an idle TUI cannot grow memory indefinitely. A rolling time window or a configurable maximum sample count is acceptable.
+The live store is bounded by a maximum event count so an idle TUI cannot grow memory indefinitely. The current store retains up to 10,000 events.
 
 ### Historical run store
 
-Each request gets a run record containing the final report and samples captured while that request was active.
+Each request gets a run record containing its report metadata and samples captured while that request was active. The current persisted shape is:
 
 ```rust
 struct RunReport {
@@ -119,28 +123,30 @@ struct RunReport {
     model_id: String,
     model_family: String,
     backend: String,
+    runtime: Option<String>,
+    revision: Option<String>,
     source: String,
-    status: TranscriptionStatus,
+    status: String,
     transcript: String,
     raw_transcript: String,
     language: Option<String>,
     audio_duration_seconds: f32,
-    gate_decision: SpeechGateDecision,
+    gate_decision: String,
     segment_count: usize,
-    timings: TimingSummary,
     started_at_ms: u64,
     finished_at_ms: Option<u64>,
     error: Option<String>,
+    events: Vec<MetricEvent>,
 }
 ```
 
-The run record also owns or references the metric events associated with its `run_id`. The historical report must not be reconstructed from whichever run happens to be selected in a global telemetry field.
+The run record also owns or references the metric events associated with its `run_id`. The historical report is not reconstructed from whichever run happens to be selected in a global telemetry field.
 
-When a run is selected in `Runs`, all report values and graphs must use that run’s samples only.
+When a run is selected in `Runs`, report values and historical metric detail use that run's saved events only.
 
 ## Continuous resource monitoring
 
-The resource sampler should run continuously while the TUI is open, not only while Whisper is decoding.
+The resource sampler runs continuously while the TUI is open, not only while a model is decoding.
 
 The request lifecycle is:
 
@@ -164,7 +170,7 @@ Return to live idle monitoring
 
 The run context must be created before microphone recording begins. All samples belonging to the request must share the same run ID, including recording, normalisation, transcription, cleanup, and final result handling.
 
-The existing resource sampling cadence of approximately 250 ms is suitable for the first implementation. The sampling loop must not block the UI event loop or the inference worker.
+The implemented resource sampling cadence is approximately 250 ms. The sampling loop runs separately and does not block the UI event loop or the inference worker.
 
 The active Bench and Processing screens should include a compact monitor strip:
 
@@ -288,11 +294,11 @@ Metrics should look like a category-organised table, not a graph page and not a 
 - Metrics with different units must not be combined into one axis.
 - The table can scroll without changing the live data context.
 
-The category summary is calculated from live samples while idle and from the active run’s samples during a request. It should not silently switch to a previously selected completed run.
+The category summary is calculated from live samples while idle and from the active run’s samples during a request. It does not silently switch to a previously selected completed run.
 
 ## Live metric graph screen
 
-Selecting a metric from Metrics opens a dedicated graph screen. The screen is live: it continues receiving samples while open.
+Selecting a metric from Metrics opens a dedicated live metric-detail screen. The screen continues receiving samples while open.
 
 ```text
 ┌ LIVE / GPU UTILISATION ─────────────────────────────────────────────────┐
@@ -324,7 +330,7 @@ A category graph may show multiple compatible metrics together. Metrics with inc
 
 ## Runs screen and after-action report
 
-The Runs tab contains the list first. It must not immediately show a graph for whichever run happens to be first.
+The Runs tab contains the list first. It does not immediately show a graph for whichever run happens to be first.
 
 ```text
 ┌ RUNS ────────────────────────────────────────────────────────────────────┐
@@ -336,7 +342,9 @@ The Runs tab contains the list first. It must not immediately show a graph for w
 [j/k] select run  [Enter] open report  [/] search  [Esc] back
 ```
 
-Pressing `Enter` opens the selected run:
+Pressing `Enter` opens the selected run's report. The current report includes metadata, transcript/raw transcript access, and a run-only metric snapshot. Pressing `Enter` on a snapshot metric opens its historical numeric detail when enough samples exist. The richer multi-panel graph grid below remains a presentation enhancement, not the current renderer.
+
+The intended report layout is:
 
 ```text
 ┌ RUN-0007 / AFTER-ACTION REPORT ─────────────────────────────────────────┐
@@ -406,7 +414,7 @@ Logs remain structured and bounded. The Logs tab should include:
 
 Components include `manifest`, `worker`, `model-loader`, `adapter-build`, `metrics`, `native-stderr`, and `recorder`.
 
-Whisper/GGML, ALSA, and Cargo/native diagnostics must be captured into the log store rather than being written directly over the Ratatui screen. The native stderr capture must remain active during model loading, recording, retries, adapter builds, and worker shutdown.
+On Unix, Whisper/GGML, ALSA, and Cargo/native diagnostics are captured into the log store rather than being written directly over the Ratatui screen. Unix stderr capture remains active during model loading, recording, retries, adapter builds, and worker shutdown. Other platforms currently use the fallback path and do not provide this native capture.
 
 The log store should keep a bounded number of entries and report dropped entries rather than blocking the UI.
 
@@ -476,7 +484,7 @@ Model selection remains manifest-driven. The catalog should distinguish:
 - Required artifact missing
 - Ready to load
 
-Selecting a supported model whose adapter is not compiled should automatically start a background Cargo build. The user should not need to restart manually with `--features whisper` or `--features zipformer`.
+Selecting a supported model whose adapter is not compiled automatically starts a background Cargo build. The user does not need to restart manually with `--features whisper` or `--features zipformer`; the TUI restores the terminal and restarts into the validated adapter cache after success.
 
 The build behaviour is:
 
@@ -487,7 +495,7 @@ Show BUILDING ADAPTER screen
     ↓
 Run Cargo asynchronously with the requested adapter feature
     ↓
-Write output to target/tui-adapters/<host-triple>/release/cli
+Build into the isolated `target/tui-adapters/build/` directory and publish a validated executable under the fingerprinted `target/tui-adapters/cache-v2/` entry
     ↓
 Capture Cargo/compiler diagnostics in Logs
     ↓
@@ -507,7 +515,7 @@ Build requirements and constraints:
 - Only the known adapter families may be requested; no arbitrary shell command may be constructed from a manifest value.
 - `Esc` cancels the build without blocking the UI.
 - Build failure returns to the picker and leaves the current model active.
-- Successful restart retains TUI settings but resets in-memory results, metrics, and logs. This reset must be stated clearly on the build screen.
+- Successful restart retains TUI settings and saved run reports but resets in-memory live metrics, logs, and retry audio. This reset is stated on the preparation screen.
 
 The build screen should show:
 
@@ -578,7 +586,7 @@ The footer must change based on the active screen and must not claim that `[3]` 
 
 ## Rust and Ratatui implementation notes
 
-The likely implementation remains within the existing TUI modules:
+The implementation is already organised within the existing TUI modules:
 
 ```text
 pheme-va/crates/cli/src/tui/app.rs
@@ -590,23 +598,22 @@ pheme-va/crates/cli/src/tui/logs.rs
 pheme-va/crates/metrics/src/resources.rs
 ```
 
-Expected state changes include:
+The current implementation already:
 
-- Replace `TelemetryTab::Graphs` with `TelemetryTab::Runs`.
-- Add a metric detail/graph screen or equivalent nested telemetry view.
-- Keep live selection separate from historical run selection.
-- Store selected live category and metric keys rather than only a positional index.
-- Store a run list and selected run report independently from live telemetry.
-- Add run report metadata alongside metric events.
-- Add match ranges or a shared text-highlighting helper for Ratatui `Line`/`Span` rendering.
-- Add responsive layouts for the table, report, and graph grid.
-- Reuse the existing `Chart`, `Dataset`, `Table`, `List`, `Paragraph`, `Block`, and `Tabs` widgets.
+- uses `TelemetryTab::Runs` rather than the old `Graphs` tab;
+- provides a metric detail/chart view from `Metrics`;
+- keeps live metric selection separate from historical run selection;
+- identifies series by metric name, category, scope, source, and unit;
+- stores run reports independently from the live event window;
+- retains run metadata alongside metric events;
+- highlights search matches in Ratatui text; and
+- reuses `Chart`, `Dataset`, `Table`, `Paragraph`, `Block`, and `Tabs` widgets.
 
-No new dependency is required for the planned visualisation. The existing native-log capture, automatic adapter build/restart, Whisper language-detection fix, and resource-provider improvements should be retained.
+Remaining UI work is primarily richer responsive layouts and a full multi-panel historical graph grid. No new dependency is required. Native-log capture on Unix, automatic allowlisted model download and adapter build/restart, model language handling, and resource-provider improvements should be retained.
 
 ## Testing and validation
 
-Tests should be kept beside the packages they cover and should use deterministic local fixtures.
+Tests are kept beside the packages they cover and use deterministic local fixtures. The existing suite covers the main reducer, telemetry, history, rendering, and resource-provider behavior; extend it as the remaining presentation work lands.
 
 Telemetry tests should cover:
 
@@ -661,27 +668,25 @@ cargo test --workspace
 
 Model-backed tests remain explicitly ignored unless model and audio paths are supplied through environment variables. Model weights, recordings, and generated benchmark artifacts must not be committed.
 
-## Acceptance criteria
+## Acceptance status
 
-The redesign is complete when:
+The following redesign criteria are implemented:
 
-- `[2] Metrics` is visibly a live monitor and is not pinned to a historical run.
+- `[2] Metrics` is a live monitor and is not pinned to a historical run.
 - The active run ID is shown as context without acting as a hidden filter.
 - Metrics are displayed in category sections without a timestamp column in the main table.
-- Selecting a category or metric and pressing `Enter` opens the appropriate live graph.
+- Selecting a metric and pressing `Enter` opens live metric detail; selecting a run and pressing `Enter` opens its report.
 - `[3] Runs` first displays a run list.
-- Selecting a run and pressing `Enter` opens its transcript, metadata, statistics, and graph-based after-action report.
 - Historical reports remain tied to their selected run and do not change when live samples arrive.
-- Resource sampling covers recording and processing, not only model inference.
-- The Overview is framed, compact, and useful at 80×24.
-- Search works across Overview, Metrics, live/detail graphs, Runs, reports, and Logs.
+- Resource sampling covers idle, model loading/switching, recording, and processing when enabled.
+- The Overview is framed and compact, and search works across the telemetry workspace.
 - Search highlights matching text instead of simply hiding context.
-- Native Whisper/ALSA/Cargo diagnostics do not overwrite the TUI.
-- Selecting an uncompiled adapter starts a background build without requiring a manual feature flag restart.
-- Unsupported measurements remain explicitly unavailable with a reason.
-- CPU/GPU/battery component values are not presented as whole-device power.
-- The TUI remains responsive while recording, sampling, inference, searching, and building adapters.
-- Formatting, Clippy, workspace tests, and deterministic rendering tests pass.
+- Unix native Whisper/ALSA/Cargo diagnostics are captured without overwriting the TUI.
+- Selecting an uncompiled adapter starts background preparation and automatic restart without a manual feature-flag restart.
+- Unsupported measurements remain explicitly unavailable with a reason; component values are not presented as whole-device power.
+- The TUI remains responsive while recording, sampling, inference, searching, and preparing adapters.
+
+Remaining acceptance work is a richer responsive multi-panel historical graph grid, broader non-Unix native-diagnostic capture, and any additional rendering tests required by those enhancements. Formatting, Clippy, workspace tests, and deterministic rendering tests should pass after changes.
 
 ## Boundaries
 
