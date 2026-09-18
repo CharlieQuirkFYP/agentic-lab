@@ -124,14 +124,17 @@ The UI event loop must start before model loading so the terminal remains respon
 
 ## First launch and onboarding
 
-The `tui` command should open onboarding automatically when:
+At startup, the `tui` command shows the Welcome screen only for first-run or explicit reconfiguration:
 
-- no TUI configuration exists;
-- the saved manifest cannot be loaded;
-- the saved model ID is not present in the manifest;
-- required artifacts are missing;
-- the adapter feature is not compiled into the binary; or
-- the saved model failed its last load attempt and no usable active model exists.
+- no saved TUI configuration exists and no explicit model override was supplied; or
+- `--reconfigure` was supplied.
+
+A saved configuration that names an unavailable model is handled by the picker rather than treated as onboarding. In particular:
+
+- a manifest that cannot be loaded uses the Error screen;
+- an unknown saved model, missing artifacts, or an unavailable adapter goes to the picker;
+- a missing adapter may be prepared automatically from the picker; and
+- model-load failures are recoverable and are not persisted as a startup condition.
 
 On a later launch with a valid saved configuration, show a short entry menu instead of forcing setup again:
 
@@ -505,7 +508,7 @@ The overview selects the current run by default and provides a clear empty state
 
 ### Granular metrics table
 
-`MetricEvent` already contains the fields needed by the table:
+`MetricEvent` retains the fields used by the telemetry store and detail views:
 
 - schema version;
 - optional experiment ID;
@@ -516,35 +519,12 @@ The overview selects the current run by default and provides a clear empty state
 - optional value;
 - unit;
 - scope;
-- source;
+- source; and
 - optional unavailable reason.
 
-The TUI should retain events in memory grouped by run or host operation and render every event for the selected run:
+The primary `Metrics` tab is intentionally not a raw event dump. It groups events by metric name, category, scope, source, and unit and displays `Now`, `Min`, `Max`, `Avg`, and `N` for each series. Categories include Timing, Resources, Power / Energy, Counts, and Status. Unavailable values remain explicit and are not converted to zero.
 
-```text
-┌─ PHEME VA / METRICS / EVENTS ───────────────────────────────────────────────┐
-│ Run: run-004     Model: zipformer-small     Events: 14                      │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Seq  Time         Name                              Value       Unit         │
-│ 01   12:04:15.120 model_id                         zipformer... status       │
-│ 02   12:04:15.120 model_family                     zipformer    status       │
-│ 03   12:04:15.121 audio_normalization_duration_ms  3.2         ms           │
-│ 04   12:04:15.124 speech_gate_duration_ms          0.8         ms           │
-│ 05   12:04:15.125 transcription_duration_ms        398.4       ms           │
-│ 06   12:04:15.125 model_feature_extraction...      17.5        ms           │
-│ 07   12:04:15.125 model_inference_duration_ms      351.8       ms           │
-│ 08   12:04:15.125 model_decoding_duration_ms       29.1        ms           │
-│ 09   12:04:15.125 end_to_end_request_duration_ms   412.8       ms           │
-│ 10   12:04:15.125 process_cpu_percent              74.1        %            │
-│ 11   12:04:15.125 ram_usage_bytes                  195 MB      bytes        │
-│ 12   12:04:15.375 gpu_usage_percent                unavailable  —            │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Scope/source/reason: select an event for full details                       │
-│ [↑/↓] select  [Enter] inspect  [j/k] scroll  [1-4] tab  [Esc] back           │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-The table must use `scope` to distinguish process and system `ram_usage_bytes` events, even though the current metric name is shared. A selected event should reveal the full name, run ID, source, raw value, unit, timestamp, and unavailable reason.
+Selecting a metric and pressing `Enter` opens live metric detail. It shows the series identity and scope/source/unit, current value, aggregate statistics, and numeric history when enough samples exist. The `Runs` report provides a per-run aggregate snapshot and historical detail. A full sequence/timestamp event inspector is not currently implemented.
 
 The event names to support include:
 
@@ -1003,7 +983,7 @@ Manual checks should also cover terminal restoration after `q`, `Esc`, a microph
 
 The following baseline criteria are implemented:
 
-1. `pheme-va tui` opens onboarding when there is no usable saved model.
+1. A first run without an explicit model override or an explicit reconfigure opens the Welcome screen; unusable saved selections go to picker or error handling.
 2. Models are selected by manifest ID, with compiled-adapter, artifact, cache, and load-readiness states.
 3. Whisper and Zipformer can be selected when available; missing adapters can be prepared automatically and the TUI restarts into the validated cache.
 4. A failed model load preserves the active model and saved selection.

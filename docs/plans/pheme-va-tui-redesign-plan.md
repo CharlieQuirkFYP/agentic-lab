@@ -35,14 +35,14 @@ In a terminal, “click” means selecting an item with the keyboard and pressin
 
 ### Live Metrics
 
-`Metrics` is a small system monitor for the current TUI process and the active speech request.
+`Metrics` is a small system monitor for the current TUI process and its bounded live event window.
 
 - It is not pinned to the last completed run.
 - It continues updating while the TUI is idle.
 - When a request is active, the current run ID is shown as context.
-- While a request is active, running statistics are calculated for that request.
-- Pressing `Enter` on a metric opens a live graph that continues receiving samples.
-- When no request is active, the header says `LIVE / idle` and the table shows the latest host measurements plus a short rolling history.
+- The live table aggregates retained events; per-run statistics are available in `Runs`.
+- Pressing `Enter` on a metric opens live metric detail, with a chart when enough numeric samples exist.
+- When no request is active, the header says `LIVE / idle` and the table shows current host measurements plus aggregates over retained live samples.
 
 Example headers:
 
@@ -286,15 +286,15 @@ Metrics should look like a category-organised table, not a graph page and not a 
 - Categories and metric rows have a selected state.
 - `j/k` and arrow keys move through categories and metrics.
 - The selected row is highlighted, including its category and metric name.
-- `Enter` on a category opens a category graph page.
-- `Enter` on a metric opens that metric’s live graph.
+- Category rows are display-only sections; metric rows have the active selection.
+- `Enter` on a metric opens that metric’s live detail view.
 - The table updates in place as new samples arrive.
 - The latest value is visually emphasised while min/max/average remain readable.
 - Unavailable rows remain visible and explain why no value is available.
 - Metrics with different units must not be combined into one axis.
 - The table can scroll without changing the live data context.
 
-The category summary is calculated from live samples while idle and from the active run’s samples during a request. It does not silently switch to a previously selected completed run.
+The category summary is calculated from the bounded live event window in both idle and active states. The active run is shown as context, while historical run selection remains isolated to `Runs`; live metrics do not silently switch to a previously selected completed run.
 
 ## Live metric graph screen
 
@@ -426,7 +426,7 @@ The filter is a search tool shared by all telemetry tabs, not a Logs-only filter
 [/] Search: gpu_
 ```
 
-Rows remain in their normal category/order so the user retains context. Matching text is highlighted in the row, report, legend, or log message. Nonmatching content may be dimmed but should not disappear by default.
+Rows remain in their normal category/order so the user retains context. Matching text that is actually rendered is highlighted in the row, report, or log message. The current Logs view keeps all retained entries visible and highlights component/message text rather than removing nonmatching rows. Nonmatching content may be dimmed but should not disappear by default.
 
 Example:
 
@@ -445,14 +445,12 @@ The `gpu_` or matching substring should use a strong accent/reversed style where
 > [gpu_] utilisation
 ```
 
-Search applies to:
+Search matching currently covers:
 
-- Overview labels and transcript text
-- Metrics categories, metric names, units, scopes, sources, and values
-- Live graph titles and legends
-- Runs, including run IDs, model IDs, source, status, and report text
-- Historical graph legends and report data
-- Logs, including component and message
+- rendered Overview labels, current panels, and transcript text;
+- metric series metadata and values. Categories, units, scopes, and sources participate in matching even when not all of that metadata is visible in the primary table;
+- rendered run fields, report text, and historical metric detail; and
+- log level/component/message/run/model fields for matching. The current Logs view highlights component/message text and keeps the full retained list visible.
 
 Suggested controls:
 
@@ -679,7 +677,7 @@ The following redesign criteria are implemented:
 - `[3] Runs` first displays a run list.
 - Historical reports remain tied to their selected run and do not change when live samples arrive.
 - Resource sampling covers idle, model loading/switching, recording, and processing when enabled.
-- The Overview is framed and compact, and search works across the telemetry workspace.
+- The Overview is framed and compact; search matches shared telemetry data and highlights rendered text, while the current Logs view keeps all retained entries visible.
 - Search highlights matching text instead of simply hiding context.
 - Unix native Whisper/ALSA/Cargo diagnostics are captured without overwriting the TUI.
 - Selecting an uncompiled adapter starts background preparation and automatic restart without a manual feature-flag restart.

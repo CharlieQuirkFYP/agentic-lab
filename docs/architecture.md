@@ -93,7 +93,7 @@ The following paths are already present:
 api/                            Go public API and benchmark lifecycle
 web/                            React web scaffold
 pheme-va/
-  crates/core/                  Portable audio, workflow primitives, and adapter traits
+  crates/core/                  Portable audio, transcription and incident-analysis primitives, and adapter traits
   crates/metrics/               Typed timing/resource metric contract
   crates/cli/                   WAV client, microphone host, and TUI
   crates/server/                Development HTTP host

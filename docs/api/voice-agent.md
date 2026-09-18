@@ -133,7 +133,7 @@ A successful response is an unwrapped serialized `TranscriptionResult`. The exac
 }
 ```
 
-The current server's direct Whisper wiring reports the manifest/model identifier supplied to the adapter, `model_family: "whisper"`, and no revision unless a future server wiring change supplies one. The CLI's manifest-based loader can provide model revision metadata for supported adapters.
+The current server's direct Whisper wiring reports the supplied model path as `model_id`, `model_family: "whisper"`, and no revision. It does not load `models/manifest.toml`; the CLI's manifest-based loader provides stable model IDs and revision metadata for supported adapters.
 
 Important fields:
 
