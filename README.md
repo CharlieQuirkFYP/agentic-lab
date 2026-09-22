@@ -6,7 +6,7 @@ Agentic Lab is a university final year project in collaboration with KLASS. The 
 
 The canonical voice-agent implementation is [`pheme-va/`](pheme-va/), a portable Rust workspace. It provides the audio pipeline, Whisper/whisper.cpp integration, host adapters, and the foundation for incident analysis and workflow execution. The project evaluates quality, latency, memory, CPU/GPU usage, power, energy, and thermal/endurance trade-offs on resource-constrained hardware.
 
-The Go API remains the application-facing backend and benchmark coordinator. The web app will provide a development voice console and a research dashboard. The former Python implementation has been removed; the historical Python contract documentation is retained separately for reference only. Existing KLASS solutions are not being integrated. Vision/licence-plate monitoring is out of scope and interview development is deferred.
+The Go API remains the application-facing backend and benchmark coordinator. The repository includes a development voice console and a separate research dashboard. The former Python implementation has been removed; the historical Python contract documentation is retained separately for reference only. Existing KLASS solutions are not being integrated. Vision/licence-plate monitoring is out of scope and interview development is deferred.
 
 ## Project Documentation
 
@@ -173,6 +173,30 @@ npm run build
 ```
 
 The Vite development server runs at `http://localhost:5173`. The voice console and benchmark dashboard are still scaffolding.
+
+### Voice Agent Web Frontend
+
+`voice-agent-web/` is the standalone, phone-friendly development frontend for the Pheme VA HTTP host. It is separate from the benchmark dashboard under `web/`.
+
+Start the Pheme VA server first from `pheme-va/`, then start the frontend:
+
+```bash
+cd voice-agent-web
+npm install
+npm run dev
+```
+
+Open the Vite URL shown in the terminal, normally `http://localhost:5173`. The frontend proxies `/pheme/*` to the Pheme server at `http://127.0.0.1:8000`, so it expects the Pheme HTTP host to be running. To use another host, set `VITE_PHEME_API_URL` before starting Vite.
+
+The frontend supports:
+
+- microphone recording and WAV playback/download;
+- WAV file selection or drag-and-drop;
+- a 2 MiB upload limit and the Pheme 120-second audio limit;
+- transcription through `/v1/transcribe`, followed by incident analysis through `/v1/analyze`;
+- cancellation while transcription or analysis is processing.
+
+Microphone access requires browser permission and, on a physical device, an HTTPS secure context. If microphone permission is blocked, the WAV upload option remains available. See [`voice-agent-web/README.md`](voice-agent-web/README.md) for the shorter frontend-specific setup notes.
 
 ## Model and deployment notes
 

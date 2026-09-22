@@ -24,10 +24,10 @@ async function request<T>(path: string, options: RequestInit): Promise<T> {
   return response.json() as Promise<T>
 }
 
-export function transcribe(audio: Blob): Promise<Transcription> {
-  return request('/v1/transcribe', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: audio })
+export function transcribe(audio: Blob, signal?: AbortSignal): Promise<Transcription> {
+  return request('/v1/transcribe', { method: 'POST', headers: { 'Content-Type': 'audio/wav' }, body: audio, signal })
 }
 
-export function analyze(transcript: string): Promise<IncidentReport> {
-  return request('/v1/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }) })
+export function analyze(transcript: string, signal?: AbortSignal): Promise<IncidentReport> {
+  return request('/v1/analyze', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ transcript }), signal })
 }
