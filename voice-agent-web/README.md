@@ -12,6 +12,13 @@ npm install
 npm run dev
 ```
 
+Run the frontend checks with:
+
+```bash
+npm test
+npm run build
+```
+
 Vite proxies `/pheme/*` to `http://127.0.0.1:8000/*`, avoiding development-browser CORS issues. To use a different host, set `VITE_PHEME_API_URL` before starting Vite.
 
 The browser captures a completed microphone recording or accepts a `.wav` upload by file picker or drag-and-drop, calls `/v1/transcribe`, then sends non-empty transcript text to `/v1/analyze`. Uploaded files must be readable WAV files no larger than 2 MB and no longer than 120 seconds. The current Pheme service has no streaming endpoint, so live transcription is intentionally out of scope here.

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 
 import { MicrophoneRecorder } from './audio'
+import { validateWavFile } from './fileValidation'
 import { analyze, transcribe, type IncidentReport } from './phemeApi'
 
 type VoiceState = 'ready' | 'recording' | 'processing' | 'error'
@@ -18,7 +19,6 @@ type ChatMessage = {
 }
 
 const STORAGE_KEY = 'pheme-voice-chat'
-const MAX_WAV_BYTES = 2 * 1024 * 1024
 
 export default function App() {
   const recorder = useRef<MicrophoneRecorder | null>(null)
@@ -102,14 +102,9 @@ export default function App() {
   }
 
   const processFile = async (file: File) => {
-    if (!file.name.toLowerCase().endsWith('.wav')) {
-      setError('Please choose a WAV file with a .wav extension.')
-      setErrorKind('file')
-      setState('error')
-      return
-    }
-    if (file.size > MAX_WAV_BYTES) {
-      setError('That WAV file is too large. Please choose a file no larger than 2 MB.')
+    const validationError = validateWavFile(file)
+    if (validationError) {
+      setError(validationError)
       setErrorKind('file')
       setState('error')
       return

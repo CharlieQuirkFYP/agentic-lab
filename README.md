@@ -186,6 +186,8 @@ npm install
 npm run dev
 ```
 
+Run the frontend tests and production build with `npm test` and `npm run build`.
+
 Open the Vite URL shown in the terminal, normally `http://localhost:5173`. The frontend proxies `/pheme/*` to the Pheme server at `http://127.0.0.1:8000`, so it expects the Pheme HTTP host to be running. To use another host, set `VITE_PHEME_API_URL` before starting Vite.
 
 The frontend supports:
