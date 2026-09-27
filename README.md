@@ -205,3 +205,27 @@ Microphone access requires browser permission and, on a physical device, an HTTP
 Whisper/whisper.cpp is the current speech-recognition baseline. Pheme keeps transcription and language-model inference behind replaceable boundaries so alternative local models can be evaluated. A concrete llama.cpp-compatible language-model adapter for structured incident extraction is still planned; the current rule-based extractor is deliberately conservative and does not invent facts.
 
 The eventual target may be an iOS phone or NVIDIA Jetson, but Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
+
+## Tech Stack and Frameworks Utilised
+
+<p align="center"><strong>UI Stack</strong></p>
+<p align="center">
+<a href="https://vitejs.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/f/f1/Vitejs-logo.svg" alt="Vite" width="40"/></a>&nbsp;&nbsp;
+<a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"><img src="https://upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png" alt="JavaScript" width="40"/></a>&nbsp;&nbsp;
+<a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://github.com/user-attachments/assets/7caf280c-bd03-414e-bc1d-961b707e44fe" width="40" /></a>&nbsp;&nbsp;
+<a href="https://react.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" width="40"/></a>&nbsp;&nbsp;
+<a href="https://tailwindcss.com/"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Tailwind_CSS_Logo.svg" alt="Tailwind" width="50"/></a>&nbsp;&nbsp;
+<br>
+<i>Vite · JavaScript · TypeScript · React · Tailwind CSS</i>
+</p>
+<br>
+
+<p align="center"><strong>Core Backend Languages</strong></p>
+<p align="center">
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/0/05/Go_Logo_Blue.svg" alt="Golang" width="80"/></a>&nbsp;&nbsp;
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Rust_programming_language_black_logo.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original" alt="Rust" width="45"/></a>&nbsp;&nbsp;
+<br>
+<i>Golang · Rust</i>
+</p>
+<br>
+
