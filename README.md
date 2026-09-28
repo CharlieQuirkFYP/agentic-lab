@@ -220,10 +220,11 @@ The eventual target may be an iOS phone or NVIDIA Jetson, but Linux builds and l
 </p>
 <br>
 
-<p align="center"><strong>Core Backend Languages</strong></p>
+<p align="center"><strong>Core Backend</strong></p>
 <p align="center">
 <a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/0/05/Go_Logo_Blue.svg" alt="Golang" width="80"/></a>&nbsp;&nbsp;
 <a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Rust_programming_language_black_logo.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original" alt="Rust" width="45"/></a>&nbsp;&nbsp;
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/a/ad/Logo_PostgreSQL.png?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original" alt="Postgres" width="50"/></a>&nbsp;&nbsp;
 <br>
 <i>Golang · Rust</i>
 </p>
