@@ -6,6 +6,8 @@ members = [
     "crates/server",
     "crates/ffi",
     "crates/metrics",
+    "crates/models/whispercpp",
+    "crates/models/zipformer",
 ]
 
 [workspace.package]

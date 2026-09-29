@@ -108,6 +108,6 @@ Example:
 
 ## Current Limitations and Planned Work
 
-The runner returns hardcoded values; latency, memory, and tokens per second are not actual measurements. Experiments are lost when the process restarts. There is no experiment listing/filtering or export endpoint, persistent result storage, or power/energy/thermal telemetry.
+The runner returns hardcoded values; latency, memory, and tokens per second are not actual benchmark measurements. Experiments and Go-side metric batches are lost when the process restarts. There is no experiment listing/filtering or export endpoint or persistent result storage, and no measured resource integration in `Experiment.Result` or verified whole-device power/energy telemetry.
 
-The [planned architecture](../architecture.md) adds a real incident scenario runner, persistent experiment storage, dashboard query APIs, and measured results. Those capabilities are not available in the current API.
+The [planned architecture](../architecture.md) adds a real incident scenario runner, persistent experiment storage, dashboard query APIs, and measured results. The separate Rust Pheme VA metrics path can currently emit application/resource telemetry (with additional GPU, component-temperature, and single-battery values on supported Linux hosts), but that telemetry is not integrated into `Experiment.Result`; verified whole-device power and energy are not currently available. These benchmark-result capabilities are not available in the current API.

@@ -14,9 +14,26 @@ use crate::transcript::{
 };
 use metrics::{MetricsContext, Stage};
 
+/// Swappable speech-recognition backend boundary.
+///
+/// `Engine` normalizes every input to mono 16 kHz `f32` samples before calling
+/// this trait. A backend may be an in-process native runtime, a mobile FFI
+/// implementation, or a deterministic test double; it must return the shared
+/// [`RawTranscription`] contract and must not own the workflow state machine.
 pub trait Transcriber: Send {
+    /// Stable model identifier included in results and benchmark metadata.
     fn name(&self) -> &str;
+    /// Model family, such as `whisper` or `zipformer`.
+    fn model_family(&self) -> &str {
+        "unknown"
+    }
+    /// Optional pinned model revision.
+    fn model_revision(&self) -> Option<&str> {
+        None
+    }
+    /// Whether the model/runtime is loaded and can accept a request.
     fn is_ready(&self) -> bool;
+    /// Transcribe one already-normalized, non-silent audio clip.
     fn transcribe(
         &mut self,
         audio: &NormalizedAudio,
@@ -195,6 +212,9 @@ pub struct TranscriptionResult {
     pub raw_text: String,
     pub text: String,
     pub language: Option<String>,
+    pub model_id: String,
+    pub model_family: String,
+    pub model_revision: Option<String>,
     pub segments: Vec<crate::transcript::TranscriptSegment>,
     pub gate: SpeechGateResult,
     pub dictionary_prompt: Option<String>,
@@ -229,8 +249,16 @@ impl Engine {
     where
         T: Transcriber + 'static,
     {
+        Self::with_boxed_config(Box::new(transcriber), config)
+    }
+
+    pub fn from_boxed(transcriber: Box<dyn Transcriber>) -> Self {
+        Self::with_boxed_config(transcriber, EngineConfig::default())
+    }
+
+    pub fn with_boxed_config(transcriber: Box<dyn Transcriber>, config: EngineConfig) -> Self {
         Self {
-            transcriber: Box::new(transcriber),
+            transcriber,
             cleaner: None,
             config,
             metrics: MetricsContext::disabled(),
@@ -268,6 +296,14 @@ impl Engine {
 
     pub fn backend_name(&self) -> &str {
         self.transcriber.name()
+    }
+
+    pub fn model_id(&self) -> &str {
+        self.transcriber.name()
+    }
+
+    pub fn model_family(&self) -> &str {
+        self.transcriber.model_family()
     }
 
     pub fn transcribe(&mut self, audio: AudioBuffer) -> Result<TranscriptionResult, EngineError> {
@@ -329,7 +365,10 @@ impl Engine {
         };
         let prompt = self.config.dictionary.prompt();
         let prompt_text = prompt.as_ref().map(|prompt| prompt.text.clone());
-        let backend_name = self.transcriber.name().to_owned();
+        let model_id = self.transcriber.name().to_owned();
+        let model_family = self.transcriber.model_family().to_owned();
+        let model_revision = self.transcriber.model_revision().map(str::to_owned);
+        metrics.record_model_metadata(&model_id, &model_family, model_revision.as_deref());
 
         if gate.decision.should_skip_transcription() {
             let status = match gate.decision {
@@ -344,10 +383,13 @@ impl Engine {
                 raw_text: String::new(),
                 text: String::new(),
                 language: self.config.language.clone(),
+                model_id,
+                model_family,
+                model_revision,
                 segments: Vec::new(),
                 gate,
                 dictionary_prompt: prompt_text,
-                stt_backend: backend_name,
+                stt_backend: self.transcriber.name().to_owned(),
                 cleanup_backend: self
                     .cleaner
                     .as_ref()
@@ -364,9 +406,7 @@ impl Engine {
         }
 
         if !self.transcriber.is_ready() {
-            return Err(EngineError::BackendUnavailable {
-                backend: backend_name,
-            });
+            return Err(EngineError::BackendUnavailable { backend: model_id });
         }
 
         let options = TranscriptionOptions {
@@ -375,11 +415,26 @@ impl Engine {
             decoder: self.config.decoder.clone().into(),
         };
         let mut raw = {
-            let timer = metrics.start_stage(Stage::WhisperTranscription);
+            let timer = metrics.start_stage(Stage::Transcription);
             let result = self.transcriber.transcribe(&audio, &options);
             timer.finish();
             result?
         };
+        metrics.record_model_timing(
+            "model_feature_extraction_duration_ms",
+            raw.timings.feature_extraction_ms,
+            "core.transcription",
+        );
+        metrics.record_model_timing(
+            "model_inference_duration_ms",
+            raw.timings.inference_ms,
+            "core.transcription",
+        );
+        metrics.record_model_timing(
+            "model_decoding_duration_ms",
+            raw.timings.decoding_ms,
+            "core.transcription",
+        );
         let mut raw_text = normalize_transcript(&raw.text);
         let mut guard = guard_transcript(&raw_text, options.dictionary_prompt.as_ref());
         let mut recovery_attempted = false;
@@ -392,7 +447,7 @@ impl Engine {
             // A recovery failure preserves the original guarded result rather
             // than turning a successful transcription into a transport error.
             let retry_result = {
-                let timer = metrics.start_stage(Stage::WhisperTranscription);
+                let timer = metrics.start_stage(Stage::Transcription);
                 let result = self.transcriber.transcribe(&audio, &retry_options);
                 timer.finish();
                 result
@@ -434,10 +489,13 @@ impl Engine {
             raw_text,
             text,
             language: raw.language.or(self.config.language.clone()),
+            model_id,
+            model_family,
+            model_revision,
             segments: raw.segments,
             gate,
             dictionary_prompt: prompt_text,
-            stt_backend: backend_name,
+            stt_backend: self.transcriber.name().to_owned(),
             cleanup_backend: self
                 .cleaner
                 .as_ref()
@@ -654,12 +712,19 @@ mod tests {
             .transcribe_with_metrics(speech_audio(), metrics)
             .unwrap();
         assert_eq!(result.status, TranscriptionStatus::Speech);
+        assert_eq!(result.model_id, "fake");
+        assert_eq!(result.model_family, "unknown");
 
         let names = names.names.lock().unwrap();
         for expected in [
             "audio_normalization_duration_ms",
             "speech_gate_duration_ms",
-            "whisper_transcription_duration_ms",
+            "transcription_duration_ms",
+            "model_id",
+            "model_family",
+            "model_feature_extraction_duration_ms",
+            "model_inference_duration_ms",
+            "model_decoding_duration_ms",
             "retry_count",
             "transcript_status",
             "workflow_outcome",

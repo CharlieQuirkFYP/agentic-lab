@@ -80,6 +80,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn unavailable_power_preserves_measurement_boundary_reason() {
+        let mut accumulator = EnergyAccumulator::new();
+        let result = accumulator.observe(&Measurement::unavailable(
+            "only GPU component power is available, not whole-device power",
+        ));
+        let Measurement::Unavailable { reason } = result else {
+            panic!("component power must not produce device energy");
+        };
+        assert!(reason.contains("only GPU component power"));
+        assert!(reason.contains("requires whole-device power"));
+    }
+
+    #[test]
     fn integrates_power_using_trapezoids() {
         let start = Instant::now();
         let mut accumulator = EnergyAccumulator::new();

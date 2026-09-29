@@ -1,0 +1,76 @@
+# Runtime model catalog. Paths are relative to the repository root.
+# Model weights remain ignored by Git; this file records how a host loads them.
+
+[[models]]
+id = "whisper-large-v3-turbo"
+family = "whisper"
+model = "models/whisper/ggml-large-v3-turbo.bin"
+repository = "ggerganov/whisper.cpp"
+revision = "5359861c739e955e79d9a303bcbc70fb988958b1"
+sha256 = "1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+model_size = "approximately 1.62 GB"
+sample_rate = 16000
+channels = 1
+timestamps = true
+streaming = false
+runtime = "whispercpp"
+
+[[models]]
+id = "zipformer-small"
+family = "zipformer"
+model = "models/zipformer/small/model.tflite"
+tokenizer = "models/zipformer/bpe.model"
+tokens = "models/zipformer/tokens.txt"
+repository = "litert-community/Zipformer-medium-CR-CTC-LiteRT"
+revision = "7732ad6c15ec43402968d5ae04acfa7a204027f5"
+sha256 = "ff6d70c7e8cfdfcf994be625456ca6543e0dbcc76fd4fd428e2138642d0852ba"
+tokenizer_sha256 = "c53433de083c4a6ad12d034550ef22de68cec62c4f58932a7b6b8b2f1e743fa5"
+tokens_sha256 = "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb"
+model_size = "approximately 46 MB"
+tensor_contract = "zipformer-cr-ctc-v1"
+languages = ["en"]
+sample_rate = 16000
+channels = 1
+timestamps = false
+streaming = false
+runtime = "litert"
+
+[[models]]
+id = "zipformer-medium"
+family = "zipformer"
+model = "models/zipformer/medium/model.tflite"
+tokenizer = "models/zipformer/bpe.model"
+tokens = "models/zipformer/tokens.txt"
+repository = "litert-community/Zipformer-medium-CR-CTC-LiteRT"
+revision = "7732ad6c15ec43402968d5ae04acfa7a204027f5"
+sha256 = "9515d94c04306798fecfe695eb8f79cc8ac98ed3d8eab81c28ac464b7dbddf48"
+tokenizer_sha256 = "c53433de083c4a6ad12d034550ef22de68cec62c4f58932a7b6b8b2f1e743fa5"
+tokens_sha256 = "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb"
+model_size = "approximately 132 MB"
+tensor_contract = "zipformer-cr-ctc-v1"
+languages = ["en"]
+sample_rate = 16000
+channels = 1
+timestamps = false
+streaming = false
+runtime = "litert"
+
+[[models]]
+id = "zipformer-large"
+family = "zipformer"
+model = "models/zipformer/large/model.tflite"
+tokenizer = "models/zipformer/bpe.model"
+tokens = "models/zipformer/tokens.txt"
+repository = "litert-community/Zipformer-medium-CR-CTC-LiteRT"
+revision = "7732ad6c15ec43402968d5ae04acfa7a204027f5"
+sha256 = "183c928cd1b109ad0b94d9540dbf4c2660393428d2104494b6047af4aa4eb1da"
+tokenizer_sha256 = "c53433de083c4a6ad12d034550ef22de68cec62c4f58932a7b6b8b2f1e743fa5"
+tokens_sha256 = "49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb"
+model_size = "approximately 298 MB"
+tensor_contract = "zipformer-cr-ctc-v1"
+languages = ["en"]
+sample_rate = 16000
+channels = 1
+timestamps = false
+streaming = false
+runtime = "litert"

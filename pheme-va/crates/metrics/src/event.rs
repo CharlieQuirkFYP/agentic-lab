@@ -180,6 +180,7 @@ pub struct MetricBatch {
 pub enum Stage {
     AudioNormalization,
     SpeechGate,
+    Transcription,
     WhisperTranscription,
     IncidentAnalysis,
     EndToEndRequest,
@@ -192,6 +193,7 @@ impl Stage {
                 ("audio_normalization_duration_ms", MetricScope::Run, false)
             }
             Self::SpeechGate => ("speech_gate_duration_ms", MetricScope::Run, false),
+            Self::Transcription => ("transcription_duration_ms", MetricScope::Run, false),
             Self::WhisperTranscription => {
                 ("whisper_transcription_duration_ms", MetricScope::Run, false)
             }

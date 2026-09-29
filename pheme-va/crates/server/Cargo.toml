@@ -8,9 +8,9 @@ description = "HTTP development wrapper around the portable Pheme VA core"
 
 [features]
 default = []
-whisper = ["va_core/whisper"]
-whisper-metal = ["va_core/whisper-metal"]
-whisper-coreml = ["va_core/whisper-coreml"]
+whisper = ["dep:whispercpp"]
+whisper-metal = ["whisper", "whispercpp/metal"]
+whisper-coreml = ["whisper", "whispercpp/coreml"]
 
 [dependencies]
 anyhow = "1.0"
@@ -22,3 +22,4 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync"] }
 va_core = { package = "core", path = "../core" }
+whispercpp = { path = "../models/whispercpp", optional = true }

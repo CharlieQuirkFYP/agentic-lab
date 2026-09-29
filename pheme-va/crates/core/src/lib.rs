@@ -9,9 +9,6 @@ mod engine;
 mod incident;
 mod transcript;
 
-#[cfg(feature = "whisper")]
-mod whisper;
-
 pub use audio::{
     AudioBuffer, AudioError, NormalizedAudio, SpeechGateConfig, SpeechGateDecision,
     SpeechGateResult, TARGET_SAMPLE_RATE,
@@ -26,8 +23,6 @@ pub use incident::{
 };
 pub use metrics::{MetricsConfig, MetricsContext, MetricsHub, MetricsSubscriber, Stage};
 pub use transcript::{
-    RawTranscription, TranscriptGuardDecision, TranscriptSegment, TranscriptionOptions,
+    ModelTimings, RawTranscription, TranscriptGuardDecision, TranscriptSegment,
+    TranscriptionOptions,
 };
-
-#[cfg(feature = "whisper")]
-pub use whisper::{WhisperConfig, WhisperTranscriber};

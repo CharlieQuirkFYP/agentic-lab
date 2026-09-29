@@ -31,7 +31,7 @@ Use consented recordings. Keep versioned manifests and intentionally small fixtu
 
 Record unavailable metrics as absent with a reason, never zero. CPU utilization is not measured power. On systems with shared memory, document accounting to avoid presenting a naive sum of process memory as unique physical usage.
 
-The initial implementation emits the application and resource events described in the [metrics contract](api/metrics.md). Process and system CPU are intentionally separate, as are process and system RAM scopes. Linux/macOS/Windows use the initial `sysinfo` sampler for CPU/RAM; GPU, temperature, battery, whole-device power, and energy require a host provider unless an external instrument supplies them. Power-to-energy integration is valid only when whole-device power samples are available.
+The current Rust implementation emits the application and resource events described in the [metrics contract](api/metrics.md). Process and system CPU are intentionally separate, as are process and system RAM scopes. The desktop `sysinfo` sampler provides CPU/RAM across Linux/macOS/Windows and may provide component temperature. Its Linux extension can additionally report DRM GPU utilisation and signed single-battery capacity change. Whole-device power, energy, and watt-hours remain unavailable without a provider or external instrument with a verified measurement boundary. The Rust server samples around requests when enabled; the TUI samples continuously at its 250 ms cadence when resource sampling is enabled. Power-to-energy integration is valid only when whole-device power samples are available.
 
 Distinguish successful execution from task quality: a completed run can produce an inaccurate report. Report both. Document denominators for energy per completed report and task success.
 
@@ -41,7 +41,7 @@ Record the code revision, prompts/schema versions, ASR/LLM/TTS model identities 
 
 Separate cold-start/model-loading runs from warm runs. Use repeated trials and report sample counts and variation, with latency percentiles where sample size supports them. Fix or record workload, concurrency, audio lengths, background processes, ambient conditions, and starting battery conditions. Use one benchmark run at a time for the initial constrained-device baseline to limit interference.
 
-The Go runner should exercise the Voice Agent service API through the shared client, with scripted human turns for repeatability. Voice Agent owns workflow execution and incident data; Go owns experiment configurations/results and scoring. Keep evaluation sessions/reports isolated from interactive data, and record the reset/cleanup procedure for reproducible retrieval scenarios. Include audio and speech-output measurements when claiming end-to-end results; text-only runs must be labelled separately. Human evaluation is needed for qualities not captured by deterministic scoring.
+The Go runner should exercise the Pheme VA service API through the shared client, with scripted human turns for repeatability. Pheme VA owns workflow execution and incident data; Go owns experiment configurations/results and scoring. Keep evaluation sessions/reports isolated from interactive data, and record the reset/cleanup procedure for reproducible retrieval scenarios. Include audio and speech-output measurements when claiming end-to-end results; text-only runs must be labelled separately. Human evaluation is needed for qualities not captured by deterministic scoring.
 
 ## Device Power and Endurance
 

@@ -146,6 +146,62 @@ impl MetricsContext {
         ))
     }
 
+    pub fn record_model_metadata(
+        &self,
+        model_id: &str,
+        model_family: &str,
+        model_revision: Option<&str>,
+    ) {
+        self.record(MetricSample::text(
+            "model_id",
+            model_id,
+            MetricUnit::Status,
+            MetricScope::Run,
+            "core.transcription",
+        ));
+        self.record(MetricSample::text(
+            "model_family",
+            model_family,
+            MetricUnit::Status,
+            MetricScope::Run,
+            "core.transcription",
+        ));
+        if let Some(revision) = model_revision {
+            self.record(MetricSample::text(
+                "model_revision",
+                revision,
+                MetricUnit::Status,
+                MetricScope::Run,
+                "core.transcription",
+            ));
+        }
+    }
+
+    pub fn record_model_timing(
+        &self,
+        name: &'static str,
+        value_ms: Option<f64>,
+        source: &'static str,
+    ) {
+        let sample = match value_ms {
+            Some(value) => MetricSample::number(
+                name,
+                value,
+                MetricUnit::Milliseconds,
+                MetricScope::Run,
+                source,
+            ),
+            None => MetricSample::unavailable(
+                name,
+                MetricUnit::Milliseconds,
+                MetricScope::Run,
+                source,
+                "model did not provide this timing",
+            ),
+        };
+        self.record(sample);
+    }
+
     pub fn sample_resources(&self, sampler: &mut dyn ResourceSampler) -> ResourceSnapshot {
         if !self.resource_sampling_enabled() {
             return ResourceSnapshot::unavailable(

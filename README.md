@@ -78,7 +78,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 
 The workspace contains:
 
-- `crates/core`: portable audio normalization, mono 16 kHz conversion, speech gating, dictionary prompts, transcript guards, replaceable adapter traits, Whisper integration, and conservative incident extraction
+- `crates/core`: portable audio normalization, mono 16 kHz conversion, speech gating, dictionary prompts, transcript guards, replaceable adapter traits, and conservative incident extraction
+- `crates/models/whispercpp`: in-process whisper.cpp model adapter
+- `crates/models/zipformer`: optional LiteRT Zipformer CTC model adapter
 - `crates/cli`: WAV transcription and a small terminal microphone recorder
 - `crates/server`: development HTTP host around the same core
 - `crates/ffi`: C ABI for native iOS/Android hosts
@@ -87,34 +89,34 @@ The core does not own a frontend hotkey, clipboard, microphone permission, or mo
 
 #### Download the Whisper model
 
-Model weights are ignored by Git and must not be committed. The initial CPU baseline is Whisper `large-v3-turbo`, stored locally at `pheme-va/models/ggml-large-v3-turbo.bin`:
+Model weights are ignored by Git and must not be committed. The initial CPU baseline is Whisper `large-v3-turbo`, stored locally at `pheme-va/models/whisper/ggml-large-v3-turbo.bin`:
 
 ```bash
 cd pheme-va
 ./scripts/download-model.sh
 ```
 
-The script downloads the model from the whisper.cpp model repository and verifies SHA-256 before installing it. See [`pheme-va/models/README.md`](pheme-va/models/README.md) for the source, checksum, and licensing reminder.
+The script downloads the model from the whisper.cpp model repository and verifies SHA-256 before installing it. Run `./scripts/download-model.sh --list` for the explicitly selectable LiteRT Zipformer artifacts and experimental SeaLLMs download. Downloading an artifact does not activate a runtime or Cargo feature. See [`pheme-va/models/README.md`](pheme-va/models/README.md) for sources, checksums, status, and licensing reminders.
 
-This model is used by the in-process `whisper-rs` backend, which is built on whisper.cpp. It is an initial baseline, not a validated mobile configuration. Smaller models, quantization, accelerator support, and device-specific settings still need to be evaluated.
+This model is used by the separate `whispercpp` crate, which is built on whisper.cpp. It is an initial baseline, not a validated mobile configuration. Smaller models, Zipformer variants, accelerator support, and device-specific settings still need to be evaluated.
 
 #### Transcribe a WAV file
 
 ```bash
 cargo run --release -p cli --features whisper -- \
+  --stt-model whisper-large-v3-turbo \
   transcribe recording.wav \
-  --model models/ggml-large-v3-turbo.bin \
   --language en \
   --dictionary KLASS,whisper.cpp,"west entrance"
 ```
 
-The input may use a supported sample rate, channel count, or WAV sample format; Pheme normalizes it before Whisper receives it.
+The input may use a supported sample rate, channel count, or WAV sample format; Pheme normalizes it before the selected speech model receives it.
 
 #### Run the development HTTP host
 
 ```bash
 cargo run --release -p server --features whisper -- \
-  --model models/ggml-large-v3-turbo.bin \
+  --model models/whisper/ggml-large-v3-turbo.bin \
   --bind 127.0.0.1:8000
 ```
 
@@ -134,13 +136,13 @@ POST /v1/analyze      Content-Type: application/json
 The real-model test is ignored by default because it requires local model weights and a speech recording:
 
 ```bash
-PHEME_VA_WHISPER_MODEL="$PWD/models/ggml-large-v3-turbo.bin" \
+PHEME_VA_WHISPER_MODEL="$PWD/models/whisper/ggml-large-v3-turbo.bin" \
 PHEME_VA_TEST_AUDIO=/absolute/path/to/speech.wav \
 PHEME_VA_TEST_LANGUAGE=en \
-cargo test -p core --features whisper --test audio_pipeline -- --ignored --nocapture
+cargo test -p whispercpp --test audio -- --ignored --nocapture
 ```
 
-A successful run confirms that the selected Whisper model loads through the whisper.cpp-backed Rust adapter and produces non-empty transcript text. It does not by itself validate incident-report quality or target-device performance.
+A successful run confirms that the selected Whisper model loads through the separate whisper.cpp-backed model crate and produces non-empty transcript text. It does not by itself validate incident-report quality or target-device performance.
 
 #### Terminal microphone recorder
 
@@ -148,7 +150,7 @@ On Linux, install the system audio development package required by `cpal` if nec
 
 ```bash
 cargo run --release -p cli --features whisper -- \
-  tui --model models/ggml-large-v3-turbo.bin
+  --stt-model whisper-large-v3-turbo tui
 ```
 
 Press Enter or Space to start and stop recording, and `q` to quit. This is a development TUI, not the product UI.
