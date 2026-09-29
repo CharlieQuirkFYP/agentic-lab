@@ -27,7 +27,9 @@ pub extern "C" fn pheme_va_has_whisper() -> bool {
 #[cfg(feature = "whisper")]
 use metrics::{MetricsBatcher, MetricsConfig, MetricsContext, MetricsHub, MetricsSubscription};
 #[cfg(feature = "whisper")]
-use va_core::{AudioBuffer, DictionaryHints, Engine, WhisperConfig, WhisperTranscriber};
+use va_core::{AudioBuffer, DictionaryHints, Engine};
+#[cfg(feature = "whisper")]
+use whispercpp::{WhisperConfig, WhisperTranscriber};
 
 #[cfg(feature = "whisper")]
 pub struct PhemeVaHandle {

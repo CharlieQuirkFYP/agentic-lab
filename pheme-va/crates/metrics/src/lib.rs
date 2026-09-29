@@ -10,6 +10,8 @@ mod context;
 mod energy;
 mod event;
 mod hub;
+#[cfg(all(feature = "desktop", target_os = "linux"))]
+mod linux_sensors;
 mod resources;
 
 pub use batch::MetricsBatcher;

@@ -361,6 +361,7 @@ fn stage_source(stage: Stage) -> &'static str {
     match stage {
         Stage::AudioNormalization => "core.audio",
         Stage::SpeechGate => "core.audio",
+        Stage::Transcription => "core.transcription",
         Stage::WhisperTranscription => "core.transcription",
         Stage::IncidentAnalysis => "core.incident",
         Stage::EndToEndRequest => "core.workflow",

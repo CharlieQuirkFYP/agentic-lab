@@ -41,11 +41,14 @@ impl EnergyAccumulator {
     }
 
     pub fn observe_at(&mut self, power_watts: &Measurement<f64>, at: Instant) -> Measurement<f64> {
-        let Measurement::Available(watts) = power_watts else {
-            self.previous = None;
-            return Measurement::Unavailable {
-                reason: "whole-device power was unavailable".to_owned(),
-            };
+        let watts = match power_watts {
+            Measurement::Available(watts) => watts,
+            Measurement::Unavailable { reason } => {
+                self.previous = None;
+                return Measurement::Unavailable {
+                    reason: format!("{reason}; energy integration requires whole-device power"),
+                };
+            }
         };
         if !watts.is_finite() || *watts < 0.0 {
             self.previous = None;
