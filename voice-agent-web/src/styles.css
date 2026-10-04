@@ -27,6 +27,11 @@ h1 { margin: 8px 0 10px; font-size: clamp(2rem, 7vw, 3rem); letter-spacing: -.05
 .bubble time { display: block; margin-top: 8px; opacity: .65; font-size: .7rem; text-align: right; }
 .bubble-label, .voice-label { margin: 0 0 7px; font-size: .7rem; font-weight: 750; letter-spacing: .07em; text-transform: uppercase; opacity: .72; }
 .bubble-text { margin: 0; font-size: 1rem; line-height: 1.55; white-space: pre-wrap; overflow-wrap: anywhere; }
+.speech-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 9px 12px; margin-top: 14px; }
+.speech-controls button { border: 1px solid #b9cde7; border-radius: 8px; background: #f7faff; color: #234d89; padding: 8px 11px; cursor: pointer; font-size: .78rem; font-weight: 750; }
+.speech-controls button:hover { background: #e7effa; }
+.speech-controls button span { margin-right: 6px; font-size: .7rem; }
+.speech-hint { color: #718198; font-size: .72rem; }
 .voice-message { width: min(100%, 360px); min-width: 230px; }
 .voice-message audio { display: block; width: 100%; height: 38px; margin: 2px 0 4px; }
 .voice-actions { display: flex; align-items: center; justify-content: space-between; gap: 14px; }

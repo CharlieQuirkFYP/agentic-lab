@@ -29,6 +29,7 @@ export default function App() {
   const [errorKind, setErrorKind] = useState<ErrorKind>(null)
   const [isDraggingFile, setIsDraggingFile] = useState(false)
   const [microphoneBlocked, setMicrophoneBlocked] = useState(false)
+  const [speakingMessageId, setSpeakingMessageId] = useState<string | null>(null)
   const dragDepth = useRef(0)
 
   useEffect(() => {
@@ -40,7 +41,10 @@ export default function App() {
       console.warn('Could not persist chat history:', caught)
     }
   }, [messages])
-  useEffect(() => () => { void recorder.current?.cancel() }, [])
+  useEffect(() => () => {
+    void recorder.current?.cancel()
+    window.speechSynthesis?.cancel()
+  }, [])
   useEffect(() => {
     let permission: PermissionStatus | undefined
     const updatePermission = () => setMicrophoneBlocked(permission?.state === 'denied')
@@ -62,8 +66,27 @@ export default function App() {
     const result = await transcribe(blob, controller.signal)
     if (!result.text.trim()) throw new Error('No speech was detected. Move closer to the microphone and try again.')
     const report = await analyze(result.text, controller.signal)
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', kind: 'text', createdAt: new Date().toISOString(), text: result.text, report }])
+    const messageId = crypto.randomUUID()
+    setMessages((current) => [...current, { id: messageId, role: 'assistant', kind: 'text', createdAt: new Date().toISOString(), text: result.text, report }])
+    speak(messageId, `${result.text} ${speechForReport(report)}`)
     processingAbortController.current = null
+  }
+
+  const speak = (messageId: string, text: string) => {
+    if (!('speechSynthesis' in window)) return
+    window.speechSynthesis.cancel()
+    const utterance = new SpeechSynthesisUtterance(text)
+    utterance.rate = 0.96
+    utterance.pitch = 1
+    utterance.onstart = () => setSpeakingMessageId(messageId)
+    utterance.onend = () => setSpeakingMessageId((current) => current === messageId ? null : current)
+    utterance.onerror = () => setSpeakingMessageId((current) => current === messageId ? null : current)
+    window.speechSynthesis.speak(utterance)
+  }
+
+  const stopSpeaking = () => {
+    window.speechSynthesis?.cancel()
+    setSpeakingMessageId(null)
   }
 
   const toggleRecording = async () => {
@@ -141,7 +164,7 @@ export default function App() {
     if (file) await processFile(file)
   }
 
-  const clearChat = () => { setMessages([]); setError(''); setErrorKind(null); setState('ready') }
+  const clearChat = () => { stopSpeaking(); setMessages([]); setError(''); setErrorKind(null); setState('ready') }
 
   const cancelProcessing = () => {
     processingAbortController.current?.abort()
@@ -185,7 +208,7 @@ export default function App() {
     </header>
     <section className="chat" aria-live="polite">
       {messages.length === 0 && <div className="empty-chat"><div className="empty-icon" aria-hidden="true">⌁</div><strong>Start a conversation</strong><p>Tap the microphone below to send your first report.</p></div>}
-      {messages.map((message) => <ChatBubble key={message.id} message={message} />)}
+      {messages.map((message) => <ChatBubble key={message.id} message={message} isSpeaking={speakingMessageId === message.id} onSpeak={speak} onStopSpeaking={stopSpeaking} />)}
     </section>
     {error && <div className="error-modal-backdrop" role="presentation"><section className="error-modal" role="alertdialog" aria-modal="true" aria-labelledby="error-modal-title"><div className="error-modal-icon" aria-hidden="true">!</div><strong id="error-modal-title">{errorKind === 'file' ? 'Upload failed' : errorKind === 'no-speech' ? 'No speech detected' : 'Microphone unavailable'}</strong><p>{errorKind === 'microphone' ? `${error} If your browser remembers the denial, allow microphone access from the lock icon or site settings, then try again.` : error}</p><div className="error-modal-actions">{errorKind === 'microphone' && <button type="button" onClick={() => void retryMicrophone()}>Try microphone again</button>}<button className="secondary" type="button" onClick={() => { setError(''); setErrorKind(null); setState('ready') }}>Okay</button></div></section></div>}
     <section className="composer" aria-label="Voice message composer">
@@ -203,20 +226,31 @@ export default function App() {
   </main>
 }
 
-function ChatBubble({ message }: { message: ChatMessage }) {
+function ChatBubble({ message, isSpeaking, onSpeak, onStopSpeaking }: { message: ChatMessage; isSpeaking: boolean; onSpeak: (messageId: string, text: string) => void; onStopSpeaking: () => void }) {
   return <article className={`bubble-row ${message.role}`}><div className={`bubble ${message.role}`}>
     {message.kind === 'voice' && message.audioUrl ? <div className="voice-message"><span className="voice-label">{message.fileName ?? 'Voice message'}</span><audio controls preload="metadata" src={message.audioUrl} /><div className="voice-actions"><span className="duration">{Math.ceil(message.durationSeconds ?? 0)} sec</span><a className="download-link" href={message.audioUrl} download={message.fileName ?? 'voice-message.wav'}>Download WAV</a></div></div> : <>
       <p className="bubble-label">Transcript</p><p className="bubble-text">{message.text}</p>
+      <SpeechControls isSpeaking={isSpeaking} onSpeak={() => onSpeak(message.id, (message.text ?? "") + " " + (message.report ? speechForReport(message.report) : ""))} onStopSpeaking={onStopSpeaking} />
       {message.report && <div className="report"><p className="bubble-label">Incident summary</p><dl><div><dt>Type</dt><dd>{message.report.incident_type}</dd></div><div><dt>Location</dt><dd>{message.report.location}</dd></div><div><dt>Severity</dt><dd>{message.report.severity}</dd></div><div className="wide"><dt>Recommended action</dt><dd>{message.report.recommended_action}</dd></div></dl></div>}
     </>}
     <time dateTime={message.createdAt}>{formatTime(message.createdAt)}</time>
   </div></article>
 }
 
+function SpeechControls({ isSpeaking, onSpeak, onStopSpeaking }: { isSpeaking: boolean; onSpeak: () => void; onStopSpeaking: () => void }) {
+  return <div className="speech-controls" aria-label="Text to speech controls">
+    <button type="button" onClick={isSpeaking ? onStopSpeaking : onSpeak}>
+      <span aria-hidden="true">{isSpeaking ? '■' : '▶'}</span>{isSpeaking ? 'Stop speaking' : 'Read transcript and key information'}
+    </button>
+    <span className="speech-hint">Automatically read aloud after processing</span>
+  </div>
+}
+
 function loadMessages(): ChatMessage[] { try { return JSON.parse(localStorage.getItem(STORAGE_KEY) ?? '[]') as ChatMessage[] } catch { return [] } }
 function blobToDataUrl(blob: Blob): Promise<string> { return new Promise((resolve, reject) => { const reader = new FileReader(); reader.onload = () => resolve(String(reader.result)); reader.onerror = () => reject(new Error('The recording could not be saved.')); reader.readAsDataURL(blob) }) }
 function getAudioDuration(file: File): Promise<number> { return new Promise((resolve, reject) => { const url = URL.createObjectURL(file); const audio = new Audio(); audio.onloadedmetadata = () => { URL.revokeObjectURL(url); if (!Number.isFinite(audio.duration)) reject(new Error('The WAV duration could not be determined.')); else resolve(audio.duration) }; audio.onerror = () => { URL.revokeObjectURL(url); reject(new Error('The selected file is not a readable WAV file.')) }; audio.src = url }) }
 function formatTime(value: string): string { return new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value)) }
+function speechForReport(report: IncidentReport): string { return "Key information. Incident type: " + report.incident_type + ". Location: " + report.location + ". Severity: " + report.severity + ". Recommended action: " + report.recommended_action + "." }
 function messageFor(caught: unknown, fallback: string): string {
   if (caught instanceof DOMException && caught.name === 'NotAllowedError') return 'Microphone access was declined. Press Record a message to request it again. If the browser has marked this site as blocked, allow the microphone from the lock icon in the address bar, then retry.'
   return caught instanceof Error && caught.message ? caught.message : fallback
