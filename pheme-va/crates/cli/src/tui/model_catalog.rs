@@ -17,7 +17,9 @@ impl CatalogEntry {
     }
 
     pub fn selectable(&self) -> bool {
-        self.adapter_compiled && self.artifacts_available()
+        self.manifest.purpose() == Some(model::ModelPurpose::Transcript)
+            && self.adapter_compiled
+            && self.artifacts_available()
     }
 }
 
@@ -41,7 +43,7 @@ impl ModelCatalog {
     }
 
     fn from_manifest(manifest_path: PathBuf, manifest: ModelManifest) -> Self {
-        let entries = manifest
+        let mut entries = manifest
             .models
             .into_iter()
             .map(|model| {
@@ -67,7 +69,12 @@ impl ModelCatalog {
                     adapter_compiled,
                 }
             })
-            .collect();
+            .collect::<Vec<_>>();
+        entries.sort_by_key(|entry| match entry.manifest.purpose() {
+            Some(model::ModelPurpose::Transcript) => 0,
+            Some(model::ModelPurpose::Reply) => 1,
+            None => 2,
+        });
         Self {
             manifest_path,
             entries,
@@ -111,6 +118,63 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn groups_by_manifest_purpose_and_preserves_order_within_each_group() {
+        let manifest = toml::from_str(
+            r#"
+            [[models]]
+            id = "reply-first"
+            family = "whisper"
+            purpose = "reply"
+            model = "reply-first.gguf"
+            [[models]]
+            id = "unclassified"
+            family = "unknown"
+            model = "unknown.bin"
+            [[models]]
+            id = "transcript-first"
+            family = "custom-stt"
+            purpose = "transcript"
+            model = "first.bin"
+            [[models]]
+            id = "reply-second"
+            family = "custom-llm"
+            purpose = "reply"
+            model = "reply-second.gguf"
+            [[models]]
+            id = "legacy-transcript"
+            family = "zipformer"
+            model = "legacy.bin"
+            [[models]]
+            id = "transcript-last"
+            family = "custom-stt"
+            purpose = "transcript"
+            model = "last.bin"
+            "#,
+        )
+        .unwrap();
+        let catalog = ModelCatalog::from_manifest("manifest.toml".into(), manifest);
+        let ids = catalog
+            .entries
+            .iter()
+            .map(|entry| entry.manifest.id.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            ids,
+            [
+                "transcript-first",
+                "legacy-transcript",
+                "transcript-last",
+                "reply-first",
+                "reply-second",
+                "unclassified",
+            ]
+        );
+        assert_eq!(catalog.selected_index("reply-first"), Some(3));
+        assert_eq!(catalog.entry(3).unwrap().manifest.id, "reply-first");
+        assert!(!catalog.entry(3).unwrap().selectable());
+    }
 
     #[test]
     fn classifies_artifacts_separately_from_compiled_adapters() {

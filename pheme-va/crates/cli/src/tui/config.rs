@@ -1,3 +1,4 @@
+use std::collections::BTreeMap;
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -8,6 +9,12 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct TuiConfig {
     pub selected_stt_model: String,
+    #[serde(default)]
+    pub server_stt_model: Option<String>,
+    #[serde(default)]
+    pub server_reply_model: Option<String>,
+    #[serde(default)]
+    pub reply_role_files: BTreeMap<String, Vec<PathBuf>>,
     pub model_manifest: PathBuf,
     pub audio_directory: PathBuf,
     #[serde(default)]
@@ -26,6 +33,9 @@ impl Default for TuiConfig {
     fn default() -> Self {
         Self {
             selected_stt_model: "whisper-large-v3-turbo".to_owned(),
+            server_stt_model: None,
+            server_reply_model: None,
+            reply_role_files: BTreeMap::new(),
             model_manifest: default_manifest_path(),
             audio_directory: default_audio_directory(),
             language: None,
@@ -50,7 +60,10 @@ pub fn load() -> Result<Option<TuiConfig>> {
 }
 
 pub fn save(config: &TuiConfig) -> Result<()> {
-    let path = config_path();
+    save_to(config, &config_path())
+}
+
+pub(super) fn save_to(config: &TuiConfig, path: &Path) -> Result<()> {
     let parent = path
         .parent()
         .context("TUI configuration path has no parent directory")?;
@@ -80,7 +93,7 @@ pub fn save(config: &TuiConfig) -> Result<()> {
     file.sync_all()
         .context("could not flush TUI configuration")?;
     drop(file);
-    fs::rename(&temporary, &path).with_context(|| {
+    fs::rename(&temporary, path).with_context(|| {
         format!(
             "could not replace TUI configuration {} with {}",
             path.display(),
@@ -136,4 +149,45 @@ fn default_max_seconds() -> u32 {
 
 fn default_true() -> bool {
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_configuration_defaults_to_no_reply_role_overrides() {
+        let config: TuiConfig = toml::from_str(
+            "selected_stt_model='fixture'\nmodel_manifest='models/manifest.toml'\naudio_directory='samples'",
+        ).unwrap();
+        assert!(config.reply_role_files.is_empty());
+        assert!(config.server_reply_model.is_none());
+    }
+
+    #[test]
+    fn reply_role_overrides_round_trip_per_model_with_absolute_paths() {
+        let config = TuiConfig {
+            reply_role_files: [
+                (
+                    "reply-a".into(),
+                    vec![
+                        PathBuf::from("/tmp/base role.txt"),
+                        PathBuf::from("/tmp/style.txt"),
+                    ],
+                ),
+                ("reply-b".into(), vec![PathBuf::from("/tmp/other.txt")]),
+            ]
+            .into_iter()
+            .collect(),
+            ..TuiConfig::default()
+        };
+        let serialized = toml::to_string_pretty(&config).unwrap();
+        let restored: TuiConfig = toml::from_str(&serialized).unwrap();
+        assert_eq!(restored.reply_role_files, config.reply_role_files);
+        assert!(restored
+            .reply_role_files
+            .values()
+            .flatten()
+            .all(|path| path.is_absolute()));
+    }
 }

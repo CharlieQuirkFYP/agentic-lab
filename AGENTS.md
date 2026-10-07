@@ -150,7 +150,7 @@ For Go code:
 
 ## Frontend Conventions
 
-The web app has two planned roles: a voice workflow console for development and a research dashboard for experiment creation, progress, results, comparisons, and export. A speech-first operational use case does not remove the dashboard requirement. Neither role is implemented beyond the toolchain scaffold.
+The web app provides a development voice console and retains a planned research dashboard for experiment creation, progress, results, comparisons and export. The reviewed voice/reply loop is implemented; the benchmark page is still a placeholder. Speech-first operation does not remove the dashboard requirement.
 
 For frontend code:
 
@@ -199,9 +199,9 @@ GitHub Actions PR CI runs separate Go backend, web frontend, and Pheme VA workfl
 
 The Go backend workflow checks formatting with `gofmt -l .`, runs `go vet ./...`, and runs `go test ./...` from `api/`.
 
-The frontend workflow installs npm dependencies, runs lint, and runs the production build from `web/`.
+The frontend workflow installs npm dependencies, runs Node fixture tests, lint and the production build from `web/`.
 
-Pheme VA CI uses the pinned stable Rust toolchain, Cargo formatting/lint checks, and workspace tests without downloading model weights.
+Pheme VA CI uses stable Rust, formatting/lint checks, workspace tests, combined Whisper/reply-worker build checks and offline downloader tests without weights. A separate fake-backed voice stack workflow exercises the actual Go/Pheme HTTP boundary. Native reply-worker builds require CMake, a C/C++ compiler and libclang; Node tests require 22.18+.
 
 Expand CI incrementally as new components or requirements are introduced.
 
@@ -223,7 +223,7 @@ Currently implemented:
 - mocked benchmark runner
 - unit tests for incident analyzer and service
 - unit tests for benchmark repository, service, worker, and experiment HTTP handler
-- frontend toolchain scaffold under `web/`
+- web WAV capture, transcript review, request-scoped streamed replies, cancellation/reset/recovery and browser-local-service speech playback
 - basic local Go setup instructions in `README.md`
 - basic local Web setup instructions in `README.md`
 - Pheme VA Rust workspace under `pheme-va/`
@@ -232,23 +232,30 @@ Currently implemented:
 - optional in-process `whisper-rs`/whisper.cpp backend with a prewarmed model
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
 - conservative deterministic incident-field extraction for offline development
-- ignored local Whisper model manifest and reproducible model setup instructions
+- extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
+- normal reply dependency with a server-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
+- dedicated Go Pheme client/service/handlers for `/api/v1/voice/`, separate from the mock incident analyzer
+- server-connected Ratatui Web/Tests/Models/Telemetry workspace with alphabetic main navigation (`w`/`b`/`m`/`t`), Telemetry-only `1–4` sub-tabs, pending-web-turn editing/approval and isolated tests
+- one manifest-backed Models page for both purposes, grouped rows/details, confirmed Enter downloads, standalone-only STT loading/preparation, and inline retained download progress
+- direct TUI/script/startup downloads into `models/transcript/` and `models/reply/`, checksum-verified next-start choices, no model-management HTTP endpoints
+- reply-only local Roles picker, ordered bounded `.txt` composition from `roles/incident-reporting.txt` by default, per-model saved role paths, and startup-only repeated `--prompt-file` overrides with combined prompt hashes
+- deterministic core/runtime/client tests and fake-worker Go-to-Pheme voice integration
 
 * historical Python scaffold removed from the active worktree
 
 Planned but not yet implemented:
 
-- real Pheme VA language-model adapter and Go `PhemeVAIncidentAnalyzer`
+- model-backed structured extraction and Go `PhemeVAIncidentAnalyzer` (conversational reply adapter is implemented separately)
 - structured model-backed incident extraction with validated output and cancellation/timeouts
 - Pheme-owned multi-turn sessions, clarification, corrections, and revision-bound confirmation
 - Pheme-owned SQLite session/report storage and incident retrieval
-- speech synthesis and audio turn handling in the web/native clients
+- native mobile speech synthesis/audio workflow; live browser/TUI microphone/TTS acceptance and offline behavior still require validation
 - real benchmark runner, evaluation dataset, and resource/energy measurements
 - persistent benchmark results and listing/filtering APIs
-- web voice console and benchmark dashboard, comparisons, and export
+- complete confirmation/report workflow in the voice console and real benchmark dashboard, comparisons, and export
 - target-device deployment and power/thermal/endurance evaluation
 
-Model selection, speech-synthesis implementation, and target-device specifications remain pending. MERaLiON is an optional candidate for local speech understanding, not a required dependency. LangGraph and fine-tuning are not baseline prerequisites. Interview development is deferred; vision workflows and KLASS adapters are out of scope. PostgreSQL, Redis, Kafka, and Docker are not implemented or required by the current plan.
+The pinned Qwen GGUF reply and client-side local speech adapters are development baselines, not validated target-device selections. Reply-model quality/latency, live audio/playback and target-device specifications remain pending. MERaLiON is an optional candidate for local speech understanding, not a required dependency. LangGraph and fine-tuning are not baseline prerequisites. Interview development is deferred; vision workflows and KLASS adapters are out of scope. PostgreSQL, Redis, Kafka, and Docker are not implemented or required by the current plan.
 
 This section should be updated as the project evolves.
 

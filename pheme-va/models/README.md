@@ -6,13 +6,14 @@ operation.
 
 ## Model status
 
-| Name                     | Artifact format        | Current Pheme VA status                              | License/source                               |
-| ------------------------ | ---------------------- | ---------------------------------------------------- | -------------------------------------------- |
-| `whisper-large-v3-turbo` | whisper.cpp GGML       | Supported by the optional `whispercpp` crate         | See upstream repository and model terms      |
-| `zipformer-small`        | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate          | Apache-2.0, pinned LiteRT Community revision |
-| `zipformer-medium`       | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate          | Apache-2.0, pinned LiteRT Community revision |
-| `zipformer-large`        | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate          | Apache-2.0, pinned LiteRT Community revision |
-| `seallms-audio-7b`       | BF16 safetensors       | Download-only experiment; no native Pheme VA adapter | `other/seallms`; check upstream terms        |
+| Name                           | Artifact format        | Current Pheme VA status                                        | License/source                               |
+| ------------------------------ | ---------------------- | -------------------------------------------------------------- | -------------------------------------------- |
+| `whisper-large-v3-turbo`       | whisper.cpp GGML       | Supported by the optional `whispercpp` crate                   | MIT, pinned Hugging Face repository          |
+| `zipformer-small`              | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate                    | Apache-2.0, pinned LiteRT Community revision |
+| `zipformer-medium`             | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate                    | Apache-2.0, pinned LiteRT Community revision |
+| `zipformer-large`              | LiteRT/TFLite FP16 CTC | Supported by the optional `zipformer` crate                    | Apache-2.0, pinned LiteRT Community revision |
+| `qwen2.5-1.5b-instruct-q4-k-m` | GGUF Q4_K_M            | Persistent local llama.cpp worker; normal `reply-model` client | Apache-2.0, official Qwen repository         |
+| `seallms-audio-7b`             | BF16 safetensors       | Download-only experiment; no native Pheme VA adapter           | `other/seallms`; check upstream terms        |
 
 A downloaded file does **not** activate a Cargo feature, select a model, or
 make an unsupported runtime loadable. Runtime selection belongs in the host
@@ -24,11 +25,12 @@ artifact does not activate a Cargo feature.
 
 ## Whisper baseline
 
-- File: `whisper/ggml-large-v3-turbo.bin`
+- File: `transcript/whisper/ggml-large-v3-turbo.bin`
 - Source: <https://huggingface.co/ggerganov/whisper.cpp>
 - Pinned revision: `5359861c739e955e79d9a303bcbc70fb988958b1`
 - Download URL: `https://huggingface.co/ggerganov/whisper.cpp/resolve/5359861c739e955e79d9a303bcbc70fb988958b1/ggml-large-v3-turbo.bin`
-- Size: approximately 1.62 GB
+- Size: 1,624,555,275 bytes (approximately 1.62 decimal GB)
+- License metadata: MIT, verified through the pinned Hugging Face revision
 - SHA-256: `1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69`
 - Runtime: optional in-process `whisper-rs`/whisper.cpp adapter
 
@@ -83,16 +85,147 @@ file after checksum verification:
 Files are stored as:
 
 ```text
-models/zipformer/bpe.model
-models/zipformer/tokens.txt
-models/zipformer/<variant>/model.tflite
+models/transcript/zipformer/bpe.model
+models/transcript/zipformer/tokens.txt
+models/transcript/zipformer/<variant>/model.tflite
 ```
 
 The Rust workspace includes the optional `zipformer` crate. Build the CLI with
 `--features zipformer` (or both `whisper zipformer`) to activate that model
 family; downloaded files alone do not change the selected CLI model.
 
-The model IDs and paths are recorded in [`manifest.toml`](manifest.toml).
+The model IDs, paths and exact model byte sizes are recorded in
+[`manifest.toml`](manifest.toml). The pinned upstream API reports 46,216,688,
+131,490,944 and 297,947,504 bytes for small, medium and large respectively;
+these are model-file sizes, excluding the shared tokenizer artifacts.
+
+## Qwen native reply baseline
+
+This is a small instruction-tuned **text reply** model, not a transcriber or
+cleanup model. It is a development baseline, not a validated mobile/device
+configuration or a guarantee of incident-reporting quality.
+
+- Catalog/download ID: `qwen2.5-1.5b-instruct-q4-k-m`
+- File: `reply/qwen2.5-1.5b-instruct-q4_k_m.gguf`
+- Official source: <https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF>
+- Pinned revision: `91cad51170dc346986eccefdc2dd33a9da36ead9`
+- Quantization: `Q4_K_M`
+- Exact size: **1,117,320,736 bytes** (1.12 decimal GB)
+- SHA-256: `6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e`
+- License: [Apache-2.0 at the pinned revision](https://huggingface.co/Qwen/Qwen2.5-1.5B-Instruct-GGUF/blob/91cad51170dc346986eccefdc2dd33a9da36ead9/LICENSE)
+- Metadata provenance: the [Hugging Face model API with LFS blob metadata](https://huggingface.co/api/models/Qwen/Qwen2.5-1.5B-Instruct-GGUF?blobs=true)
+  reports the above commit, filename, byte size and LFS SHA-256; license text
+  was checked at the pinned revision. Verification did not download the weights.
+- Default role: `../roles/incident-reporting.txt`, relative to `manifest.toml` (the checked-in file is `pheme-va/roles/incident-reporting.txt`).
+
+```bash
+./scripts/download-model.sh qwen2.5-1.5b-instruct-q4-k-m
+```
+
+The `reply-native` crate pins `llama-cpp-2` and the matching sys binding to
+`0.1.158`. It builds `pheme-reply-worker`, a **server-owned persistent stdio
+child**, not another HTTP service. Whisper and llama.cpp ship incompatible
+GGML symbols, so linking both directly into the server is unsafe. The normal
+`reply-model` dependency implements the same trait over bounded, versioned
+NDJSON; the worker alone links llama.cpp. There is no enable-reply Cargo feature.
+Building the worker requires a C/C++ toolchain, CMake and libclang for bindgen.
+Build/ship both executables together:
+
+```bash
+cargo build --release -p server -p reply-native --features server/whisper
+```
+
+The server finds `pheme-reply-worker` beside its own executable; an explicit
+trusted `PHEME_VA_REPLY_WORKER` path can override that location. Runtime startup
+never invokes Cargo. A missing worker fails before a reply download is attempted.
+The server starts/stops/reaps its worker; clients never manage a second service.
+Cancellation reaches the child's native atomic through an independent input
+thread. An unresponsive/crashed worker is killed/reaped and answering becomes
+not-ready until an explicit server restart, without a transcription fallback.
+Ordinary cancelled/completed turns keep the same loaded weights.
+
+Resource accounting must include the native child PID. The current desktop
+sampler covers the server process, not its reply child; reply-specific CPU/RAM
+metrics therefore remain explicitly unavailable rather than understated.
+The default dependency disables optional accelerator/OpenMP/common-library
+features; use `gpu_layers=0` with this CPU build. Nonzero GPU layers fail clearly
+when no GPU backend is compiled rather than silently falling back.
+
+`ReplyModel::load(path, config, threads, gpu_layers)` loads weights once and
+prewarms the native compute path with a disposable context. Each
+`ConversationModel::respond_stream` call uses a fresh KV context and sampler,
+formats the separate system/user/assistant messages through the GGUF's own
+chat template, and streams only complete UTF-8 chunks. Input/context, output
+characters and tokens are bounded. Atomic cancellation is checked before/after
+native work and installed as llama.cpp's native abort callback (CPU graph
+execution can abort during decode). No cancelled/failed reply should be committed
+as successful history by the host. Native accelerator abort responsiveness can
+vary; measure it before deploying an accelerated build.
+
+The shared registry lives in `va_core::registry` and is re-exported by
+`va_core` and the CLI's `model` module. `ModelEntry::load_prompt` loads the
+manifest default; `load_prompt_files` combines 1–32 non-empty UTF-8 regular
+files in selected order, preserving each source's exact text and inserting
+exact `\n\n` separators. The combined text, including separators, is bounded
+by `MAX_PROMPT_CHARS` (16,384 Unicode scalar values); its exact UTF-8 bytes
+produce the preview/turn SHA-256. This does not increase the existing default
+12,000-character aggregate role + history + question budget; startup rejects
+a role consuming that entire budget. Missing/invalid roles never fall back
+to generic instructions. Trusted overrides and edits apply only after a
+server restart, not through a live prompt-reload endpoint. The prompt does
+not authorize saving, dispatch, retrieval or other tools.
+
+The unified TUI Models page derives both purpose groups from this manifest.
+Use `o` on a reply row to browse `.txt` files beside its default role or add
+another trusted local path, and `p` to preview the ordered combined text/hash.
+Available reply rows do not load a local runtime on Enter. See
+[Models controls and role/startup precedence](../README.md#unified-models-page).
+
+Normal tests use fakes/tiny fixtures and never fetch weights. The ignored
+adapter smoke test takes both model and prompt paths from the environment:
+
+```bash
+PHEME_VA_REPLY_MODEL=/absolute/path/to/model.gguf \
+PHEME_VA_REPLY_PROMPT=/absolute/path/to/incident-reporting.txt \
+  cargo test -p reply-model real_worker_streams_without_linking_llama_into_client -- --ignored
+```
+
+## Local registry and path migration
+
+All catalog entries keep their existing IDs and `[[models]]` format. Explicit
+`purpose` separates `transcript` from `reply`; only known legacy Whisper and
+Zipformer families default to transcription. `download_id` handles the old
+Whisper catalog ID versus script argument. Artifact resolution accepts both
+manifest-relative paths and legacy `models/`-prefixed workspace paths;
+`system_prompt` is always manifest-directory-relative.
+
+New downloads install STT bundles under `models/transcript/` and instruction
+weights under `models/reply/`. **Neither the registry nor the downloader moves,
+deletes or overwrites your existing legacy weights.** To reuse files already
+under `models/whisper/` or `models/zipformer/`, either keep explicit legacy paths
+in local configuration/custom manifests, or deliberately copy/move them yourself
+to the new layout after checking the destinations. Zipformer requires its
+`bpe.model` and `tokens.txt` alongside all selected variant directories. Existing
+path-based host arguments remain valid for files at their original locations.
+Do not run a new download expecting it to discover old paths automatically.
+
+`PHEME_VA_MODEL_DIR` overrides the downloader's artifact root, not the manifest
+or prompt directory. For a custom root, use a corresponding local manifest or
+explicit host paths. Serializable
+`StartupChoices {stt_model, reply_model, reply_prompt_files}` records IDs and
+an optional ordered role-path list for the **next start**, not active readiness.
+The additive list defaults to empty for older choices files; relative paths
+resolve from the choices file's directory. TUI config keeps per-model absolute
+paths in `reply_role_files`, and exports the chosen reply model's list. Saving
+choices never loads models, restarts the server or initiates a download.
+
+Repeated server `--prompt-file` flags combine sources in flag order and conflict
+with the legacy single-file `--system-prompt`. Explicit prompt flags override
+saved roles; saved roles apply only to their matching reply model ID. Selecting
+a different explicit ID uses that entry's manifest default unless prompt flags
+are supplied. Raw `--reply-path` requires explicit prompts and never inherits
+saved roles. With no saved/explicit role choice, a selected catalog reply model
+uses its manifest `system_prompt`.
 
 ## SeaLLMs-Audio experimental artifact
 
@@ -126,6 +259,18 @@ and a memory/performance evaluation before it could implement the core
 
 Every artifact uses a pinned URL/revision and SHA-256 verification. Network
 failures and failed checksums leave the `.part` file in place so a later run
-can resume or inspect it. Model files are ignored by Git; do not commit model
+can resume or inspect it. Existing final files are verified, never overwritten.
+A completed valid `.part` promotes without network access. A corrupt complete
+partial may require deliberate removal after inspection; resume cannot repair
+arbitrary incorrect bytes.
+
+A portable atomic `models/.download.lock/` prevents concurrent writers across
+the whole artifact root, including shared Zipformer files. Normal exit and
+cancellation release it only after the curl child exits. After SIGKILL or a
+crash, a stale lock is not stolen automatically: verify that no downloader or
+curl writer is running before removing it. Cancellation retains partial data.
+Run offline downloader coverage with `bash scripts/test-download-model.sh`.
+
+Model files are ignored by Git; do not commit model
 weights, recordings, or generated benchmark artifacts. Check each upstream
 model's licence and terms before redistributing it.

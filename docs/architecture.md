@@ -7,9 +7,10 @@ This document separates the implemented foundation from the target architecture.
 - `api/`: Go Gin handlers, services, models, the `IncidentAnalyzer` boundary, asynchronous benchmark lifecycle, and separate in-memory metrics ingestion. The public incident endpoint is still wired to `MockIncidentAnalyzer`; the benchmark worker still uses `MockRunner`.
 - `pheme-va/`: the canonical Rust implementation. `core` owns WAV/PCM validation and normalization, mono 16 kHz conversion, speech gating, transcript guards, cleanup boundaries, model-neutral transcription, and the conservative rule-based incident extractor. `metrics` owns typed events, resource sampling, batching, and energy integration. `whispercpp` and optional `zipformer` are separate model adapters.
 - `pheme-va/crates/cli/`: manifest-driven model selection, the one-shot WAV `transcribe` command, and a Ratatui TUI with onboarding, WAV browsing, microphone capture, worker-owned model switching, telemetry, structured logs, automatic allowlisted model downloads, adapter preparation, and bounded persistent run history.
-- `pheme-va/crates/server/`: an Axum development HTTP host around the Rust core. It exposes stateless transcription, deterministic text incident analysis, health/readiness, and an in-memory metrics-batch drain. The server currently loads a direct Whisper model path; the CLI is the host that supports manifest-selected Whisper and Zipformer adapters.
+- `pheme-va/crates/server/`: an Axum host with stateless STT/deterministic extraction plus web-owned review/approval, request-scoped reply SSE, recovery/inspection, cancellation/reset, and isolated reply tests. It loads manifest-selected Whisper/Zipformer and reply weights once; bounded web history remains in memory.
 - `pheme-va/crates/ffi/`: a direct-path Whisper C ABI for a future native mobile host, including optional metrics-batch draining. Native audio capture and mobile lifecycle remain host responsibilities.
-- `web/`: React/TypeScript/Vite and Tailwind/shadcn tooling with a placeholder home page. The voice console and benchmark dashboard are not implemented.
+- `pheme-va/crates/models/reply/`: a normal stdio conversation adapter and `reply-native` llama.cpp worker, separate from Whisper/cleanup. The HTTP server owns the persistent child, isolating incompatible GGML symbols; no extra HTTP service, reply feature flag or runtime build/download endpoint exists. Include its PID in inference resource accounting; child-specific CPU/RAM remain unavailable with the current sampler.
+- `web/`: React/TypeScript/Vite/Tailwind voice console with WAV capture, transcript review, streamed answers, cancellation/reset/recovery and local-service voice playback. The benchmark page is a placeholder for the still-planned real dashboard.
 
 ### Current HTTP routes
 
@@ -29,11 +30,11 @@ The Go API and Rust development host are separate processes with separate route 
 | Rust | `POST` | `/v1/analyze`                     | Deterministic transcript-to-report extraction |
 | Rust | `GET`  | `/v1/metrics/batches`             | Drain buffered Rust metric batches            |
 
-There are no session, confirmation, incident-persistence, incident-retrieval, speech-synthesis, or Go-to-Pheme forwarding routes yet. See [the Pheme VA API contract](api/voice-agent.md) for the current stateless Rust host contract and the proposed stateful workflow outline.
+Go now delegates dedicated `/api/v1/voice/` routes to Pheme's `/v1/voice/` endpoints; see [voice API and limits](api/voice.md). The connected TUI polls web snapshots and can approve a pending web question; independent tests never update web state. Client-side speech is implemented, not a server playback endpoint. No session/confirmation/report persistence/retrieval routes exist yet. See [the stateless API contract](api/voice-agent.md) for compatibility operations and the future confirmed-report workflow.
 
 ## Target development architecture
 
-The following diagram is the intended integration once Go has a Pheme client and the real benchmark runner. It is not a claim that those connections are currently wired.
+The web/Go/Pheme voice connection is implemented. The diagram also contains separately planned structured incident workflow, persistent storage and real benchmark-runner integration; those parts are not wired.
 
 ```mermaid
 flowchart TD
@@ -44,6 +45,9 @@ flowchart TD
     Queue --> Runner[Scenario runner and measurement collection]
     Runner -->|Shared service client| AgentAPI
     Go <--> AgentAPI[Pheme VA HTTP host]
+    Inspector[TUI web inspector and isolated tests] <--> Go
+    AgentAPI --> Reply[Reviewed text and bounded web history]
+    Reply <--> ReplyWorker[Server-owned stdio reply worker]
     subgraph RustAgent[pheme-va — portable Rust core]
         AgentAPI --> Core[Audio normalization and STT pipeline]
         Core --> STTAdapter[Replaceable STT adapter]
@@ -52,7 +56,7 @@ flowchart TD
         Core --> Metrics[Metrics pub/sub and resource sampling]
         Metrics --> Batch[Versioned metric batches]
     end
-    WhisperAdapter <--> Whisper[Whisper runtime]
+    STTAdapter <--> Whisper[Whisper or Zipformer runtime]
     LLMAdapter <--> LLM[llama.cpp and local model]
     Client --> TTS[Speech synthesis adapter and playback]
     Runner --> Results
@@ -60,7 +64,7 @@ flowchart TD
 
 Pheme VA replaces the previously proposed generic AI service and the removed Python runtime. Its portable core has no UI, microphone permission, or mobile lifecycle ownership. Desktop/web hosts can use the Rust HTTP wrapper or CLI; native mobile hosts can embed the Rust library through the C ABI. The core and model crates keep transcription behind traits so validated local runtimes can be compared independently.
 
-At present, the Go API does not call the Rust host: it uses `MockIncidentAnalyzer`, and its benchmark worker uses `MockRunner`. When implemented, the benchmark runner should exercise the same Pheme VA API as interactive requests while keeping benchmark sessions and reports isolated from operational data.
+Go calls Rust for the development voice loop, while structured incident analysis still uses `MockIncidentAnalyzer` and benchmarks still use `MockRunner`. When implemented, the benchmark runner should exercise the same Pheme VA API as interactive requests while keeping benchmark sessions and reports isolated from operational data.
 
 ## Ownership and boundaries
 
@@ -78,7 +82,7 @@ These are target ownership boundaries for the complete system:
 | Web voice client          | Audio capture/playback, speech output, interaction status, and development inspection                                                        |
 | Web dashboard             | Experiment configuration, progress, results, comparison, and export                                                                          |
 
-Only the Rust core, model adapters, current stateless server operations, metrics path, CLI/TUI, and Go in-memory APIs in the foundation list are implemented. Go does not currently maintain a second Pheme workflow state machine or access a Pheme database; neither service has the planned persistent incident database yet.
+The foundation list includes the development web voice loop and shared reply runtime; it does not include the complete confirmation/storage/retrieval workflow or real benchmark/dashboard implementation. Go does not currently maintain a second Pheme workflow state machine or access a Pheme database; neither service has the planned persistent incident database yet.
 
 Keep the existing Go `IncidentAnalyzer` interface and public text endpoint. A future Pheme-backed analyzer/client should be wired in `api/cmd/server/main.go` while retaining `MockIncidentAnalyzer` for tests. Stateful session operations should use dedicated client methods rather than turning the one-shot `Analyze` contract into a stateful operation.
 
@@ -88,7 +92,7 @@ The following paths are already present:
 
 ```text
 api/                            Go public API and benchmark lifecycle
-web/                            React web scaffold
+web/                            React voice console and future benchmark dashboard
 pheme-va/
   crates/core/                  Portable audio, transcription and incident-analysis primitives, and adapter traits
   crates/metrics/               Typed timing/resource metric contract
@@ -97,6 +101,8 @@ pheme-va/
   crates/ffi/                   Native embedding boundary
   crates/models/whispercpp/     whisper.cpp model adapter
   crates/models/zipformer/      Optional LiteRT Zipformer adapter
+  crates/models/reply/          Persistent reply client and native worker
+  prompts/                     Checked-in incident system instruction
   models/manifest.toml          Manifest model catalog
   models/README.md              Artifact sources/checksums/status
   scripts/                      Model download scripts
@@ -121,7 +127,7 @@ stateDiagram-v2
 
 A correction must invalidate prior confirmation. Ambiguous responses must not finalize a report. Request identifiers, revision checks, and atomic state updates are required so retries or concurrent requests cannot save duplicate reports or confirm a stale draft. Spoken confirmation and any explicit confirmation control must call the same workflow logic.
 
-The current Rust server does not implement this state machine. It provides stateless transcription and deterministic text extraction only. Start the future workflow with text turns, then route normalized audio through the same transitions. The existing Rust metrics path already records core stage timings, model metadata, workflow outcome, retry count, transcript status, resource snapshots, and explicit unavailable values for the operations it currently wraps; stateful workflow stages will extend that contract rather than create a second metrics system.
+The Rust server does not implement this confirmed-report state machine. Its development voice turns support transcript review, natural-language replies and bounded successful history, separately from stateless STT/deterministic extraction. Start the future workflow with text turns, then route normalized audio through the same transitions. The existing Rust metrics path already records core stage timings, model metadata, workflow outcome, retry count, transcript status, resource snapshots, and explicit unavailable values for the operations it currently wraps; stateful workflow stages will extend that contract rather than create a second metrics system.
 
 ## Proposed API and data contracts
 
@@ -145,10 +151,10 @@ For report queries, the Voice Agent validates model-proposed parameters, execute
 ## Runtime and device strategy
 
 - Whisper/whisper.cpp is the current speech-recognition baseline. The optional `whispercpp` crate loads a model once and the CLI records the manifest model ID and revision in results/metrics.
-- The optional `zipformer` crate implements the LiteRT Zipformer CTC adapter for the three manifest variants. Its quality, runtime, and target-device performance still require evaluation. The development Rust server currently remains direct-Whisper based.
+- The optional `zipformer` crate implements the LiteRT Zipformer CTC adapter for the three manifest variants. Its quality, runtime, and target-device performance still require evaluation. Server and CLI support its manifest IDs when built with the existing Zipformer STT feature.
 - SeaLLMs-Audio is a download-only experiment. It is not a Whisper-compatible checkpoint and has no active Pheme VA adapter.
-- A concrete llama.cpp-compatible language-model adapter is not implemented. `LanguageModel`/cleanup traits are replaceable seams; do not claim llama.cpp inference or a persistent local LLM server is part of the current runtime.
-- Speech synthesis is planned and initially belongs to the web/native client. Verify its execution location before including it in local-inference or energy claims.
+- Conversational replies use a replaceable `ConversationModel` adapter, pinned Qwen GGUF and server-owned persistent llama.cpp stdio worker. This is not a structured extraction/cleanup adapter or additional HTTP service. Native model-backed quality/latency remain unverified.
+- Speech synthesis runs client-side: browser-reported local-service voices and optional TUI `espeak`. Verify real playback and offline execution before including them in local-inference/energy claims; native mobile synthesis remains planned.
 - MERaLiON and fine-tuning remain evaluation options if measured local-speech errors justify them.
 
 A mobile phone remains the preferred eventual platform, with iOS or NVIDIA Jetson still pending confirmation. The current Linux build, CLI HTTP server, or a remote call is not evidence of on-device iOS inference. Native audio integration, Apple linking/Metal validation, signing, and physical-device tests remain future work.
@@ -161,4 +167,4 @@ Retain the current asynchronous Go experiment lifecycle and in-memory queue whil
 
 The dashboard will create experiments, poll progress, display quality/performance/device metrics, compare compatible configurations, and export reproducibility metadata. It must display unavailable measurements explicitly and flag differing datasets or measurement scopes instead of ranking incomparable runs silently. The operational focus on speech does not remove this visual research interface.
 
-No distributed queue, additional database service, or top-level benchmark service is required by this plan. Keep Go unit tests beside their packages, Rust tests beside the relevant crate, and cross-service scenarios in a future top-level test location only when needed.
+No distributed queue, additional database service, or top-level benchmark service is required by this plan. Keep Go unit tests beside their packages, Rust tests beside the relevant crate, and cross-service scenarios under `tests/`; the fake-backed voice check does not load weights.

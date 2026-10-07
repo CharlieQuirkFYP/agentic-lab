@@ -14,7 +14,7 @@ The empty `pheme-va/` directory now contains the first portable backend slice. T
 - `ffi`: C ABI bridge for eventual Swift/Kotlin hosts.
 - Tests use generated WAV audio and local fakes. The ignored real-model test accepts externally supplied speech/model files; weights are not committed. The downloaded `large-v3-turbo` model has also been verified through the release CLI against a real speech sample.
 
-The `voice-agent/` Python service remains the current contract scaffold until Rust contract parity, workflow coverage, and mobile/device validation justify a deliberate cutover. The next Rust work is to add a concrete llama.cpp-compatible cleanup adapter and run the pipeline on a physical iPhone.
+The historical Python scaffold has been removed. Pheme now has a separate llama.cpp-compatible conversational reply adapter (not a cleanup/extraction replacement), a reviewed web voice loop and isolated TUI inspection/tests. Confirmed-report workflow and physical-device validation remain planned.
 
 ## Milestone 1 — Real Local Incident Analysis
 
@@ -25,12 +25,13 @@ The following foundation is implemented on this branch:
 - `pheme-va/crates/models/whispercpp`: optional prewarmed in-process whisper.cpp adapter with model metadata and model timing support.
 - `pheme-va/crates/models/zipformer`: optional LiteRT Zipformer CTC adapter for the manifest's small/medium/large variants.
 - `pheme-va/crates/cli`: manifest-driven `transcribe` and `tui` commands; TUI onboarding, WAV browsing, live microphone capture, worker-owned model loading/switching, metric graphs/details, structured logs, allowlisted model downloads, adapter cache/build/restart, and bounded JSON run history.
-- `pheme-va/crates/server`: development Axum host with `/health`, `/ready`, `/v1/transcribe`, `/v1/analyze`, and `/v1/metrics/batches`.
+- `pheme-va/crates/server`: Axum host preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
+- `pheme-va/crates/models/reply`: normal reply adapter and server-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
 - `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
 - `api/`: Gin public API, asynchronous in-memory benchmark lifecycle, and separate in-memory metric-batch ingestion.
-- `web/`: React/Vite toolchain scaffold and placeholder page.
+- `web/`: WAV microphone capture, editable transcript review, streamed replies, local-service voice playback and GET-only recovery through Go; benchmark navigation remains a placeholder.
 
-This foundation does not include the stateful incident workflow, confirmed-report persistence, retrieval, speech synthesis, Go-to-Pheme integration, a real benchmark runner, or a completed web console/dashboard.
+The development voice loop includes Go-to-Pheme forwarding and client speech, but not the authoritative confirmed-report workflow, report persistence/retrieval, structured model extraction, real benchmarks or full research dashboard. Fake-backed integration is covered; real reply quality/latency and live microphone/TTS acceptance remain unverified.
 
 ## Completed documentation and foundation milestones
 
@@ -50,7 +51,7 @@ Implement the reusable core, optional whisper.cpp and Zipformer adapter boundari
 
 Implement the Ratatui developer console, manifest model picker, WAV/microphone paths, asynchronous worker, live model switching, telemetry tabs, metric details, historical run reports, bounded logs, native diagnostics on Unix, allowlisted artifact downloads, adapter preparation/cache restart, persistent local run history, resource sampling, and retry/error states.
 
-The TUI is a development/model-evaluation console. It does not implement the production incident workflow, partial streaming transcription, or verified whole-device power measurement. The Rust server and FFI remain direct-path Whisper hosts even though the CLI can select Zipformer.
+The TUI remains a development/model-evaluation console. Its server-connected Web/Tests/Models/Telemetry workspace observes/approves pending web turns, keeps tests isolated and downloads/selects next-start model artifacts locally. The server supports manifest STT/reply choices; FFI remains direct-path Whisper. Production incident confirmation, partial streaming STT and verified whole-device power measurement are not implemented.
 
 ## Milestone 1 — Connect the Go API to Pheme VA
 
@@ -62,7 +63,7 @@ Implement a Pheme-backed analyzer/client behind the existing Go `IncidentAnalyze
 
 ### T05b — Add a replaceable structured language-model adapter (M)
 
-Add a concrete local language-model adapter only after the runtime, model, prompt, output validation, timeout, and semantic-grounding contract are selected. Keep deterministic rule-based analysis as the offline default and record model/runtime metadata. This is not currently implemented; no llama.cpp runtime or Python adapter is assumed.
+Add a concrete local language-model adapter only after the runtime, model, prompt, output validation, timeout, and semantic-grounding contract are selected. Keep deterministic rule-based analysis as the offline default and record model/runtime metadata. Structured extraction is not implemented; the new llama.cpp natural-language reply adapter must not be mistaken for validated report JSON extraction. No Python adapter is assumed.
 
 **Acceptance:** model-backed extraction is opt-in, validated, cancellable within the documented budget, and tested with local fakes plus a separately supplied smoke-test model. **Dependencies:** T05 and a runtime/model decision.
 

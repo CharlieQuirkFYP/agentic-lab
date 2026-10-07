@@ -1,16 +1,22 @@
 mod app;
 mod config;
+mod connected;
 mod download;
+mod editor;
 mod events;
 mod folder;
 mod history;
 mod logs;
+mod model_actions;
 mod model_catalog;
 mod native_logs;
+mod playback;
 mod rebuild;
 mod telemetry;
 mod ui;
+mod voice;
 mod worker;
+mod workspace_ui;
 
 use std::io;
 use std::path::PathBuf;
@@ -23,7 +29,7 @@ use anyhow::{Context, Result};
 use metrics::MetricsHub;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event;
+use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
@@ -36,6 +42,7 @@ use self::telemetry::{MetricForwarder, METRIC_QUEUE_CAPACITY};
 use self::worker::WorkerConfig;
 
 pub struct TuiOptions {
+    pub server_url: Option<String>,
     pub model_id: Option<String>,
     pub model_manifest: Option<PathBuf>,
     pub audio_directory: Option<PathBuf>,
@@ -112,6 +119,7 @@ pub fn run(options: TuiOptions) -> Result<()> {
     app.start_initial_load();
     let loop_result = run_event_loop(&mut terminal.terminal, &mut app, &native_logs);
     app.build.take();
+    app.shutdown_workspace();
     let _ = terminal.terminal.show_cursor();
     app.shutdown_worker();
     let _ = worker_join.join();
@@ -179,7 +187,7 @@ impl TerminalSession {
         terminal::enable_raw_mode().context("could not enable terminal input")?;
         let cleanup = TerminalCleanup;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
             drop(cleanup);
             return Err(error).context("could not enter the alternate screen");
         }
@@ -200,7 +208,12 @@ struct TerminalCleanup;
 
 impl Drop for TerminalCleanup {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            Show,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
     }
 }
