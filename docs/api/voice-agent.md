@@ -10,25 +10,27 @@ Implemented in `pheme-va/`:
 - optional in-process `whispercpp` and Zipformer CLI adapters;
 - an Axum development server with stateless transcription, deterministic incident extraction, health/readiness, and an in-memory metrics-batch drain;
 - a direct-path Whisper C ABI for future native hosts; and
-- a local TUI that provides developer run history and metrics, not operational incident sessions.
+- a local TUI with standalone STT and server-connected Web/Tests/Models/Telemetry views, not operational incident sessions;
+- web-owned reviewed turns with request-scoped reply SSE, inspection/recovery, cancellation/reset, and isolated tests; and
+- a normal reply client and server-owned persistent llama.cpp stdio worker with the pinned incident role.
 
-The Go API remains a separate public API. It is currently wired to `MockIncidentAnalyzer`, and no Go-to-Pheme client is configured. Stateful sessions, clarification, revision-bound confirmation, incident persistence/retrieval, speech synthesis, and action execution remain planned.
+The Go API delegates dedicated `/api/v1/voice/` operations through its Pheme client. The existing incident endpoint remains wired to `MockIncidentAnalyzer`; structured model-backed extraction is not implied by conversational replies. The web voice console captures WAV, reviews text, receives actual reply deltas and uses client-side local voices. Stateful incident sessions, revision-bound confirmation, persistence/retrieval and action execution remain planned. See the [implemented voice API](voice.md) for the development loop.
 
 ## Service identity and ownership
 
 **Pheme VA** is the canonical Rust implementation under `pheme-va/`. The current core owns audio normalization, transcription adapter boundaries, transcript guards, cleanup boundaries, and the conservative rule-based incident extractor. The future Pheme workflow will own conversation/session state, drafts, clarification, corrections, confirmation, incident storage/retrieval, and response generation.
 
-The current development server is not yet the complete workflow service. It loads a Whisper model at startup and exposes stateless HTTP operations. The CLI can additionally select the optional Zipformer adapter by manifest ID. The FFI is direct-path Whisper based and does not implement manifest selection or model reload.
+The development server is not the complete confirmed-report workflow. It loads selected STT/reply runtimes at startup, retains one bounded in-memory web conversation, and exposes both stateless operations and reviewed voice turns. Server and CLI can select optional Whisper/Zipformer adapters by manifest ID. The FFI is direct-path Whisper based and does not implement manifest selection or model reload.
 
-Go owns its public HTTP contract, benchmark orchestration, experiment configuration/results, and separate metrics storage. Web owns the future voice interaction/playback client and benchmark dashboard. Services must access their own repositories only once persistence is added.
+Go owns its public HTTP contract, benchmark orchestration, experiment configuration/results, and separate metrics storage. Web owns the development voice interaction/playback client and benchmark dashboard. Services must access their own repositories only once persistence is added.
 
 ## Current Rust HTTP API
 
-The development server requires a model path through `--model` or `PHEME_VA_WHISPER_MODEL` and listens on `127.0.0.1:8000` by default. Build it with the `whisper` feature:
+The server listens on `127.0.0.1:8000` by default. STT path selection remains available through `--model` or `PHEME_VA_WHISPER_MODEL`; catalog IDs and an optional reply model are also supported. Starting without STT allows text-only reply operations and reports STT as not ready. Build it with the `whisper` feature:
 
 ```bash
 cargo run --release -p server --features whisper -- \
-  --model models/whisper/ggml-large-v3-turbo.bin
+  --model models/transcript/whisper/ggml-large-v3-turbo.bin
 ```
 
 Current routes:
@@ -255,14 +257,14 @@ Metric collection is disabled by default. Enable application events with `--metr
 
 ## Current Go public API
 
-The Go endpoint remains unchanged while Pheme integration is planned:
+The existing Go incident endpoint remains unchanged, separately from the implemented Pheme voice client:
 
 ```http
 POST /api/v1/incidents/analyze
 Content-Type: application/json
 ```
 
-The request contains `transcript`. Its success response contains the five fields `incident_type`, `location`, `severity`, `summary`, and `recommended_action`. The current `MockIncidentAnalyzer` returns `unknown` for type/location/severity, echoes the transcript as `summary`, and returns `Pending AI analysis` as `recommended_action`. Binding failures return `400` with a simple error; analyzer failures return a generic `500` response. The public handler does not forward Rust internal errors because no Pheme client is wired yet.
+The request contains `transcript`. Its success response contains the five fields `incident_type`, `location`, `severity`, `summary`, and `recommended_action`. The current `MockIncidentAnalyzer` returns `unknown` for type/location/severity, echoes the transcript as `summary`, and returns `Pending AI analysis` as `recommended_action`. Binding failures return `400` with a simple error; analyzer failures return a generic `500` response. This handler still uses the mock; the separate voice handlers/client forward Pheme voice operations with sanitized transport failures. See [voice routes and SSE](voice.md).
 
 ## Future session and retrieval outline
 
@@ -284,4 +286,4 @@ Future retrieval should use validated time/count filters and parameterized queri
 
 ## Boundaries and next steps
 
-Do not add a Python runtime, database server, distributed queue, or unrestricted action executor to satisfy this contract. The next implementation steps are a Go Pheme client, an opt-in validated language-model adapter if needed, the Pheme-owned session state machine, SQLite persistence, audio turns, retrieval, and then client/dashboard integration. The current stateless routes remain compatibility/development operations while that work proceeds.
+Do not add a Python runtime, database server, distributed queue, or unrestricted action executor to satisfy this contract. The next incident-workflow steps are a Pheme-backed structured analyzer, validated model-backed extraction, revision-bound confirmation, SQLite persistence and retrieval. The existing voice client/reply runtime does not implement those capabilities. The research dashboard and target-device evaluation also remain planned. The current stateless routes remain compatibility/development operations while that work proceeds.

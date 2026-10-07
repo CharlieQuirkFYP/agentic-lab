@@ -13,6 +13,9 @@ name = "va_core"
 default = []
 
 [dependencies]
+anyhow = "1.0"
+sha2 = "0.10"
+toml = "0.8"
 hound = "3.5"
 metrics = { path = "../metrics", default-features = false }
 serde.workspace = true

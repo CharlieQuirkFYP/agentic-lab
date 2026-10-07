@@ -1,0 +1,19 @@
+[package]
+name = "reply-native"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "Isolated native llama.cpp runtime and persistent Pheme reply worker"
+
+[[bin]]
+name = "pheme-reply-worker"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0"
+llama-cpp-2 = { version = "=0.1.158", default-features = false }
+# The matched ABI is private to this executable, never linked into the server.
+llama-cpp-sys-2 = { version = "=0.1.158", default-features = false }
+reply-model = { path = ".." }
+va_core = { package = "core", path = "../../../core" }

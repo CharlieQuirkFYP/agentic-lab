@@ -22,9 +22,9 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Install Linux audio development libraries
+      - name: Install Linux audio and native model build libraries
         if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev cmake clang libclang-dev
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
@@ -39,3 +39,9 @@ jobs:
 
       - name: Run tests
         run: cargo test --workspace
+
+      - name: Verify combined Whisper and reply binaries
+        run: cargo build -p server -p reply-native --features server/whisper
+
+      - name: Test direct model downloads offline
+        run: bash scripts/test-download-model.sh

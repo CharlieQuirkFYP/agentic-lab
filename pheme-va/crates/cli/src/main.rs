@@ -29,8 +29,11 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Open the local interactive speech-model test bench.
+    /// Open the standalone speech bench or connected voice console.
     Tui {
+        /// Connect through Go. Without this flag, use the standalone local STT bench.
+        #[arg(long, num_args = 0..=1, default_missing_value = "http://127.0.0.1:8080")]
+        server_url: Option<String>,
         /// Maximum duration for one microphone recording.
         #[arg(long)]
         max_seconds: Option<u32>,
@@ -68,12 +71,14 @@ fn main() -> Result<()> {
     } = Cli::parse();
     match command {
         Command::Tui {
+            server_url,
             max_seconds,
             language,
             dictionary,
             audio_directory,
             reconfigure,
         } => tui::run(tui::TuiOptions {
+            server_url,
             model_id: stt_model,
             model_manifest,
             audio_directory,
@@ -126,4 +131,37 @@ fn run_transcribe(
         println!("gate: {:?}", result.gate.decision);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod cli_tests {
+    use super::*;
+
+    #[test]
+    fn server_flag_is_explicit_and_bare_flag_uses_loopback_default() {
+        let Cli {
+            command: Command::Tui { server_url, .. },
+            ..
+        } = Cli::try_parse_from(["cli", "tui"]).unwrap()
+        else {
+            panic!("expected tui")
+        };
+        assert!(server_url.is_none());
+        let Cli {
+            command: Command::Tui { server_url, .. },
+            ..
+        } = Cli::try_parse_from(["cli", "tui", "--server-url"]).unwrap()
+        else {
+            panic!("expected tui")
+        };
+        assert_eq!(server_url.as_deref(), Some("http://127.0.0.1:8080"));
+        let Cli {
+            command: Command::Tui { server_url, .. },
+            ..
+        } = Cli::try_parse_from(["cli", "tui", "--server-url", "http://localhost:9000"]).unwrap()
+        else {
+            panic!("expected tui")
+        };
+        assert_eq!(server_url.as_deref(), Some("http://localhost:9000"));
+    }
 }

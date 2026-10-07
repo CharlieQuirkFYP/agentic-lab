@@ -6,11 +6,15 @@ use ratatui::widgets::{
     Wrap,
 };
 use ratatui::Frame;
+use unicode_width::UnicodeWidthStr;
+
+use crate::model::ModelPurpose;
 
 use super::app::{AdapterAvailability, App, Screen, TelemetryTab};
+use super::download::DownloadProgress;
 use super::folder::FolderEntryKind;
 use super::logs::format_timestamp;
-use super::model_catalog::ModelCatalog;
+use super::model_catalog::CatalogEntry;
 use super::telemetry::TelemetryStore;
 
 const ACCENT: Color = Color::Cyan;
@@ -32,9 +36,11 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         return;
     }
     match app.screen {
+        Screen::Web => super::workspace_ui::web(frame, app),
+        Screen::WebEditor => super::workspace_ui::web_editor(frame, app),
+        Screen::ServerTests => super::workspace_ui::tests(frame, app),
+        Screen::Models | Screen::Loading => super::workspace_ui::models(frame, app),
         Screen::Welcome => draw_welcome(frame, app),
-        Screen::Picker => draw_picker(frame, app),
-        Screen::Loading => draw_loading(frame, app),
         Screen::Bench => draw_bench(frame, app),
         Screen::Folder => draw_folder(frame, app),
         Screen::Recording => draw_recording(frame, app),
@@ -81,249 +87,253 @@ fn draw_welcome(frame: &mut Frame<'_>, app: &App) {
     );
 }
 
-fn draw_picker(frame: &mut Frame<'_>, app: &App) {
-    let outer = frame.area();
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(5),
-            Constraint::Length(2),
-        ])
-        .split(outer);
-    draw_header(frame, app, chunks[0], "SELECT SPEECH MODEL");
-    let body = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(44), Constraint::Percentage(56)])
-        .split(chunks[1]);
+pub(super) fn model_purpose_label(purpose: Option<ModelPurpose>) -> &'static str {
+    match purpose {
+        Some(ModelPurpose::Transcript) => "Voice & transcription",
+        Some(ModelPurpose::Reply) => "Reasoning & reply",
+        None => "Unspecified purpose",
+    }
+}
 
-    let items = app
-        .catalog
-        .entries
-        .iter()
-        .map(|entry| {
-            let availability = app.adapter_availability(entry);
-            let color = if availability.is_ready() {
-                Color::Green
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PickerRow {
+    Heading(Option<ModelPurpose>),
+    Entry(usize),
+}
+
+fn picker_rows(entries: &[&CatalogEntry]) -> Vec<PickerRow> {
+    let mut rows = Vec::new();
+    for purpose in [
+        Some(ModelPurpose::Transcript),
+        Some(ModelPurpose::Reply),
+        None,
+    ] {
+        let mut entries = entries
+            .iter()
+            .enumerate()
+            .filter(|(_, entry)| entry.manifest.purpose() == purpose)
+            .peekable();
+        if entries.peek().is_some() {
+            rows.push(PickerRow::Heading(purpose));
+            rows.extend(entries.map(|(index, _)| PickerRow::Entry(index)));
+        }
+    }
+    rows
+}
+
+fn picker_selection(rows: &[PickerRow], catalog_index: usize) -> Option<usize> {
+    // Headings are presentation only; selection stays with the filtered model rows.
+    rows.iter()
+        .position(|row| *row == PickerRow::Entry(catalog_index))
+}
+
+fn model_columns(area: Rect, progress: bool) -> (Rect, Rect, Option<Rect>) {
+    let columns =
+        Layout::horizontal([Constraint::Percentage(44), Constraint::Percentage(56)]).split(area);
+    if progress {
+        let right = Layout::vertical([Constraint::Min(6), Constraint::Length(5)]).split(columns[1]);
+        (columns[0], right[0], Some(right[1]))
+    } else {
+        (columns[0], columns[1], None)
+    }
+}
+
+pub(super) fn draw_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let entries = app.models.rows(&app.catalog);
+    let rows = picker_rows(&entries);
+    let selected = app.models.selected(&app.catalog).filter(|selected| {
+        entries
+            .iter()
+            .any(|entry| entry.manifest.id == selected.manifest.id)
+    });
+    let retained_download = selected.and_then(|entry| {
+        app.models
+            .download_status
+            .get(&entry.manifest.id)
+            .map(|status| (entry.manifest.id.as_str(), status.as_str()))
+    });
+    let progress = app.download.is_some()
+        || app.build.is_some()
+        || app.models.verification.is_some()
+        || app.screen == Screen::Loading
+        || retained_download.is_some();
+    let (list_area, details_area, progress_area) = model_columns(area, progress);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("MANIFEST ENTRIES");
+    let inner = block.inner(list_area);
+    frame.render_widget(block, list_area);
+    let left = Layout::vertical([Constraint::Length(2), Constraint::Min(3)]).split(inner);
+    frame.render_widget(
+        Paragraph::new(format!(
+            "Filter{}: {}",
+            if app.models.filtering {
+                " [editing]"
             } else {
-                Color::Yellow
-            };
-            ListItem::new(Line::from(vec![
-                Span::raw(format!("{}  ", entry.manifest.id)),
-                Span::styled(availability.label(), Style::default().fg(color)),
-            ]))
+                " [/]"
+            },
+            if app.models.group().filter.is_empty() {
+                "all models"
+            } else {
+                &app.models.group().filter
+            }
+        ))
+        .style(Style::default().fg(if app.models.filtering {
+            ACCENT
+        } else {
+            Color::Gray
+        }))
+        .wrap(Wrap { trim: false }),
+        left[0],
+    );
+    let row_width = usize::from(left[1].width.saturating_sub(2));
+    let items = rows
+        .iter()
+        .map(|row| match *row {
+            PickerRow::Heading(purpose) => ListItem::new(Line::from(Span::styled(
+                model_purpose_label(purpose),
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ))),
+            PickerRow::Entry(index) => {
+                let entry = entries[index];
+                let availability = app.adapter_availability(entry);
+                let color = if !entry.artifacts_available() {
+                    Color::Yellow
+                } else if availability == AdapterAvailability::ReasoningModel {
+                    Color::Blue
+                } else if availability.is_ready() {
+                    Color::Green
+                } else {
+                    Color::Yellow
+                };
+                let artifact = app
+                    .models
+                    .download_status
+                    .get(&entry.manifest.id)
+                    .map(String::as_str)
+                    .unwrap_or(if entry.artifacts_available() {
+                        "Present (not verified)"
+                    } else {
+                        "Missing"
+                    });
+                let status = format!("{artifact} | {}", availability.label());
+                let text = format!("{}  {status}", entry.manifest.id);
+                if text.width() <= row_width {
+                    ListItem::new(Line::from(vec![
+                        Span::raw(format!("{}  ", entry.manifest.id)),
+                        Span::styled(status, Style::default().fg(color)),
+                    ]))
+                } else {
+                    let mut lines = super::editor::Editor::new(entry.manifest.id.clone())
+                        .wrapped(row_width)
+                        .0
+                        .into_iter()
+                        .map(Line::from)
+                        .collect::<Vec<_>>();
+                    lines.extend(
+                        super::editor::Editor::new(status)
+                            .wrapped(row_width)
+                            .0
+                            .into_iter()
+                            .map(|line| Line::from(Span::styled(line, Style::default().fg(color)))),
+                    );
+                    ListItem::new(lines)
+                }
+            }
         })
         .collect::<Vec<_>>();
     let mut state = ratatui::widgets::ListState::default();
-    if !app.catalog.entries.is_empty() {
-        state.select(Some(app.catalog_index.min(app.catalog.entries.len() - 1)));
-    }
+    state.select(
+        selected
+            .and_then(|selected| {
+                entries
+                    .iter()
+                    .position(|entry| entry.manifest.id == selected.manifest.id)
+            })
+            .and_then(|index| picker_selection(&rows, index)),
+    );
     frame.render_stateful_widget(
         List::new(items)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("MANIFEST ENTRIES"),
-            )
             .highlight_style(Style::default().fg(ACCENT).add_modifier(Modifier::BOLD))
             .highlight_symbol("> "),
-        body[0],
+        left[1],
         &mut state,
     );
-
-    let details = if let Some(entry) = app.catalog.entry(app.catalog_index) {
-        let missing = if entry.missing_paths.is_empty() {
-            "none".to_owned()
+    if entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No matching models.\nChange or clear the filter.")
+                .wrap(Wrap { trim: false }),
+            left[1],
+        );
+    }
+    super::workspace_ui::model_details(frame, app, selected, details_area);
+    if let Some(area) = progress_area {
+        if let Some(task) = app.download.as_ref() {
+            draw_model_progress(frame, area, &task.model_id, &task.progress, task.output());
+        } else if app.build.is_some() {
+            draw_build_output(frame, app, area);
         } else {
-            ModelCatalog::missing_summary(entry)
-        };
-        vec![
-            Line::from(Span::styled(
-                entry.manifest.id.clone(),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            )),
-            Line::from(format!("Family:       {}", entry.manifest.family)),
-            Line::from(format!(
-                "Runtime:      {}",
-                entry.manifest.runtime.as_deref().unwrap_or("not specified")
-            )),
-            Line::from(format!(
-                "Revision:     {}",
-                entry
-                    .manifest
-                    .revision
-                    .as_deref()
-                    .unwrap_or("not specified")
-            )),
-            Line::from(format!("Model:        {}", entry.model_path.display())),
-            Line::from(format!(
-                "Size:         {}",
-                entry
-                    .manifest
-                    .model_size
-                    .as_deref()
-                    .unwrap_or("not specified")
-            )),
-            Line::from(format!(
-                "Adapter:      {}",
-                app.adapter_availability(entry).label()
-            )),
-            Line::from(format!(
-                "Artifacts:    {}",
-                if entry.artifacts_available() {
-                    "available"
-                } else {
-                    "missing"
-                }
-            )),
-            Line::from(format!("Missing:      {missing}")),
-            Line::from(format!(
-                "Timestamps:   {}",
-                yes_no(entry.manifest.timestamps)
-            )),
-            Line::from(format!(
-                "Streaming:    {}",
-                yes_no(entry.manifest.streaming)
-            )),
-            Line::from(""),
-            Line::from(
-                match app.adapter_availability(entry) {
-                    AdapterAvailability::Unsupported => {
-                        "Unsupported model family; add a matching adapter before selecting it."
-                            .to_owned()
-                    }
-                    AdapterAvailability::ArtifactMissing => {
-                        "[Enter] download the verified model artifacts automatically. [r] rescan."
-                            .to_owned()
-                    }
-                    AdapterAvailability::Compiled => "[Enter] load this candidate".to_owned(),
-                    AdapterAvailability::Cached => {
-                        "[Enter] use the validated cached adapter; a quick launcher restart may occur.".to_owned()
-                    }
-                    AdapterAvailability::Checking => {
-                        "[Enter] load or prepare this adapter; cache check is still running.".to_owned()
-                    }
-                    AdapterAvailability::Prepare => {
-                        "[Enter] prepare adapter and restart automatically. Requires source checkout, Cargo and native toolchain; may download build dependencies/runtime packages. Settings and saved run reports retained; live metrics/logs reset. [Esc] back.".to_owned()
-                    }
-                },
-            ),
-        ]
-    } else if let Some(error) = app.catalog.error.as_deref() {
-        vec![
-            Line::from(Span::styled(
-                "Manifest error",
-                Style::default().fg(Color::Red),
-            )),
-            Line::from(""),
-            Line::from(error.to_owned()),
-        ]
-    } else {
-        vec![Line::from("No model entries found.")]
-    };
-    frame.render_widget(
-        Paragraph::new(Text::from(details))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("MODEL DETAILS"),
-            )
-            .wrap(Wrap { trim: false }),
-        body[1],
-    );
-    frame.render_widget(
-        Paragraph::new(Line::from(
-            "[↑/↓] select  [Enter] load/use cache/prepare  [r] rescan  [Esc] back",
-        )),
-        chunks[2],
-    );
-    draw_error_line(frame, app, outer);
+            let status = if let Some(task) = app.models.verification.as_ref() {
+                Some(("VERIFYING STARTUP CHOICE", format!("Model: {}\nChecking artifact hashes and selected roles locally.\nActive server unchanged.", task.model_id)))
+            } else if app.screen == Screen::Loading {
+                Some(("LOADING STANDALONE STT", format!("Model: {}\nLoading candidate in the inference worker.\nCurrent model is retained on failure.", app.pending_model_id.as_deref().unwrap_or(&app.config.selected_stt_model))))
+            } else {
+                retained_download.map(|(model_id, status)| {
+                    (
+                        "LOCAL DOWNLOAD STATUS",
+                        format!("Model: {model_id}\n{status}"),
+                    )
+                })
+            };
+            if let Some((title, message)) = status {
+                frame.render_widget(
+                    Paragraph::new(message)
+                        .block(Block::default().borders(Borders::ALL).title(title))
+                        .wrap(Wrap { trim: false }),
+                    area,
+                );
+            }
+        }
+    }
 }
 
-fn draw_loading(frame: &mut Frame<'_>, app: &App) {
-    if let Some(download) = &app.download {
-        let chunks = base_layout(frame.area());
-        draw_header(frame, app, chunks[0], "DOWNLOADING MODEL");
-        let percent = download.progress.percent.unwrap_or(0);
-        let bar = progress_bar(percent, 32);
-        frame.render_widget(Paragraph::new(format!("Downloading model {}\n\n{} {:>3}%\n\n{}\n\nThe verified partial file is retained if you cancel.\n\n[Esc] cancel download", download.model_id, bar, percent, download.progress.message)).block(Block::default().borders(Borders::ALL).title("MODEL DOWNLOAD")).wrap(Wrap { trim: false }), chunks[1]);
-        draw_footer(
-            frame,
-            app,
-            chunks[2],
-            "[Esc] cancel download  [t] logs  [q] quit",
-        );
-        return;
-    }
-    if let Some(build) = &app.build {
-        let chunks = base_layout(frame.area());
-        draw_header(frame, app, chunks[0], "PREPARING BACKEND");
-        let panels = Layout::vertical([Constraint::Length(5), Constraint::Min(3)]).split(chunks[1]);
-        frame.render_widget(
-            Paragraph::new(format!(
-                "Model: {}\nChecking cached backend; Cargo runs only when needed.\nSaved run reports survive restart. Settings are retained. Current model stays available on failure.",
-                build.model_id,
-            ))
-            .block(Block::default().borders(Borders::ALL).title("BACKEND PREPARATION"))
-            .wrap(Wrap { trim: false }),
-            panels[0],
-        );
-        draw_build_output(frame, app, panels[1]);
-        draw_footer(
-            frame,
-            app,
-            chunks[2],
-            "[t] metrics/logs  [Esc] cancel build  [q] quit",
-        );
-        return;
-    }
-    let chunks = base_layout(frame.area());
-    draw_header(frame, app, chunks[0], "LOADING MODEL");
-    let model_id = app
-        .pending_model_id
-        .as_deref()
-        .unwrap_or(&app.config.selected_stt_model);
-    let entry = app.catalog.entry_by_id(model_id);
-    let details = vec![
-        Line::from(Span::styled(
-            format!("Model ID:  {model_id}"),
-            Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-        )),
-        Line::from(format!(
-            "Family:    {}",
-            entry
-                .map(|entry| entry.manifest.family.as_str())
-                .unwrap_or("unknown")
-        )),
-        Line::from(format!(
-            "Runtime:   {}",
-            entry
-                .and_then(|entry| entry.manifest.runtime.as_deref())
-                .unwrap_or("not specified")
-        )),
-        Line::from(""),
-        Line::from("Loading candidate engine in the inference worker..."),
-        Line::from("The terminal remains responsive while the model is loaded."),
-        Line::from(""),
-        Line::from(Span::styled(
-            "[t] view metrics and logs",
-            Style::default().fg(Color::Yellow),
-        )),
-    ];
+fn draw_model_progress(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    model_id: &str,
+    progress: &DownloadProgress,
+    output: &str,
+) {
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title("LOCAL DOWNLOAD / [F7] Cancel");
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
+    let label = progress
+        .percent
+        .map_or_else(|| "unavailable".into(), |percent| format!("{percent}%"));
     frame.render_widget(
-        Paragraph::new(Text::from(details))
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("MODEL OPERATION"),
-            )
-            .wrap(Wrap { trim: false }),
-        chunks[1],
+        Gauge::default()
+            .percent(progress.percent.unwrap_or(0).min(100) as u16)
+            .label(format!("{model_id} / {label}"))
+            .gauge_style(Style::default().fg(ACCENT)),
+        rows[0],
     );
-    draw_footer(frame, app, chunks[2], "[t] metrics/logs  [q] quit");
+    let recent = output.lines().next_back().unwrap_or_default();
+    frame.render_widget(
+        Paragraph::new(format!("{}\n{recent}", progress.message)).wrap(Wrap { trim: false }),
+        rows[1],
+    );
 }
 
 fn draw_bench(frame: &mut Frame<'_>, app: &App) {
+    let footer = format!(
+        "{}\n[?] Help  [r] Retry  [n] Next file  [f] Folder  [l] Mic  [j/k] Scroll",
+        super::workspace_ui::workspace_guide(app)
+    );
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -331,7 +341,10 @@ fn draw_bench(frame: &mut Frame<'_>, app: &App) {
             Constraint::Min(8),
             Constraint::Length(4),
             Constraint::Length(3),
-            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Length(
+                super::workspace_ui::footer_height(&footer, frame.area().width).max(2),
+            ),
         ])
         .split(frame.area());
     draw_header(frame, app, chunks[0], "TEST BENCH");
@@ -440,13 +453,26 @@ fn draw_bench(frame: &mut Frame<'_>, app: &App) {
             .wrap(Wrap { trim: false }),
         chunks[3],
     );
-    draw_footer(
-        frame,
-        app,
-        chunks[4],
-        "[r] retry  [n] next file  [f] folder  [l] live  [m] model  [t] metrics/logs  [j/k] scroll  [?] help  [q] quit",
+    let run_id = app.current_run.as_deref();
+    let compact = [
+        ("normalization", "audio_normalization_duration_ms"),
+        ("gate", "speech_gate_duration_ms"),
+        ("transcription", "transcription_duration_ms"),
+        ("end-to-end", "end_to_end_request_duration_ms"),
+    ]
+    .iter()
+    .map(|(label, name)| format!("{label}: {}", compact_metric(&app.telemetry, name, run_id)))
+    .collect::<Vec<_>>()
+    .join("   ");
+    let compact = format!("{compact}\n{}", monitor_line(app));
+    frame.render_widget(
+        Paragraph::new(compact)
+            .block(Block::default().borders(Borders::ALL).title("METRICS"))
+            .wrap(Wrap { trim: false }),
+        chunks[3],
     );
-    draw_error_line(frame, app, frame.area());
+    draw_status_line(frame, app, chunks[4]);
+    draw_footer(frame, app, chunks[5], &footer);
 }
 
 fn draw_folder(frame: &mut Frame<'_>, app: &App) {
@@ -500,7 +526,7 @@ fn draw_folder(frame: &mut Frame<'_>, app: &App) {
         frame,
         app,
         chunks[2],
-        "[↑/↓] move  [Enter] transcribe/open  [d] directory  [r] refresh  [Esc] back",
+        "[↑/↓] move  [Enter] transcribe/open  [d] directory  [r] refresh  [Esc] Back",
     );
 }
 
@@ -553,6 +579,12 @@ fn draw_recording(frame: &mut Frame<'_>, app: &App) {
             .wrap(Wrap { trim: false }),
         body[2],
     );
+    frame.render_widget(
+        Paragraph::new("Final transcription is produced after recording stops. Partial words are unavailable because the current models are not streaming transcribers.")
+            .block(Block::default().borders(Borders::ALL).title("NOTE"))
+            .wrap(Wrap { trim: false }),
+        body[2],
+    );
     draw_footer(
         frame,
         app,
@@ -589,18 +621,21 @@ fn draw_processing(frame: &mut Frame<'_>, app: &App) {
         frame,
         app,
         chunks[2],
-        "[t] metrics/logs  [j/k] scroll  [q] quit",
+        "[t] metrics/logs  [j/k] scroll  [q] quit  [Esc] Back",
     );
 }
 
 fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
+    let footer = telemetry_footer(app);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(3),
             Constraint::Length(2),
             Constraint::Min(5),
-            Constraint::Length(2),
+            Constraint::Length(
+                super::workspace_ui::footer_height(&footer, frame.area().width).max(3),
+            ),
         ])
         .split(frame.area());
     draw_header(frame, app, chunks[0], "METRICS & LOGS");
@@ -627,26 +662,32 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
         }
         TelemetryTab::Logs => draw_logs(frame, app, chunks[2]),
     }
+    draw_footer(frame, app, chunks[3], &footer);
+}
+
+fn telemetry_footer(app: &App) -> String {
     let footer = if app.clear_runs_pending {
-        "Clear ALL saved runs and transcripts? [y] confirm  [Esc] cancel".to_owned()
+        "Clear ALL saved runs and transcripts?\n[y] confirm  [Esc] cancel".to_owned()
     } else if app.filter_editing {
         format!(
-            "Search: {}_  [Enter/Esc] finish  [Backspace] delete",
+            "[Enter/Esc] finish  [Backspace] delete\nSearch: {}_",
             app.filter_query
         )
     } else if app.run_detail {
         format!("[j/k ↑/↓] metric  [Enter] detail  [Esc] {}  [n/N] run\n[PgUp/PgDn] {} scroll  [/] highlight  [c] clear all runs",
-            if app.historical_detail { "report" } else { "runs" },
+            if app.historical_detail { "Close detail (report)" } else { "Close report (runs)" },
             if app.historical_detail { "detail" } else { "report" })
     } else {
-        format!("[1-4] tab  [j/k ↑/↓] select/scroll  [Enter] open  [/] search  [x] clear  [Esc] back{}  Search: {}",
+        format!("[1-4] tab  [j/k ↑/↓] select/scroll  [Enter] open  [/] search  [x] clear{}{}\nSearch: {}",
+            if app.metric_detail { "  [Esc] Close detail" } else { "" },
             if app.telemetry_tab == TelemetryTab::Logs { "  [c] clear logs" } else if app.telemetry_tab == TelemetryTab::Runs { "  [c] clear all runs" } else { "" },
             if app.filter_query.is_empty() { "(none)" } else { &app.filter_query })
     };
-    frame.render_widget(
-        Paragraph::new(footer).style(Style::default().fg(Color::Yellow)),
-        chunks[3],
-    );
+    if app.clear_runs_pending || app.filter_editing {
+        footer
+    } else {
+        format!("{}\n{footer}", super::workspace_ui::workspace_guide(app))
+    }
 }
 
 fn draw_overview(frame: &mut Frame<'_>, app: &App, area: Rect) {
@@ -1443,12 +1484,21 @@ fn draw_help(frame: &mut Frame<'_>, app: &App) {
     let chunks = base_layout(frame.area());
     draw_header(frame, app, chunks[0], "HELP");
     let lines = vec![
+        Line::from(Span::styled(
+            "Workspace (outside Telemetry)",
+            Style::default().fg(ACCENT),
+        )),
+        Line::from("[w] Web | [m] Models | [t] Telemetry | [b] Tests/back"),
+        Line::from(""),
         Line::from(Span::styled("Test bench", Style::default().fg(ACCENT))),
         Line::from("[l] record microphone    [f] select WAV    [n] next WAV"),
         Line::from("[r] retry source        [m] switch model  [t] telemetry"),
         Line::from("[j/k] scroll transcript/details   [?] help   [q] quit"),
         Line::from(""),
-        Line::from(Span::styled("Telemetry", Style::default().fg(ACCENT))),
+        Line::from(Span::styled(
+            "Telemetry (1–4 switch telemetry views; Esc returns)",
+            Style::default().fg(ACCENT),
+        )),
         Line::from("[1] overview  [2] live metrics  [3] runs/reports  [4] logs"),
         Line::from("[j/k or ↑/↓] select metrics/runs, otherwise scroll"),
         Line::from("[ and ] previous/next run  [f or /] live shared filter  [x] reset"),
@@ -1467,7 +1517,7 @@ fn draw_help(frame: &mut Frame<'_>, app: &App) {
             .wrap(Wrap { trim: false }),
         chunks[1],
     );
-    draw_footer(frame, app, chunks[2], "[Esc] back  [?] close  [q] quit");
+    draw_footer(frame, app, chunks[2], "[Esc] Back  [?] close  [q] quit");
 }
 
 fn draw_error(frame: &mut Frame<'_>, app: &App) {
@@ -1509,62 +1559,25 @@ fn draw_error(frame: &mut Frame<'_>, app: &App) {
         frame,
         app,
         chunks[2],
-        "[r] retry  [m] model  [Esc] back  [q] quit",
+        "[r] retry  [m] model  [Esc] Back  [q] quit",
     );
 }
 
 fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
-    let model = app
-        .active_model
-        .as_ref()
-        .map(|model| {
-            format!(
-                "{} / {} / {} {}",
-                model.id,
-                model.family,
-                model.runtime.as_deref().unwrap_or("runtime unknown"),
-                if app.current_request.is_some() {
-                    "BUSY"
-                } else {
-                    "READY"
-                }
-            )
-        })
-        .unwrap_or_else(|| "no active model".to_owned());
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled(
-                format!(" PHEME VA / {title} "),
-                Style::default().fg(ACCENT).add_modifier(Modifier::BOLD),
-            ),
-            Span::raw("  "),
-            Span::styled(model, Style::default().fg(Color::White)),
-        ]))
-        .block(Block::default().borders(Borders::BOTTOM)),
-        area,
-    );
+    super::workspace_ui::header(frame, app, area, title);
 }
 
 fn draw_footer(frame: &mut Frame<'_>, _app: &App, area: Rect, text: &str) {
-    frame.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            text,
-            Style::default().fg(Color::Yellow),
-        )))
-        .style(Style::default().fg(Color::Yellow)),
-        area,
-    );
+    super::workspace_ui::draw_shortcut_footer(frame, area, text);
 }
 
-fn draw_error_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    if let Some(error) = app.error_message.as_deref() {
-        let line = Paragraph::new(Line::from(Span::styled(
-            format!(" Error: {error}"),
-            Style::default().fg(Color::Red),
-        )));
-        let y = area.bottom().saturating_sub(1);
-        frame.render_widget(line, Rect::new(area.x, y, area.width, 1));
-    }
+fn draw_status_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
+    let (text, color) = if let Some(error) = app.error_message.as_deref() {
+        (format!("Error: {error}"), Color::Red)
+    } else {
+        (app.status_message.clone(), Color::Gray)
+    };
+    frame.render_widget(Paragraph::new(text).style(Style::default().fg(color)), area);
 }
 
 fn base_layout(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -1584,15 +1597,6 @@ fn side_panel(area: Rect) -> Rect {
         area.y,
         area.width.saturating_mul(44) / 100,
         area.height,
-    )
-}
-
-fn progress_bar(percent: u8, width: usize) -> String {
-    let filled = width.saturating_mul(percent as usize) / 100;
-    format!(
-        "{}{}",
-        "|".repeat(filled),
-        ".".repeat(width.saturating_sub(filled))
     )
 }
 
@@ -1759,34 +1763,691 @@ mod tests {
         assert!(text.contains("[y] confirm"));
     }
 
-    #[test]
-    fn picker_shows_validated_cached_adapter() {
-        let mut app = super::super::app::tests::test_app();
-        app.screen = Screen::Picker;
-        let manifest: crate::model::ModelEntry = toml::from_str(
-            r#"
-            id = "fixture"
-            family = "whisper"
-            model = "fixture.bin"
-            "#,
-        )
+    fn picker_entry(id: &str, family: &str, purpose: Option<ModelPurpose>) -> CatalogEntry {
+        let mut manifest: crate::model::ModelEntry = toml::from_str(&format!(
+            "id = {id:?}\nfamily = {family:?}\nmodel = \"fixture.bin\""
+        ))
         .unwrap();
-        app.catalog
-            .entries
-            .push(super::super::model_catalog::CatalogEntry {
-                manifest,
-                model_path: "fixture.bin".into(),
-                missing_paths: Vec::new(),
-                // Force the fixture to represent a featureless launcher for the
-                // same UI behavior under feature-enabled test builds.
-                adapter_compiled: false,
-            });
+        manifest.purpose = purpose;
+        CatalogEntry {
+            manifest,
+            model_path: "fixture.bin".into(),
+            missing_paths: Vec::new(),
+            adapter_compiled: false,
+        }
+    }
+
+    fn picker_buffer(app: &App, width: u16, height: u16) -> ratatui::buffer::Buffer {
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+        terminal.draw(|frame| draw(frame, app)).unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn rect_text(buffer: &ratatui::buffer::Buffer, area: Rect) -> String {
+        (area.y..area.bottom())
+            .map(|y| {
+                (area.x..area.right())
+                    .map(|x| buffer[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    fn model_body(width: u16, height: u16) -> Rect {
+        Rect::new(0, 3, width, height - 7)
+    }
+
+    fn picker_list_text(buffer: &ratatui::buffer::Buffer) -> String {
+        rect_text(
+            buffer,
+            model_columns(model_body(buffer.area.width, buffer.area.height), false).0,
+        )
+    }
+
+    fn assert_picker_highlight(buffer: &ratatui::buffer::Buffer, id: &str) {
+        let text = picker_list_text(buffer);
+        let selected = text
+            .lines()
+            .filter(|line| line.contains("> "))
+            .collect::<Vec<_>>();
+        assert_eq!(selected.len(), 1, "{text}");
+        assert!(selected[0].contains(&format!("> {id}")), "{text}");
+        for heading in [
+            "Voice & transcription",
+            "Reasoning & reply",
+            "Unspecified purpose",
+        ] {
+            assert!(!selected[0].contains(heading), "{text}");
+        }
+    }
+
+    #[test]
+    fn models_groups_filtered_rows_by_manifest_purpose_not_family() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Models;
+        app.catalog.entries = vec![
+            picker_entry("reply-first", "whisper", Some(ModelPurpose::Reply)),
+            picker_entry("unknown", "other-engine", None),
+            picker_entry(
+                "voice-alpha",
+                "arbitrary-engine",
+                Some(ModelPurpose::Transcript),
+            ),
+            picker_entry("reply-last", "other-engine", Some(ModelPurpose::Reply)),
+            picker_entry("legacy-voice", "zipformer", None),
+        ];
+        let rows = picker_rows(&app.models.rows(&app.catalog));
+        assert_eq!(
+            rows,
+            vec![
+                PickerRow::Heading(Some(ModelPurpose::Transcript)),
+                PickerRow::Entry(2),
+                PickerRow::Entry(4),
+                PickerRow::Heading(Some(ModelPurpose::Reply)),
+                PickerRow::Entry(0),
+                PickerRow::Entry(3),
+                PickerRow::Heading(None),
+                PickerRow::Entry(1),
+            ]
+        );
+        assert_eq!(picker_selection(&rows, 99), None);
+        assert!(picker_rows(&[]).is_empty());
+        for (width, height) in [(80, 24), (120, 32)] {
+            for id in ["voice-alpha", "reply-first", "unknown"] {
+                app.models.group_mut().highlighted = Some(id.into());
+                let buffer = picker_buffer(&app, width, height);
+                assert_picker_highlight(&buffer, id);
+                let text = rect_text(&buffer, buffer.area);
+                assert!(text.contains("MANIFEST ENTRIES"), "{text}");
+                assert!(text.contains("MODEL DETAILS"), "{text}");
+                assert!(!text.contains("←/→"), "{text}");
+                assert!(!text.contains("Enter Details"), "{text}");
+            }
+            app.models.group_mut().highlighted = Some("voice-alpha".into());
+            let buffer = picker_buffer(&app, width, height);
+            let list = picker_list_text(&buffer);
+            assert!(
+                list.find("Voice & transcription").unwrap()
+                    < list.find("Reasoning & reply").unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn models_filter_spans_both_groups_and_empty_state_has_no_stale_selection() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Models;
+        app.catalog.entries = vec![
+            picker_entry("match-voice", "custom", Some(ModelPurpose::Transcript)),
+            picker_entry("match-reply", "custom", Some(ModelPurpose::Reply)),
+            picker_entry("hidden", "whisper", Some(ModelPurpose::Transcript)),
+        ];
+        app.models.group_mut().filter = "MATCH".into();
+        app.models.group_mut().highlighted = Some("hidden".into());
+        for (width, height) in [(80, 24), (120, 32)] {
+            let buffer = picker_buffer(&app, width, height);
+            let list = picker_list_text(&buffer);
+            assert!(
+                list.contains("match-voice") && list.contains("match-reply"),
+                "{list}"
+            );
+            assert!(list.contains("Voice & transcription") && list.contains("Reasoning & reply"));
+            assert!(!list.contains("hidden"));
+        }
+        app.models.group_mut().filter = "no such model".into();
+        app.models.scroll = 100;
+        for (width, height) in [(80, 24), (120, 32)] {
+            let buffer = picker_buffer(&app, width, height);
+            let list = picker_list_text(&buffer);
+            let details = rect_text(&buffer, model_columns(model_body(width, height), false).1);
+            assert!(list.contains("No matching models."), "{list}");
+            assert!(!list.contains("> "));
+            assert!(details.contains("No matching model selected."), "{details}");
+            for id in ["match-voice", "match-reply", "hidden"] {
+                assert!(!details.contains(id), "{details}");
+            }
+        }
+        app.models.filtering = true;
+        assert!(rendered(&app, 80, 24).contains("Navigation shortcuts disabled"));
+    }
+
+    #[test]
+    fn models_status_wraps_and_retains_cached_standalone_adapter() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Models;
+        app.catalog.entries = vec![picker_entry(
+            "cached-voice-fixture",
+            "whisper",
+            Some(ModelPurpose::Transcript),
+        )];
         app.adapter_cache
             .insert("whisper".into(), super::super::rebuild::CacheStatus::Cached);
-        let text = rendered(&app, 100, 30);
-        assert!(text.contains("fixture  cached"));
-        assert!(text.contains("Adapter:      cached"));
-        assert!(!text.contains("not compiled"));
+        let buffer = picker_buffer(&app, 80, 24);
+        let list = picker_list_text(&buffer);
+        assert_picker_highlight(&buffer, "cached-voice-fixture");
+        assert!(list.contains("Present (not verified) | cached"), "{list}");
+        let details = rect_text(&buffer, model_columns(model_body(80, 24), false).1);
+        assert!(details.contains("Standalone:      cached"), "{details}");
+    }
+
+    #[test]
+    fn models_reply_distinguishes_artifact_presence_from_runtime_at_both_sizes() {
+        for missing in [false, true] {
+            let mut app = super::super::app::tests::test_app();
+            app.screen = Screen::Models;
+            let mut entry = picker_entry("reply-fixture", "whisper", Some(ModelPurpose::Reply));
+            entry.adapter_compiled = true;
+            if missing {
+                entry.missing_paths.push("reply.gguf".into());
+            }
+            app.catalog.entries.push(entry);
+            for (width, height) in [(80, 24), (120, 32)] {
+                let buffer = picker_buffer(&app, width, height);
+                assert_picker_highlight(&buffer, "reply-fixture");
+                let details = rect_text(&buffer, model_columns(model_body(width, height), false).1);
+                assert!(
+                    details.contains("Purpose:         Reasoning & reply"),
+                    "{details}"
+                );
+                assert!(
+                    details.contains("Server-owned reply runtime; not local STT."),
+                    "{details}"
+                );
+                assert!(
+                    details.contains("Files do not establish runtime readiness."),
+                    "{details}"
+                );
+                assert!(
+                    details.contains(if missing {
+                        "Artifacts:       missing"
+                    } else {
+                        "Artifacts:       present (not verified)"
+                    }),
+                    "{details}"
+                );
+                let text = rendered(&app, width, height);
+                assert!(text.contains("[o] Roles"), "{text}");
+                assert!(text.contains("[r] Rescan"), "{text}");
+                assert!(!text.contains("opens the existing standalone"));
+            }
+        }
+    }
+
+    #[test]
+    fn models_selection_skips_headings_and_scrolls_to_highlight() {
+        for (width, height) in [(80, 24), (120, 32)] {
+            let mut app = super::super::app::tests::test_app();
+            app.screen = Screen::Models;
+            for purpose in [ModelPurpose::Transcript, ModelPurpose::Reply] {
+                for index in 0..20 {
+                    let prefix = if purpose == ModelPurpose::Transcript {
+                        "voice"
+                    } else {
+                        "reply"
+                    };
+                    app.catalog.entries.push(picker_entry(
+                        &format!("{prefix}-{index:02}"),
+                        "custom",
+                        Some(purpose),
+                    ));
+                }
+            }
+            app.models.group_mut().highlighted = Some("voice-19".into());
+            assert_picker_highlight(&picker_buffer(&app, width, height), "voice-19");
+            app.models.move_selection(&app.catalog, 1);
+            assert_picker_highlight(&picker_buffer(&app, width, height), "reply-00");
+            app.models.move_selection(&app.catalog, -1);
+            assert_picker_highlight(&picker_buffer(&app, width, height), "voice-19");
+            app.models.group_mut().highlighted = Some("reply-19".into());
+            app.models.move_selection(&app.catalog, 1);
+            assert_picker_highlight(&picker_buffer(&app, width, height), "reply-19");
+        }
+    }
+
+    #[test]
+    fn download_progress_stays_below_right_details_with_header_and_list_visible() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Models;
+        app.catalog.entries = vec![picker_entry(
+            "voice-fixture",
+            "whisper",
+            Some(ModelPurpose::Transcript),
+        )];
+        for (width, height) in [(80, 24), (120, 32)] {
+            let (list, details, progress) = model_columns(model_body(width, height), true);
+            let progress = progress.unwrap();
+            assert_eq!(progress.x, details.x);
+            assert_eq!(progress.width, details.width);
+            assert_eq!(progress.y, details.bottom());
+            assert!(progress.x >= list.right());
+            assert!(progress.width < width);
+            for percent in [Some(67), None] {
+                let download = DownloadProgress {
+                    percent,
+                    message: "Downloading pinned artifact".into(),
+                };
+                let mut terminal =
+                    ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height))
+                        .unwrap();
+                terminal
+                    .draw(|frame| {
+                        draw(frame, &app);
+                        super::super::workspace_ui::model_details(
+                            frame,
+                            &app,
+                            app.models.selected(&app.catalog),
+                            details,
+                        );
+                        draw_model_progress(
+                            frame,
+                            progress,
+                            "voice-fixture",
+                            &download,
+                            "old output\nrecent output",
+                        );
+                    })
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                assert!(rect_text(buffer, Rect::new(0, 0, width, 3)).contains("PHEME VA / MODELS"));
+                assert!(rect_text(buffer, list).contains("MANIFEST ENTRIES"));
+                assert!(rect_text(buffer, details).contains("MODEL DETAILS"));
+                let text = rect_text(buffer, progress);
+                assert!(text.contains("LOCAL DOWNLOAD"), "{text}");
+                assert!(text.contains("[F7] Cancel"), "{text}");
+                assert!(
+                    text.contains(if percent.is_some() {
+                        "67%"
+                    } else {
+                        "unavailable"
+                    }),
+                    "{text}"
+                );
+                assert!(
+                    text.contains("recent output") && !text.contains("old output"),
+                    "{text}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn selected_download_outcomes_remain_below_details_without_a_task() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Models;
+        app.catalog.entries = vec![
+            picker_entry("voice-fixture", "whisper", Some(ModelPurpose::Transcript)),
+            picker_entry("reply-fixture", "qwen", Some(ModelPurpose::Reply)),
+        ];
+        app.models.group_mut().highlighted = Some("voice-fixture".into());
+        assert!(app.download.is_none());
+        assert!(app.build.is_none());
+        assert!(app.models.verification.is_none());
+        for status in [
+            "Completed (checksum verified)",
+            "Failed: fixture checksum mismatch",
+            "Cancelled (partial files retained)",
+        ] {
+            app.models
+                .download_status
+                .insert("voice-fixture".into(), status.into());
+            for (width, height) in [(80, 24), (120, 32)] {
+                let buffer = picker_buffer(&app, width, height);
+                let (list, details, progress) = model_columns(model_body(width, height), true);
+                let progress = progress.unwrap();
+                assert_eq!(progress.x, details.x);
+                assert_eq!(progress.width, details.width);
+                assert_eq!(progress.y, details.bottom());
+                assert!(progress.x >= list.right());
+                assert!(rect_text(&buffer, list).contains("MANIFEST ENTRIES"));
+                assert!(rect_text(&buffer, list).contains("reply-fixture"));
+                assert_picker_highlight(&buffer, "voice-fixture");
+                let info = rect_text(&buffer, details);
+                assert!(
+                    info.contains("MODEL DETAILS") && info.contains("voice-fixture"),
+                    "{info}"
+                );
+                let retained = rect_text(&buffer, progress);
+                assert!(retained.contains("LOCAL DOWNLOAD STATUS"), "{retained}");
+                assert!(retained.contains("Model: voice-fixture"), "{retained}");
+                assert!(retained.contains(status), "{retained}");
+                assert!(!rect_text(&buffer, buffer.area).contains("[F7] Cancel"));
+                assert!(rect_text(&buffer, Rect::new(0, 0, width, 3)).contains("PHEME VA / MODELS"));
+            }
+        }
+    }
+
+    #[test]
+    fn retained_download_panel_tracks_selection_and_clears_on_rescan_or_entry_removal() {
+        for (width, height) in [(80, 24), (120, 32)] {
+            let mut app = super::super::app::tests::test_app();
+            app.screen = Screen::Models;
+            app.catalog.entries = vec![
+                picker_entry("voice-fixture", "whisper", Some(ModelPurpose::Transcript)),
+                picker_entry("reply-fixture", "qwen", Some(ModelPurpose::Reply)),
+            ];
+            app.models.group_mut().highlighted = Some("voice-fixture".into());
+            app.models
+                .download_status
+                .insert("voice-fixture".into(), "Completed (verified)".into());
+            let (_, details, progress) = model_columns(model_body(width, height), true);
+            let progress = progress.unwrap();
+            let full_details = model_columns(model_body(width, height), false).1;
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            assert!(
+                rect_text(terminal.backend().buffer(), progress).contains("LOCAL DOWNLOAD STATUS")
+            );
+
+            app.models.group_mut().highlighted = Some("reply-fixture".into());
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(!rect_text(buffer, full_details).contains("LOCAL DOWNLOAD STATUS"));
+            assert!(rect_text(buffer, full_details).contains("reply-fixture"));
+            assert_eq!(buffer[(details.x, progress.y)].symbol(), "│");
+
+            app.models.group_mut().highlighted = Some("voice-fixture".into());
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            assert!(
+                rect_text(terminal.backend().buffer(), progress).contains("LOCAL DOWNLOAD STATUS")
+            );
+            // Rescanning without an active task clears the retained status map.
+            app.models.download_status.clear();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(!rect_text(buffer, full_details).contains("LOCAL DOWNLOAD STATUS"));
+            assert_eq!(buffer[(details.x, progress.y)].symbol(), "│");
+
+            app.models
+                .download_status
+                .insert("voice-fixture".into(), "Completed (verified)".into());
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            assert!(
+                rect_text(terminal.backend().buffer(), progress).contains("LOCAL DOWNLOAD STATUS")
+            );
+            app.catalog
+                .entries
+                .retain(|entry| entry.manifest.id != "voice-fixture");
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(app.models.download_status.contains_key("voice-fixture"));
+            assert!(!rect_text(buffer, full_details).contains("LOCAL DOWNLOAD STATUS"));
+            assert!(rect_text(buffer, full_details).contains("reply-fixture"));
+            assert!(picker_list_text(buffer).contains("MANIFEST ENTRIES"));
+            assert!(!picker_list_text(buffer).contains("voice-fixture"));
+
+            app.catalog.entries.clear();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            assert!(!rect_text(buffer, full_details).contains("LOCAL DOWNLOAD STATUS"));
+            assert!(rect_text(buffer, full_details).contains("No matching model selected."));
+        }
+    }
+
+    #[test]
+    fn bench_keeps_workspace_navigation_and_shortcuts_visible() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Bench;
+        for (width, height) in [(80, 24), (120, 32), (190, 44)] {
+            let mut terminal =
+                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw(frame, &app)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let header = buffer.content[..usize::from(width) * 3]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(header.contains("PHEME VA / TEST BENCH"));
+            assert!(header.contains("Active STT:"));
+            for label in [
+                "1 Web",
+                "2 Tests",
+                "3 Models",
+                "4 Telemetry",
+                "[w] Web",
+                "[m] Models",
+            ] {
+                assert!(
+                    !header.contains(label),
+                    "unexpected navigation {label}: {header}"
+                );
+            }
+            let footer = buffer.content[usize::from(width) * usize::from(height - 2)..]
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for shortcut in [
+                "[w] Web",
+                "[m] Models",
+                "[t] Telemetry",
+                "[r] Retry",
+                "[n] Next file",
+                "[f] Folder",
+                "[l] Mic",
+                "[j/k] Scroll",
+                "[?] Help",
+                "[q] Quit",
+                "[Esc] Back",
+            ] {
+                assert!(
+                    footer.contains(shortcut),
+                    "missing {shortcut} at {width}x{height}: {footer}"
+                );
+            }
+            assert!(!footer.contains("[b]"), "{footer}");
+            let rows = (height - 2..height)
+                .map(|y| rect_text(buffer, Rect::new(0, y, width, 1)))
+                .filter(|row| !row.trim().is_empty())
+                .collect::<Vec<_>>();
+            if width == 190 {
+                assert_eq!(rows.len(), 1, "{rows:?}");
+                assert!(rows[0].ends_with("[j/k] Scroll"), "{}", rows[0]);
+                let last = width - "[j/k] Scroll".width() as u16;
+                assert_eq!(buffer[(last, height - 2)].symbol(), "[");
+                assert!(last > width * 9 / 10);
+            } else if width == 80 {
+                assert_eq!(rows.len(), 2, "{rows:?}");
+            }
+            let text = buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for panel in ["SOURCE", "FINAL TRANSCRIPT", "RUN DETAILS", "METRICS"] {
+                assert!(text.contains(panel), "missing {panel} at {width}x{height}");
+            }
+        }
+    }
+
+    #[test]
+    fn bench_status_and_errors_never_overwrite_shortcuts_or_panels() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Bench;
+        app.status_message = "footer status fixture".into();
+        for (width, height) in [(80, 24), (190, 44)] {
+            for error in [None, Some("recoverable UI fixture".to_owned())] {
+                app.error_message = error;
+                let buffer = picker_buffer(&app, width, height);
+                let status = rect_text(&buffer, Rect::new(0, height - 3, width, 1));
+                let footer = rect_text(&buffer, Rect::new(0, height - 2, width, 2));
+                assert!(
+                    status.contains(if app.error_message.is_some() {
+                        "Error: recoverable UI fixture"
+                    } else {
+                        "footer status fixture"
+                    }),
+                    "{status}"
+                );
+                for hint in [
+                    "[w] Web",
+                    "[m] Models",
+                    "[t] Telemetry",
+                    "[q] Quit",
+                    "[Esc] Back",
+                    "[?] Help",
+                    "[r] Retry",
+                    "[n] Next file",
+                    "[f] Folder",
+                    "[l] Mic",
+                    "[j/k] Scroll",
+                ] {
+                    assert!(footer.contains(hint), "missing {hint}: {footer}");
+                    assert!(!status.contains(hint), "{status}");
+                }
+                assert!(!footer.contains("fixture"), "{footer}");
+                assert!(rect_text(&buffer, Rect::new(0, 3, width, height - 6)).contains("METRICS"));
+            }
+        }
+    }
+
+    #[test]
+    fn help_uses_alphabet_workspace_guidance_and_telemetry_retains_numeric_tabs() {
+        let mut app = super::super::app::tests::test_app();
+        for (width, height) in [(80, 24), (120, 32)] {
+            app.screen = Screen::Help;
+            let text = rendered(&app, width, height);
+            assert!(text.contains("[w] Web | [m] Models | [t] Telemetry | [b] Tests/back"));
+            for label in ["1 Web", "2 Tests", "3 Models", "4 Telemetry"] {
+                assert!(!text.contains(label), "{text}");
+            }
+            assert!(text.contains("Workspace (outside Telemetry)"));
+            assert!(text.contains("Telemetry (1–4 switch telemetry views; Esc returns)"));
+            assert!(text.contains("[1] overview  [2] live metrics  [3] runs/reports  [4] logs"));
+            let help_buffer = picker_buffer(&app, width, height);
+            let help_footer = rect_text(&help_buffer, Rect::new(0, height - 2, width, 2));
+            assert!(help_footer.contains("[Esc] Back"), "{help_footer}");
+            assert!(help_footer.contains("[?] close"), "{help_footer}");
+            assert!(!help_footer.contains("[?] Help"), "{help_footer}");
+            app.screen = Screen::Telemetry;
+            let text = rendered(&app, width, height);
+            for label in [
+                "[1] Overview",
+                "[2] Metrics",
+                "[3] Runs",
+                "[4] Logs",
+                "[1-4] tab",
+            ] {
+                assert!(text.contains(label), "{text}");
+            }
+            for label in [
+                "[w] Web",
+                "[m] Models",
+                "[b] Tests/back",
+                "[q] Quit",
+                "[Esc] Back",
+            ] {
+                assert!(text.contains(label), "{text}");
+            }
+            let telemetry_buffer = picker_buffer(&app, width, height);
+            let telemetry_footer = rect_text(&telemetry_buffer, Rect::new(0, height - 3, width, 3));
+            assert!(!telemetry_footer.contains("[t]"), "{telemetry_footer}");
+            for label in [
+                "F1",
+                "F2",
+                "F3",
+                "F4",
+                "1 Web",
+                "2 Tests",
+                "3 Models",
+                "4 Telemetry",
+            ] {
+                assert!(!text.contains(label), "{text}");
+            }
+        }
+    }
+
+    #[test]
+    fn telemetry_narrow_footers_wrap_all_keys_and_keep_nested_actions() {
+        let mut app = super::super::app::tests::test_app();
+        app.screen = Screen::Telemetry;
+        for tab in [
+            TelemetryTab::Overview,
+            TelemetryTab::Metrics,
+            TelemetryTab::Runs,
+            TelemetryTab::Logs,
+        ] {
+            app.telemetry_tab = tab;
+            let footer = telemetry_footer(&app);
+            let height = super::super::workspace_ui::footer_height(&footer, 80).max(3);
+            let buffer = picker_buffer(&app, 80, 24);
+            let hints = rect_text(&buffer, Rect::new(0, 24 - height, 80, height));
+            for hint in [
+                "[w] Web",
+                "[m] Models",
+                "[b] Tests/back",
+                "[q] Quit",
+                "[Esc] Back",
+                "[1-4] tab",
+                "[j/k ↑/↓] select/scroll",
+                "[Enter] open",
+                "[/] search",
+                "[x] clear",
+                "Search: (none)",
+            ] {
+                assert!(hints.contains(hint), "missing {hint}: {hints}");
+            }
+            if matches!(tab, TelemetryTab::Runs | TelemetryTab::Logs) {
+                assert!(
+                    hints.contains(if tab == TelemetryTab::Runs {
+                        "[c] clear all runs"
+                    } else {
+                        "[c] clear logs"
+                    }),
+                    "{hints}"
+                );
+            }
+            assert!(!hints.contains("[t]"), "{hints}");
+        }
+        app.filter_editing = true;
+        app.filter_query = "typed filter".into();
+        let buffer = picker_buffer(&app, 80, 24);
+        let hints = rect_text(&buffer, Rect::new(0, 21, 80, 3));
+        for hint in [
+            "[Enter/Esc] finish",
+            "[Backspace] delete",
+            "Search: typed filter_",
+        ] {
+            assert!(hints.contains(hint), "{hints}");
+        }
+        for key in ["[w]", "[m]", "[b]", "[t]", "[q]", "[Esc] Back"] {
+            assert!(!hints.contains(key), "{hints}");
+        }
+        app.filter_editing = false;
+        app.clear_runs_pending = true;
+        let buffer = picker_buffer(&app, 80, 24);
+        let hints = rect_text(&buffer, Rect::new(0, 21, 80, 3));
+        assert!(hints.contains("[y] confirm"), "{hints}");
+        assert!(hints.contains("[Esc] cancel"), "{hints}");
+        assert!(!hints.contains("[Esc] Back"), "{hints}");
+        app.clear_runs_pending = false;
+        app.run_detail = true;
+        app.telemetry_tab = TelemetryTab::Runs;
+        for historical_detail in [false, true] {
+            app.historical_detail = historical_detail;
+            let footer = telemetry_footer(&app);
+            let height = super::super::workspace_ui::footer_height(&footer, 80).max(3);
+            let buffer = picker_buffer(&app, 80, 24);
+            let hints = rect_text(&buffer, Rect::new(0, 24 - height, 80, height));
+            assert!(
+                hints.contains(if historical_detail {
+                    "[Esc] Close detail (report)"
+                } else {
+                    "[Esc] Close report (runs)"
+                }),
+                "{hints}"
+            );
+            assert!(!hints.contains("[Esc] Back"), "{hints}");
+            for hint in [
+                "[n/N] run",
+                "[PgUp/PgDn]",
+                "[/] highlight",
+                "[c] clear all runs",
+            ] {
+                assert!(hints.contains(hint), "{hints}");
+            }
+        }
     }
 
     fn rendered(app: &App, width: u16, height: u16) -> String {

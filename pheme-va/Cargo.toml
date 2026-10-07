@@ -8,6 +8,8 @@ members = [
     "crates/metrics",
     "crates/models/whispercpp",
     "crates/models/zipformer",
+    "crates/models/reply",
+    "crates/models/reply/native",
 ]
 
 [workspace.package]

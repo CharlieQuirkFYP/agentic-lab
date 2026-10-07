@@ -1,0 +1,49 @@
+name: Voice Stack CI
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "api/**"
+      - "pheme-va/**"
+      - "web/src/lib/voice/**"
+      - "tests/**"
+      - ".github/workflows/voice-stack-ci.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  voice-stack:
+    name: Fake-backed Go and Pheme Voice Integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: api/go.mod
+          cache-dependency-path: api/go.sum
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 22
+
+      - name: Build Pheme host without weights
+        working-directory: pheme-va
+        run: cargo build --locked -p server
+
+      - name: Build Go public API
+        working-directory: api
+        run: go build -o ../pheme-va/target/integration-api ./cmd/server
+
+      - name: Verify web-owned turns and isolated tests
+        run: node --test tests/voice-stack.test.mjs

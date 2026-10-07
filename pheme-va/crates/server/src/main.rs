@@ -1,11 +1,14 @@
-use std::path::{Path, PathBuf};
+mod startup;
+mod voice;
+
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use axum::body::Bytes;
-use axum::extract::State;
+use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -21,8 +24,46 @@ use va_core::{analyze_with_metrics, Engine, RuleBasedIncidentAnalyzer};
 #[derive(Debug, Parser)]
 #[command(name = "server", about = "HTTP wrapper around the Pheme VA core")]
 struct Args {
-    #[arg(long, env = "PHEME_VA_WHISPER_MODEL")]
-    model: PathBuf,
+    #[arg(long, env = "PHEME_VA_WHISPER_MODEL", conflicts_with = "stt_model")]
+    model: Option<PathBuf>,
+    #[arg(long, conflicts_with = "model")]
+    stt_model: Option<String>,
+    #[arg(long, conflicts_with = "reply_path")]
+    reply_model: Option<String>,
+    #[arg(long, env = "PHEME_VA_REPLY_MODEL", conflicts_with = "reply_model")]
+    reply_path: Option<PathBuf>,
+    #[arg(long, default_value = "models/manifest.toml")]
+    model_manifest: PathBuf,
+    #[arg(long)]
+    startup_choices: Option<PathBuf>,
+    #[arg(long, conflicts_with = "prompt_files")]
+    system_prompt: Option<PathBuf>,
+    /// Trusted local role files, composed in flag order on this startup only.
+    /// Relative paths use the host working directory, like --system-prompt.
+    #[arg(long = "prompt-file", action = clap::ArgAction::Append, conflicts_with = "system_prompt")]
+    prompt_files: Vec<PathBuf>,
+    #[arg(long, default_value_t = 4)]
+    threads: i32,
+    #[arg(long, default_value_t = 0)]
+    gpu_layers: u32,
+    #[arg(long, default_value_t = 4096)]
+    context_size: u32,
+    #[arg(long, default_value_t = 512)]
+    max_output_tokens: u32,
+    #[arg(long, default_value_t = 0.2)]
+    temperature: f32,
+    #[arg(long, default_value_t = 12000)]
+    max_input_chars: usize,
+    #[arg(long, default_value_t = 4000)]
+    max_output_chars: usize,
+    #[arg(long, default_value_t = 6)]
+    max_history_turns: usize,
+    #[arg(long, default_value_t = 300)]
+    max_review_seconds: u64,
+    #[arg(long, default_value_t = 120)]
+    max_generation_seconds: u64,
+    #[arg(long, default_value_t = 180)]
+    max_transcription_seconds: u64,
     #[arg(long, default_value = "127.0.0.1:8000")]
     bind: String,
     #[arg(long, default_value_t = 120)]
@@ -41,7 +82,8 @@ struct Args {
 
 #[derive(Clone)]
 struct AppState {
-    engine: Arc<Mutex<Engine>>,
+    engine: Option<Arc<Mutex<Engine>>>,
+    voice: Arc<voice::Voice>,
     metrics_hub: Arc<MetricsHub>,
     metrics_batcher: Arc<MetricsBatcher>,
     _metrics_subscription: Arc<MetricsSubscription>,
@@ -74,17 +116,26 @@ struct ErrorDetail {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    let engine = create_engine(
-        &args.model,
-        args.max_seconds,
-        args.language,
-        args.dictionary,
-    )?;
+    let started = std::time::Instant::now();
+    let runtimes = startup::load(&args)?;
+    let voice = voice::Voice::new(
+        runtimes.engine.as_ref(),
+        runtimes.reply,
+        runtimes.prompt,
+        voice::Limits {
+            conversation: runtimes.conversation,
+            review_timeout: std::time::Duration::from_secs(args.max_review_seconds),
+            generation_timeout: std::time::Duration::from_secs(args.max_generation_seconds),
+            transcription_timeout: std::time::Duration::from_secs(args.max_transcription_seconds),
+            ..Default::default()
+        },
+    );
     let metrics_hub = Arc::new(MetricsHub::new());
     let metrics_batcher = Arc::new(MetricsBatcher::new());
     let metrics_subscription = Arc::new(metrics_hub.subscribe(Arc::clone(&metrics_batcher)));
     let state = AppState {
-        engine: Arc::new(Mutex::new(engine)),
+        engine: runtimes.engine.map(|engine| Arc::new(Mutex::new(engine))),
+        voice,
         metrics_hub,
         metrics_batcher,
         _metrics_subscription: metrics_subscription,
@@ -95,66 +146,67 @@ async fn main() -> Result<()> {
         },
         resource_sampler: Arc::new(Mutex::new(SysinfoResourceSampler::new())),
     };
+    let startup_metrics = request_metrics(&state, &HeaderMap::new(), false);
+    startup_metrics.record_model_timing(
+        "stt_model_load_ms",
+        runtimes.stt_load_ms,
+        "server.startup",
+    );
+    startup_metrics.record_model_timing(
+        "reply_model_load_ms",
+        runtimes.reply_load_ms,
+        "server.startup",
+    );
+    startup_metrics.record_model_timing(
+        "server_startup_ms",
+        Some(started.elapsed().as_secs_f64() * 1000.0),
+        "server.startup",
+    );
     let address: std::net::SocketAddr = args
         .bind
         .parse()
         .with_context(|| format!("invalid bind address {}", args.bind))?;
-    let app = Router::new()
-        .route("/health", get(health))
-        .route("/ready", get(ready))
-        .route("/v1/transcribe", post(transcribe))
-        .route("/v1/analyze", post(analyze))
-        .route("/v1/metrics/batches", get(metrics_batches))
-        .with_state(state);
+    if !address.ip().is_loopback() {
+        eprintln!("WARNING: voice inspection/mutations expose a single development conversation; protect this listener with authentication and TLS at the Go/reverse-proxy boundary.");
+    }
+    let shutdown_state = state.clone();
+    let app = router(state);
 
     println!("server listening on http://{address}");
     println!("POST audio/wav to /v1/transcribe");
     axum::serve(tokio::net::TcpListener::bind(address).await?, app)
+        .with_graceful_shutdown(shutdown(shutdown_state))
         .await
         .context("Pheme VA server stopped")?;
     Ok(())
 }
 
-#[cfg(feature = "whisper")]
-fn create_engine(
-    model: &Path,
-    max_seconds: u32,
-    language: Option<String>,
-    dictionary: Vec<String>,
-) -> Result<Engine> {
-    use va_core::{DictionaryHints, EngineConfig, RuleBasedFormatter};
-    use whispercpp::{WhisperConfig, WhisperTranscriber};
-
-    let transcriber = WhisperTranscriber::from_file(
-        model,
-        WhisperConfig {
-            threads: std::thread::available_parallelism()
-                .map(|threads| threads.get().min(8) as i32)
-                .unwrap_or(4),
-            use_gpu: cfg!(feature = "whisper-metal"),
-            flash_attention: false,
-        },
-    )
-    .with_context(|| format!("failed to load Whisper model {}", model.display()))?;
-    let config = EngineConfig {
-        max_audio_seconds: Some(max_seconds),
-        language,
-        dictionary: DictionaryHints::with_terms(dictionary),
-        ..EngineConfig::default()
-    };
-    Ok(Engine::with_config(transcriber, config).with_cleaner(RuleBasedFormatter))
+fn router(state: AppState) -> Router {
+    Router::new()
+        .route("/health", get(health))
+        .route("/ready", get(ready))
+        .route("/v1/transcribe", post(transcribe))
+        .route("/v1/analyze", post(analyze))
+        .route("/v1/metrics/batches", get(metrics_batches))
+        .merge(voice::routes())
+        .layer(DefaultBodyLimit::max(state.voice.limits.max_body_bytes))
+        .with_state(state)
 }
 
-#[cfg(not(feature = "whisper"))]
-fn create_engine(
-    _model: &Path,
-    _max_seconds: u32,
-    _language: Option<String>,
-    _dictionary: Vec<String>,
-) -> Result<Engine> {
-    Err(anyhow!(
-        "this binary was built without Whisper support; run with `cargo run --release -p server --features whisper -- --model <path>`"
-    ))
+async fn shutdown(state: AppState) {
+    #[cfg(unix)]
+    {
+        let mut terminate =
+            tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+                .expect("install SIGTERM handler");
+        tokio::select! {
+            _ = tokio::signal::ctrl_c() => {},
+            _ = terminate.recv() => {},
+        }
+    }
+    #[cfg(not(unix))]
+    let _ = tokio::signal::ctrl_c().await;
+    state.voice.shutdown().await;
 }
 
 async fn health() -> Json<HealthResponse> {
@@ -162,11 +214,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn ready(State(state): State<AppState>) -> Response {
-    let ready = state
-        .engine
-        .lock()
-        .map(|engine| engine.is_ready())
-        .unwrap_or(false);
+    let ready = state.voice.stt.ready;
     if ready {
         Json(HealthResponse { status: "ready" }).into_response()
     } else {
@@ -203,11 +251,22 @@ async fn transcribe(State(state): State<AppState>, headers: HeaderMap, body: Byt
         );
     }
 
+    let lease = match state.voice.begin_inference() {
+        Ok(lease) => lease,
+        Err(error) => return error.into_response(),
+    };
+    let Some(engine) = state.engine.clone() else {
+        return api_error(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "runtime_unavailable",
+            "Transcription runtime is unavailable.",
+        );
+    };
     let metrics = request_metrics(&state, &headers, false);
     let metrics_for_sampling = metrics.clone();
     let resource_sampler = Arc::clone(&state.resource_sampler);
-    let engine = Arc::clone(&state.engine);
-    let result = tokio::task::spawn_blocking(move || {
+    let mut task = tokio::task::spawn_blocking(move || {
+        let _lease = lease;
         sample_resources(&resource_sampler, &metrics_for_sampling);
         let result = (|| {
             let mut engine = engine
@@ -221,8 +280,18 @@ async fn transcribe(State(state): State<AppState>, headers: HeaderMap, body: Byt
         })();
         sample_resources(&resource_sampler, &metrics_for_sampling);
         result
-    })
-    .await;
+    });
+    let result =
+        match tokio::time::timeout(state.voice.limits.transcription_timeout, &mut task).await {
+            Ok(result) => result,
+            Err(_) => {
+                return api_error(
+                    StatusCode::GATEWAY_TIMEOUT,
+                    "transcription_timeout",
+                    "Transcription timed out; runtime remains busy until native work settles.",
+                )
+            }
+        };
 
     match result {
         Ok(Ok(transcription)) => Json(transcription).into_response(),
@@ -361,4 +430,64 @@ fn api_error(status: StatusCode, code: &'static str, message: &'static str) -> R
         }),
     )
         .into_response()
+}
+
+#[cfg(test)]
+mod args_tests {
+    use super::*;
+
+    #[test]
+    fn repeatable_prompt_files_preserve_flag_order_and_host_relative_paths() {
+        let args = Args::try_parse_from([
+            "server",
+            "--reply-model",
+            "reply",
+            "--prompt-file",
+            "roles/second.txt",
+            "--prompt-file",
+            "roles/first.txt",
+        ])
+        .unwrap();
+        assert_eq!(
+            args.prompt_files,
+            vec![
+                PathBuf::from("roles/second.txt"),
+                PathBuf::from("roles/first.txt")
+            ]
+        );
+        assert!(args.system_prompt.is_none());
+    }
+
+    #[test]
+    fn prompt_file_and_legacy_system_prompt_flags_are_mutually_exclusive() {
+        for flags in [
+            vec![
+                "server",
+                "--prompt-file",
+                "first.txt",
+                "--system-prompt",
+                "second.txt",
+            ],
+            vec![
+                "server",
+                "--system-prompt",
+                "first.txt",
+                "--prompt-file",
+                "second.txt",
+            ],
+            vec!["server", "--prompt-file"],
+        ] {
+            assert!(Args::try_parse_from(flags).is_err());
+        }
+        let args = Args::try_parse_from([
+            "server",
+            "--reply-path",
+            "local.gguf",
+            "--system-prompt",
+            "role.txt",
+        ])
+        .unwrap();
+        assert_eq!(args.system_prompt, Some(PathBuf::from("role.txt")));
+        assert!(args.prompt_files.is_empty());
+    }
 }

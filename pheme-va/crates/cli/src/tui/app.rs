@@ -22,10 +22,18 @@ use super::rebuild::{BuildTask, CacheProbeTask, CacheStatus};
 use super::telemetry::{SeriesKey, TelemetryStore};
 use super::TuiOptions;
 
+#[path = "workspace.rs"]
+mod workspace;
+
+const NAVIGATION_HISTORY_LIMIT: usize = 64;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Screen {
+    Web,
+    WebEditor,
+    ServerTests,
+    Models,
     Welcome,
-    Picker,
     Loading,
     Bench,
     Folder,
@@ -53,6 +61,7 @@ pub enum AdapterAvailability {
     Cached,
     Checking,
     Prepare,
+    ReasoningModel,
 }
 
 impl AdapterAvailability {
@@ -64,6 +73,7 @@ impl AdapterAvailability {
             Self::Cached => "cached",
             Self::Checking => "checking cache",
             Self::Prepare => "prepare on selection",
+            Self::ReasoningModel => "reasoning/reply (server)",
         }
     }
 
@@ -100,8 +110,12 @@ pub struct ResultState {
 }
 
 pub struct App {
+    pub voice: super::voice::VoiceState,
+    pub models: super::model_actions::ModelActions,
+    pub playback: Option<super::playback::Playback>,
+    download_reapers: Vec<std::thread::JoinHandle<()>>,
     pub screen: Screen,
-    pub previous_screen: Screen,
+    navigation_history: Vec<Screen>,
     pub telemetry_tab: TelemetryTab,
     pub config: TuiConfig,
     pub config_path: PathBuf,
@@ -174,15 +188,19 @@ impl App {
         let onboarding = options.reconfigure
             || (!config_loaded && options.model_id.is_none())
             || catalog.error.is_some();
-        let startup_load = !onboarding && (options.model_id.is_some() || has_valid_saved_model);
-        let screen = if catalog.error.is_some() {
+        let startup_load = options.server_url.is_none()
+            && !onboarding
+            && (options.model_id.is_some() || has_valid_saved_model);
+        let screen = if options.server_url.is_some() {
+            Screen::Web
+        } else if catalog.error.is_some() {
             Screen::Error
         } else if onboarding {
             Screen::Welcome
         } else if startup_load {
             Screen::Loading
         } else {
-            Screen::Picker
+            Screen::Models
         };
         let mut logs = LogStore::default();
         if let Some(error) = catalog.error.as_deref() {
@@ -205,10 +223,18 @@ impl App {
             logs.info("onboarding", "no saved TUI configuration found");
         }
         let directory_input = config.audio_directory.display().to_string();
+        let mut models = super::model_actions::ModelActions::default();
+        models.group_mut().highlighted = catalog
+            .entry(selected_index)
+            .map(|entry| entry.manifest.id.clone());
 
         Self {
+            voice: super::voice::VoiceState::new(options.server_url.clone()),
+            models,
+            playback: None,
+            download_reapers: Vec::new(),
             screen,
-            previous_screen: Screen::Bench,
+            navigation_history: Vec::new(),
             telemetry_tab: TelemetryTab::Overview,
             folder: FolderState::new(config.audio_directory.clone()),
             config_path: config::config_path(),
@@ -269,6 +295,10 @@ impl App {
     }
 
     pub fn start_initial_load(&mut self) {
+        if self.voice.connected_mode() {
+            self.voice.start();
+            return;
+        }
         if self.startup_load {
             let model_id = self.config.selected_stt_model.clone();
             self.send_load_model(model_id, None);
@@ -277,6 +307,9 @@ impl App {
     }
 
     pub fn start_cache_probe(&mut self) {
+        if self.voice.connected_mode() {
+            return;
+        }
         let families = self
             .catalog
             .entries
@@ -344,7 +377,11 @@ impl App {
         &self,
         entry: &super::model_catalog::CatalogEntry,
     ) -> AdapterAvailability {
-        if !model::family_supported(&entry.manifest.family) {
+        if entry.manifest.purpose() == Some(model::ModelPurpose::Reply) {
+            AdapterAvailability::ReasoningModel
+        } else if entry.manifest.purpose() != Some(model::ModelPurpose::Transcript)
+            || !model::family_supported(&entry.manifest.family)
+        {
             AdapterAvailability::Unsupported
         } else if !entry.artifacts_available() {
             AdapterAvailability::ArtifactMissing
@@ -365,6 +402,7 @@ impl App {
     }
 
     pub fn tick(&mut self) {
+        self.tick_workspace();
         self.drain_metrics();
         self.drain_worker_events();
         self.poll_cache_probe();
@@ -374,7 +412,12 @@ impl App {
         self.persist_history();
         self.poll_history();
         if self.recording.as_ref().is_some_and(|recording| {
-            recording.elapsed().as_secs() >= self.config.max_seconds as u64
+            recording.elapsed().as_secs()
+                >= if self.voice.connected_mode() {
+                    self.config.max_seconds.min(120) as u64
+                } else {
+                    self.config.max_seconds as u64
+                }
         }) {
             self.stop_recording();
             self.status_message = "maximum recording duration reached".to_owned();
@@ -390,29 +433,38 @@ impl App {
                 let model_id = download.model_id.clone();
                 self.download.take();
                 self.catalog.refresh();
-                if let Some(entry) = self.catalog.entry_by_id(&model_id) {
-                    if !entry.artifacts_available() {
-                        self.error_message = Some(format!(
-                            "download completed but artifacts are still missing: {}",
-                            ModelCatalog::missing_summary(entry)
-                        ));
-                        self.screen = Screen::Picker;
-                    } else if !entry.adapter_compiled {
-                        self.start_adapter_build(&model_id);
-                    } else {
-                        self.send_load_model(
-                            model_id,
-                            self.active_model.as_ref().map(|model| model.id.clone()),
-                        );
-                    }
+                self.sync_model_selection();
+                if !self
+                    .catalog
+                    .entry_by_id(&model_id)
+                    .is_some_and(|entry| entry.artifacts_available())
+                {
+                    self.models.download_status.insert(
+                        model_id,
+                        "Script completed; catalog artifacts missing".into(),
+                    );
+                    self.error_message = Some("script completed but the catalog's artifact paths are still missing; rescan/check the local model root".into());
+                    return;
                 }
+                self.models
+                    .download_status
+                    .insert(model_id.clone(), "Downloaded (script verified)".into());
+                self.status_message = if self.voice.connected_mode() {
+                    format!("{model_id} downloaded locally; choose for next start with s. Active server unchanged.")
+                } else {
+                    format!("{model_id} downloaded locally; Enter prepares available STT, s chooses for next server start.")
+                };
+                self.logs.info("local-model-files", &self.status_message);
             }
             Ok(None) => {}
             Err(error) => {
+                let model_id = download.model_id.clone();
                 self.error_message = Some(format!("{error:#}"));
                 self.logs.error("model-download", format!("{error:#}"));
+                self.models
+                    .download_status
+                    .insert(model_id, "Failed".into());
                 self.download.take();
-                self.screen = Screen::Picker;
             }
         }
     }
@@ -432,12 +484,16 @@ impl App {
                 self.error_message = Some(format!("{error:#}"));
                 self.logs.error("adapter-build", format!("{error:#}"));
                 self.build.take();
-                self.screen = Screen::Picker;
+                self.screen = Screen::Models;
             }
         }
     }
 
     pub fn handle_terminal_event(&mut self, event: Event) -> Result<()> {
+        if let Event::Paste(text) = &event {
+            self.paste_workspace(text);
+            return Ok(());
+        }
         if let Event::Key(key) = event {
             if key.kind != ratatui::crossterm::event::KeyEventKind::Release {
                 if key
@@ -459,6 +515,12 @@ impl App {
     }
 
     fn handle_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.workspace_key(code)? {
+            return Ok(());
+        }
+        if self.screen == Screen::DirectoryInput {
+            return self.handle_directory_key(code);
+        }
         if self.clear_runs_inflight {
             return Ok(());
         }
@@ -482,14 +544,6 @@ impl App {
             }
             return Ok(());
         }
-        if (self.build.is_some() || self.download.is_some())
-            && !matches!(
-                self.screen,
-                Screen::Loading | Screen::Telemetry | Screen::Help
-            )
-        {
-            self.screen = Screen::Loading;
-        }
         if self.filter_editing {
             return self.handle_filter_key(code);
         }
@@ -503,21 +557,21 @@ impl App {
                 return Ok(());
             }
             KeyCode::Char('?') => {
-                self.previous_screen = self.screen;
-                self.screen = Screen::Help;
-                self.scroll = 0;
+                if self.screen == Screen::Help {
+                    self.navigate_back();
+                } else {
+                    self.navigate_to(Screen::Help);
+                }
                 return Ok(());
             }
-            KeyCode::Char('t') if self.screen != Screen::Telemetry => {
-                self.open_telemetry();
-                return Ok(());
-            }
+
             _ => {}
         }
 
         match self.screen {
+            Screen::Web | Screen::WebEditor | Screen::ServerTests | Screen::Models => Ok(()),
             Screen::Welcome => self.handle_welcome_key(code),
-            Screen::Picker => self.handle_picker_key(code),
+
             Screen::Loading => self.handle_loading_key(code),
             Screen::Bench => self.handle_bench_key(code),
             Screen::Folder => self.handle_folder_key(code),
@@ -533,61 +587,23 @@ impl App {
     fn handle_welcome_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Enter | KeyCode::Char('r') => {
-                self.screen = Screen::Picker;
+                self.navigate_to(Screen::Models);
+                self.sync_model_selection();
                 self.error_message = None;
             }
-            KeyCode::Esc => self.should_quit = true,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn handle_picker_key(&mut self, code: KeyCode) -> Result<()> {
-        match code {
-            KeyCode::Up | KeyCode::Char('k') => self.move_catalog(-1),
-            KeyCode::Down | KeyCode::Char('j') => self.move_catalog(1),
-            KeyCode::Enter => self.choose_catalog_model(),
-            KeyCode::Char('r') => {
-                self.catalog.refresh();
-                self.catalog_index = self
-                    .catalog
-                    .selected_index(&self.config.selected_stt_model)
-                    .unwrap_or(0);
-                self.start_cache_probe();
-                self.logs.info("manifest", "rescanned model manifest");
-            }
-            KeyCode::Esc => {
-                if self.active_model.is_some() {
-                    self.screen = Screen::Bench;
-                } else {
-                    self.screen = Screen::Welcome;
-                }
-            }
+            KeyCode::Esc => self.navigate_back(),
             _ => {}
         }
         Ok(())
     }
 
     fn handle_loading_key(&mut self, code: KeyCode) -> Result<()> {
-        if self.download.is_some() {
-            if code == KeyCode::Esc {
-                if let Some(mut download) = self.download.take() {
-                    download.cancel();
-                }
-                self.logs.info(
-                    "model-download",
-                    "download cancelled; partial files were retained",
-                );
-                self.screen = Screen::Picker;
-            }
-            return Ok(());
-        }
         if self.build.is_some() {
             if code == KeyCode::Esc {
                 self.build.take();
                 self.logs
                     .info("adapter-build", "build cancelled; current model retained");
-                self.screen = Screen::Picker;
+                self.navigate_back();
             }
             return Ok(());
         }
@@ -600,14 +616,19 @@ impl App {
                     );
                 }
             }
-            KeyCode::Char('m') if self.current_request.is_none() => self.screen = Screen::Picker,
-            KeyCode::Esc if self.current_request.is_none() => self.return_to_previous_or_bench(),
+
+            KeyCode::Esc if self.current_request.is_none() => self.navigate_back(),
             _ => {}
         }
         Ok(())
     }
 
     fn handle_bench_key(&mut self, code: KeyCode) -> Result<()> {
+        if code == KeyCode::Esc {
+            self.error_message = None;
+            self.navigate_back();
+            return Ok(());
+        }
         if self.current_request.is_some() {
             match code {
                 KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
@@ -620,8 +641,7 @@ impl App {
             KeyCode::Char('l') => self.start_recording(),
             KeyCode::Char('f') => {
                 self.folder.refresh();
-                self.screen = Screen::Folder;
-                self.scroll = 0;
+                self.navigate_to(Screen::Folder);
             }
             KeyCode::Char('n') => {
                 if let Some(path) = self.folder.next_wav() {
@@ -632,21 +652,9 @@ impl App {
                 }
             }
             KeyCode::Char('r') => self.retry_last(),
-            KeyCode::Char('m') => {
-                self.catalog_index = self
-                    .catalog
-                    .selected_index(
-                        self.active_model
-                            .as_ref()
-                            .map(|model| model.id.as_str())
-                            .unwrap_or(&self.config.selected_stt_model),
-                    )
-                    .unwrap_or(0);
-                self.screen = Screen::Picker;
-            }
+
             KeyCode::Char('j') | KeyCode::Down => self.scroll_down(),
             KeyCode::Char('k') | KeyCode::Up => self.scroll_up(),
-            KeyCode::Esc => self.error_message = None,
             _ => {}
         }
         Ok(())
@@ -664,10 +672,10 @@ impl App {
             KeyCode::Char('d') => {
                 self.directory_input = self.folder.directory.display().to_string();
                 self.directory_input_error = None;
-                self.screen = Screen::DirectoryInput;
+                self.navigate_to(Screen::DirectoryInput);
             }
             KeyCode::Char('r') => self.folder.refresh(),
-            KeyCode::Esc => self.screen = Screen::Bench,
+            KeyCode::Esc => self.navigate_back(),
             _ => {}
         }
         Ok(())
@@ -689,7 +697,7 @@ impl App {
                     ));
                 }
                 self.status_message = "recording discarded".to_owned();
-                self.screen = Screen::Bench;
+                self.navigate_back();
             }
             _ => {}
         }
@@ -697,7 +705,9 @@ impl App {
     }
 
     fn handle_processing_key(&mut self, code: KeyCode) -> Result<()> {
-        if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
+        if code == KeyCode::Esc {
+            self.navigate_back();
+        } else if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
             self.scroll_down();
         } else if matches!(code, KeyCode::Char('k') | KeyCode::Up) {
             self.scroll_up();
@@ -801,7 +811,7 @@ impl App {
             KeyCode::Char('c') if self.telemetry_tab == TelemetryTab::Logs => self.logs.clear(),
             KeyCode::Esc => {
                 self.filter_editing = false;
-                self.return_to_previous_or_bench();
+                self.navigate_back();
             }
             _ => {}
         }
@@ -836,14 +846,19 @@ impl App {
                                 .warn("config", format!("could not save audio directory: {error}"));
                         }
                         self.directory_input_error = None;
-                        self.screen = Screen::Bench;
+                        self.navigate_back();
+                        self.screen = if self.voice.connected_mode() {
+                            Screen::ServerTests
+                        } else {
+                            Screen::Bench
+                        };
                     }
                     Err(error) => self.directory_input_error = Some(error.to_string()),
                 }
             }
             KeyCode::Esc => {
                 self.directory_input_error = None;
-                self.screen = Screen::Folder;
+                self.navigate_back();
             }
             _ => {}
         }
@@ -865,7 +880,7 @@ impl App {
 
     fn handle_help_key(&mut self, code: KeyCode) -> Result<()> {
         if matches!(code, KeyCode::Esc | KeyCode::Char('?')) {
-            self.return_to_previous_or_bench();
+            self.navigate_back();
         } else if matches!(code, KeyCode::Char('j') | KeyCode::Down) {
             self.scroll_down();
         } else if matches!(code, KeyCode::Char('k') | KeyCode::Up) {
@@ -884,24 +899,41 @@ impl App {
                     );
                 }
             }
-            KeyCode::Char('m') => self.screen = Screen::Picker,
-            KeyCode::Esc => self.return_to_previous_or_bench(),
+
+            KeyCode::Esc => self.navigate_back(),
             _ => {}
         }
         Ok(())
     }
 
-    fn move_catalog(&mut self, delta: isize) {
-        if self.catalog.entries.is_empty() {
-            self.catalog_index = 0;
-            return;
+    fn sync_model_selection(&mut self) {
+        let selected = self
+            .models
+            .selected(&self.catalog)
+            .map(|entry| entry.manifest.id.clone());
+        self.catalog_index = selected
+            .as_deref()
+            .and_then(|id| self.catalog.selected_index(id))
+            .unwrap_or(0);
+        if selected.is_some() {
+            self.models.group_mut().highlighted = selected;
         }
-        let next = self.catalog_index as isize + delta;
-        self.catalog_index = next.clamp(0, self.catalog.entries.len() as isize - 1) as usize;
-        self.error_message = None;
+    }
+
+    fn tests_screen(&self) -> Screen {
+        if self.voice.connected_mode() {
+            Screen::ServerTests
+        } else if self.active_model.is_some() {
+            Screen::Bench
+        } else {
+            Screen::Welcome
+        }
     }
 
     fn start_adapter_build(&mut self, model_id: &str) {
+        if self.voice.connected_mode() {
+            return;
+        }
         let Some(entry) = self.catalog.entry_by_id(model_id) else {
             self.error_message = Some(format!("model `{model_id}` is not in the catalog"));
             return;
@@ -914,37 +946,41 @@ impl App {
                 self.status_message = format!("preparing backend for {model_id}");
                 self.logs
                     .info("adapter-build", format!("preparing backend for {model_id}"));
-                self.screen = Screen::Loading;
+                self.navigate_to(Screen::Loading);
             }
             Err(error) => {
                 self.error_message = Some(format!("{error:#}"));
                 self.logs.error("adapter-build", format!("{error:#}"));
-                self.screen = Screen::Picker;
+                self.screen = Screen::Models;
             }
         }
     }
 
     fn start_model_download(&mut self, model_id: String) {
-        let model_dir = self
-            .config
-            .model_manifest
-            .parent()
-            .unwrap_or_else(|| std::path::Path::new("."));
-        match DownloadTask::start(model_id.clone(), model_dir) {
-            Ok(download) => {
-                self.download = Some(download);
-                self.pending_model_id = Some(model_id.clone());
-                self.error_message = None;
-                self.status_message = format!("downloading model {model_id}");
-                self.logs
-                    .info("model-download", format!("downloading model {model_id}"));
-                self.screen = Screen::Loading;
-            }
-            Err(error) => {
-                self.error_message = Some(format!("{error:#}"));
-                self.logs.error("model-download", format!("{error:#}"));
-                self.screen = Screen::Picker;
-            }
+        let result = (|| -> Result<()> {
+            anyhow::ensure!(
+                self.download.is_none(),
+                "one local download at a time; F7 cancels it"
+            );
+            anyhow::ensure!(
+                self.models.verification.is_none(),
+                "startup-choice verification is still running; await its confirmation first"
+            );
+            let entry = self
+                .catalog
+                .entry_by_id(&model_id)
+                .ok_or_else(|| anyhow::anyhow!("model no longer in catalog"))?;
+            super::download::script_download_id(&entry.manifest)?;
+            self.models.group_mut().highlighted = Some(model_id.clone());
+            self.sync_model_selection();
+            self.models.confirmation = Some(super::model_actions::Confirmation::Download(model_id));
+            self.models.scroll = 0;
+            self.error_message = None;
+            Ok(())
+        })();
+        self.navigate_to(Screen::Models);
+        if let Err(error) = result {
+            self.error_message = Some(error.to_string());
         }
     }
 
@@ -955,7 +991,15 @@ impl App {
             return;
         };
         let model_id = entry.manifest.id.clone();
-        if !matches!(entry.manifest.family.as_str(), "whisper" | "zipformer") {
+        if entry.manifest.purpose() == Some(model::ModelPurpose::Reply) {
+            self.error_message = Some(format!(
+                "{model_id} is a reasoning/reply model, not a transcription model; use the Models view for files and server next-start choices"
+            ));
+            return;
+        }
+        if entry.manifest.purpose() != Some(model::ModelPurpose::Transcript)
+            || !model::family_supported(&entry.manifest.family)
+        {
             self.error_message = Some(format!(
                 "{} uses unsupported model family `{}`",
                 model_id, entry.manifest.family
@@ -993,9 +1037,19 @@ impl App {
     }
 
     fn send_load_model(&mut self, model_id: String, switch_from: Option<String>) {
+        if self.voice.connected_mode() {
+            return;
+        }
         if let Some(index) = self.catalog.selected_index(&model_id) {
             self.catalog_index = index;
+            self.models.group_mut().highlighted = Some(model_id.clone());
             let entry = &self.catalog.entries[index];
+            if entry.manifest.purpose() != Some(model::ModelPurpose::Transcript) {
+                self.error_message = Some(format!(
+                    "{model_id} is not a transcription model; use the Models view for server reply choices"
+                ));
+                return;
+            }
             if !entry.artifacts_available() {
                 self.start_model_download(model_id);
                 return;
@@ -1017,14 +1071,13 @@ impl App {
         });
         if self.worker_sender.send(command).is_err() {
             self.error_message = Some("inference worker is not available".to_owned());
-            self.screen = Screen::Error;
+            self.navigate_to(Screen::Error);
             return;
         }
         self.current_request = Some(request_id);
         self.pending_model_id = Some(model_id.clone());
         self.status_message = format!("loading {model_id}");
-        self.screen = Screen::Loading;
-        self.scroll = 0;
+        self.navigate_to(Screen::Loading);
     }
 
     fn begin_run(&mut self, run_id: String, source: String) -> bool {
@@ -1128,6 +1181,13 @@ impl App {
     }
 
     fn start_file(&mut self, path: PathBuf) {
+        if self.voice.connected_mode() {
+            self.start_server_audio(
+                super::connected::AudioInput::Wav(path.clone()),
+                path.display().to_string(),
+            );
+            return;
+        }
         if self.current_request.is_some() {
             return;
         }
@@ -1157,11 +1217,14 @@ impl App {
         self.current_request = Some(request_id);
         self.result = None;
         self.error_message = None;
-        self.scroll = 0;
-        self.screen = Screen::Processing;
+        self.navigate_to(Screen::Processing);
     }
 
     fn start_recording(&mut self) {
+        if self.voice.connected_mode() {
+            self.start_server_recording();
+            return;
+        }
         if self.current_request.is_some() || self.recording.is_some() {
             return;
         }
@@ -1176,7 +1239,7 @@ impl App {
                 self.current_source = Some("live microphone".to_owned());
                 self.status_message = "recording".to_owned();
                 self.error_message = None;
-                self.screen = Screen::Recording;
+                self.navigate_to(Screen::Recording);
             }
             Err(error) => {
                 self.end_run_context(&run_id);
@@ -1197,6 +1260,19 @@ impl App {
             return;
         };
         let duration = recording.elapsed().as_secs_f32();
+        if self.voice.connected_mode() {
+            match recording.finish() {
+                Ok(audio) => self.start_server_audio(
+                    super::connected::AudioInput::Microphone(audio),
+                    "live microphone".into(),
+                ),
+                Err(error) => {
+                    self.error_message = Some(error.to_string());
+                    self.screen = Screen::ServerTests;
+                }
+            }
+            return;
+        }
         match recording.finish() {
             Ok(audio) => {
                 self.start_audio("live microphone".to_owned(), audio);
@@ -1258,8 +1334,7 @@ impl App {
         self.current_request = Some(request_id);
         self.result = None;
         self.error_message = None;
-        self.scroll = 0;
-        self.screen = Screen::Processing;
+        self.navigate_to(Screen::Processing);
     }
 
     fn retry_last(&mut self) {
@@ -1464,25 +1539,81 @@ impl App {
     }
 
     fn open_telemetry(&mut self) {
-        self.previous_screen = self.screen;
+        if self.screen == Screen::Telemetry {
+            return;
+        }
         self.telemetry_tab = if self.build.is_some() || self.download.is_some() {
             TelemetryTab::Logs
         } else {
             TelemetryTab::Overview
         };
-        self.scroll = 0;
-        self.screen = Screen::Telemetry;
+        self.navigate_to(Screen::Telemetry);
     }
 
-    fn return_to_previous_or_bench(&mut self) {
-        self.screen = if self.build.is_some() || self.download.is_some() {
-            Screen::Loading
-        } else if self.previous_screen == Screen::Telemetry {
-            Screen::Bench
+    fn navigate_to(&mut self, screen: Screen) {
+        if screen == self.screen {
+            return;
+        }
+        let busy_page = matches!(
+            screen,
+            Screen::Loading | Screen::Processing | Screen::Recording
+        );
+        if busy_page {
+            // Busy pages belong to one operation, not a later load or recording.
+            self.navigation_history.retain(|previous| {
+                !matches!(
+                    previous,
+                    Screen::Loading | Screen::Processing | Screen::Recording
+                )
+            });
+        }
+        if !busy_page
+            || !matches!(
+                self.screen,
+                Screen::Loading | Screen::Processing | Screen::Recording
+            )
+        {
+            if self.navigation_history.len() == NAVIGATION_HISTORY_LIMIT {
+                self.navigation_history.remove(0);
+            }
+            self.navigation_history.push(self.screen);
+        }
+        self.screen = screen;
+        self.scroll = 0;
+    }
+
+    fn navigate_back(&mut self) {
+        while let Some(screen) = self.navigation_history.pop() {
+            if screen != self.screen && self.can_restore_screen(screen) {
+                self.screen = screen;
+                self.scroll = 0;
+                return;
+            }
+        }
+        // Root Esc stays put; fallback is not another forward navigation.
+        self.screen = if self.voice.connected_mode() {
+            if self.screen == Screen::ServerTests {
+                Screen::ServerTests
+            } else {
+                Screen::Web
+            }
         } else {
-            self.previous_screen
+            self.tests_screen()
         };
         self.scroll = 0;
+    }
+
+    fn can_restore_screen(&self, screen: Screen) -> bool {
+        // Work can finish while browsing. Never reopen an expired busy page.
+        match screen {
+            Screen::Loading => {
+                self.build.is_some()
+                    || (self.current_request.is_some() && self.pending_model_id.is_some())
+            }
+            Screen::Processing => self.current_request.is_some(),
+            Screen::Recording => self.recording.is_some(),
+            _ => true,
+        }
     }
 
     fn scroll_down(&mut self) {
@@ -1640,12 +1771,6 @@ impl App {
     }
 }
 
-impl Default for App {
-    fn default() -> Self {
-        panic!("App requires runtime channels and configuration")
-    }
-}
-
 fn epoch_millis() -> u64 {
     use std::time::{SystemTime, UNIX_EPOCH};
     SystemTime::now()
@@ -1661,6 +1786,7 @@ pub(super) mod tests {
 
     pub fn test_app() -> App {
         let options = TuiOptions {
+            server_url: None,
             model_id: None,
             model_manifest: None,
             audio_directory: None,
@@ -1689,6 +1815,47 @@ pub(super) mod tests {
         );
         app.screen = Screen::Telemetry;
         app
+    }
+
+    #[test]
+    fn reply_purpose_is_not_an_unsupported_stt_family_or_a_local_runtime() {
+        let mut app = test_app();
+        app.screen = Screen::Models;
+        for family in ["qwen2", "whisper", "custom-llm"] {
+            let manifest = toml::from_str(&format!(
+                "id = 'reply-fixture'\nfamily = '{family}'\npurpose = 'reply'\nmodel = 'reply.gguf'"
+            ))
+            .unwrap();
+            app.catalog.entries = vec![super::super::model_catalog::CatalogEntry {
+                manifest,
+                model_path: "reply.gguf".into(),
+                missing_paths: vec!["reply.gguf".into()],
+                adapter_compiled: true,
+            }];
+            app.catalog_index = 0;
+            assert_eq!(
+                app.adapter_availability(&app.catalog.entries[0]),
+                AdapterAvailability::ReasoningModel
+            );
+            assert!(!app.catalog.entries[0].selectable());
+            app.choose_catalog_model();
+            assert!(app
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("reasoning/reply"));
+            app.send_load_model("reply-fixture".into(), None);
+            assert!(app
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("not a transcription model"));
+            assert!(app.active_model.is_none());
+            assert!(app.current_request.is_none());
+            assert!(app.download.is_none());
+            assert!(app.build.is_none());
+            assert_eq!(app.screen, Screen::Models);
+        }
     }
 
     #[test]
