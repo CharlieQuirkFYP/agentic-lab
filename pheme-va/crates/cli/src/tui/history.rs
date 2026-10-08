@@ -18,6 +18,8 @@ const MAX_BYTES: u64 = 64 * 1024 * 1024;
 struct Snapshot {
     version: u32,
     reports: Vec<RunReport>,
+    #[serde(default)]
+    conversations: Vec<va_core::chat::ChatSnapshot>,
 }
 
 pub(super) fn deserialize_events<'de, D>(
@@ -51,10 +53,16 @@ fn bound(reports: &mut Vec<RunReport>) {
     }
 }
 
-fn load(path: &Path) -> Result<Vec<RunReport>> {
+fn load_snapshot(path: &Path) -> Result<Snapshot> {
     let file = match fs::File::open(path) {
         Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(Snapshot {
+                version: 2,
+                reports: Vec::new(),
+                conversations: Vec::new(),
+            })
+        }
         Err(error) => return Err(error.into()),
     };
     let mut bytes = Vec::new();
@@ -63,7 +71,7 @@ fn load(path: &Path) -> Result<Vec<RunReport>> {
         bail!("history exceeds the 64 MiB limit");
     }
     let mut snapshot: Snapshot = serde_json::from_slice(&bytes)?;
-    if snapshot.version != 1 {
+    if !matches!(snapshot.version, 1 | 2) {
         bail!("unsupported history version {}", snapshot.version);
     }
     let mut ids = std::collections::HashSet::new();
@@ -75,15 +83,108 @@ fn load(path: &Path) -> Result<Vec<RunReport>> {
         bail!("duplicate run IDs in history");
     }
     bound(&mut snapshot.reports);
-    Ok(snapshot.reports)
+    let mut conversation_ids = std::collections::HashSet::new();
+    if snapshot
+        .conversations
+        .iter()
+        .any(|s| !conversation_ids.insert(s.conversation_id.clone()))
+    {
+        bail!("duplicate conversation IDs in history");
+    }
+    let mut run_ids = std::collections::HashSet::new();
+    if snapshot
+        .conversations
+        .iter()
+        .flat_map(|s| &s.runs)
+        .any(|r| !run_ids.insert(r.run_id.clone()))
+    {
+        bail!("duplicate stage run IDs in history");
+    }
+    if snapshot
+        .conversations
+        .iter()
+        .any(|s| s.turns.len() > va_core::chat::MAX_CHAT_TURNS)
+    {
+        bail!("conversation exceeds the 32-turn limit");
+    }
+    if snapshot.reports.len()
+        + snapshot
+            .conversations
+            .iter()
+            .map(|s| s.runs.len().max(1))
+            .sum::<usize>()
+        > MAX_REPORTS
+    {
+        bail!("history exceeds the 100-run limit");
+    }
+    for run in snapshot.conversations.iter_mut().flat_map(|s| &mut s.runs) {
+        let excess = run.events.len().saturating_sub(MAX_EVENTS);
+        run.events.drain(..excess);
+        run.dropped_events += excess as u64;
+    }
+    Ok(snapshot)
 }
 
-fn save(path: &Path, mut reports: Vec<RunReport>) -> Result<()> {
+#[cfg(test)]
+fn load(path: &Path) -> Result<Vec<RunReport>> {
+    Ok(load_snapshot(path)?.reports)
+}
+
+fn save_snapshot(
+    path: &Path,
+    mut reports: Vec<RunReport>,
+    mut conversations: Vec<va_core::chat::ChatSnapshot>,
+) -> Result<()> {
     bound(&mut reports);
-    let bytes = serde_json::to_vec(&Snapshot {
-        version: 1,
+    conversations.retain(|s| s.conversation_id != "legacy-standalone");
+    loop {
+        let total = reports.len()
+            + conversations
+                .iter()
+                .map(|s| s.runs.len().max(1))
+                .sum::<usize>();
+        if total <= MAX_REPORTS {
+            break;
+        }
+        if let Some(index) = conversations
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.status != "active" && s.status != "finishing")
+            .min_by_key(|(_, s)| s.started_at_ms)
+            .map(|(i, _)| i)
+        {
+            conversations.remove(index);
+        } else if !reports.is_empty() {
+            reports.pop();
+        } else {
+            bail!(
+                "active conversation exceeds the 100-run archive limit; previous snapshot retained"
+            );
+        }
+    }
+    let mut snapshot = Snapshot {
+        version: 2,
         reports,
-    })?;
+        conversations,
+    };
+    let bytes = loop {
+        let bytes = serde_json::to_vec(&snapshot)?;
+        if bytes.len() as u64 <= MAX_BYTES {
+            break bytes;
+        }
+        if let Some(index) = snapshot
+            .conversations
+            .iter()
+            .enumerate()
+            .filter(|(_, s)| s.status != "active" && s.status != "finishing")
+            .min_by_key(|(_, s)| s.started_at_ms)
+            .map(|(i, _)| i)
+        {
+            snapshot.conversations.remove(index);
+        } else {
+            bail!("history exceeds the 64 MiB limit; previous snapshot retained");
+        }
+    };
     if bytes.len() as u64 > MAX_BYTES {
         bail!("history exceeds the 64 MiB limit; previous snapshot retained");
     }
@@ -120,6 +221,11 @@ fn save(path: &Path, mut reports: Vec<RunReport>) -> Result<()> {
     result
 }
 
+#[cfg(test)]
+fn save(path: &Path, reports: Vec<RunReport>) -> Result<()> {
+    save_snapshot(path, reports, Vec::new())
+}
+
 fn clear(path: &Path) -> Result<()> {
     match fs::remove_file(path) {
         Ok(()) => {
@@ -133,12 +239,13 @@ fn clear(path: &Path) -> Result<()> {
 }
 
 enum Command {
-    Save(Vec<RunReport>),
+    Save(Vec<RunReport>, Vec<va_core::chat::ChatSnapshot>),
     Clear,
     Flush(mpsc::Sender<Result<(), String>>),
 }
 
 pub struct History {
+    pub conversations: Vec<va_core::chat::ChatSnapshot>,
     sender: Option<SyncSender<Command>>,
     pending: Option<Command>,
     outcomes: Receiver<(bool, Result<(), String>)>,
@@ -147,7 +254,7 @@ pub struct History {
 
 impl History {
     pub fn open(path: PathBuf) -> Result<(Self, Vec<RunReport>)> {
-        let reports = load(&path).with_context(|| {
+        let snapshot = load_snapshot(&path).with_context(|| {
             format!(
                 "could not load history {}; file left unchanged",
                 path.display()
@@ -161,7 +268,9 @@ impl History {
                 let mut last_result = Ok(());
                 while let Ok(command) = receiver.recv() {
                     let (clear, result) = match command {
-                        Command::Save(reports) => (false, save(&path, reports)),
+                        Command::Save(reports, conversations) => {
+                            (false, save_snapshot(&path, reports, conversations))
+                        }
                         Command::Clear => (true, clear(&path)),
                         Command::Flush(reply) => {
                             let _ = reply.send(last_result.clone());
@@ -175,17 +284,27 @@ impl History {
             })?;
         Ok((
             Self {
+                conversations: snapshot.conversations,
                 sender: Some(sender),
                 pending: None,
                 outcomes,
                 join: Some(join),
             },
-            reports,
+            snapshot.reports,
         ))
     }
 
+    #[cfg(test)]
     pub fn save(&mut self, reports: Vec<RunReport>) {
-        self.pending = Some(Command::Save(reports));
+        self.save_conversations(reports, Vec::new());
+    }
+
+    pub fn save_conversations(
+        &mut self,
+        reports: Vec<RunReport>,
+        conversations: Vec<va_core::chat::ChatSnapshot>,
+    ) {
+        self.pending = Some(Command::Save(reports, conversations));
         self.pump();
     }
 
@@ -302,7 +421,7 @@ pub(super) mod tests {
     #[test]
     fn malformed_and_unknown_versions_are_not_overwritten() {
         let path = TestPath::new();
-        for contents in ["broken JSON", r#"{"version":2,"reports":[]}"#] {
+        for contents in ["broken JSON", r#"{"version":3,"reports":[]}"#] {
             fs::write(path.file(), contents).unwrap();
             assert!(History::open(path.file()).is_err());
             assert_eq!(fs::read_to_string(path.file()).unwrap(), contents);
@@ -360,5 +479,42 @@ pub(super) mod tests {
             .outcomes()
             .iter()
             .any(|(clear, result)| *clear && result.is_err()));
+    }
+    #[test]
+    fn v1_migrates_without_fake_turns_and_v2_prunes_whole_closed_conversations() {
+        let path = TestPath::new();
+        fs::write(
+            path.file(),
+            serde_json::to_vec(
+                &serde_json::json!({"version":1,"reports":[report("legacy", vec![])]}),
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        let original = load_snapshot(&path.file()).unwrap();
+        assert!(original.conversations.is_empty());
+        let mut conversations = Vec::new();
+        for index in 0..102 {
+            let mut snapshot =
+                crate::tui::app::chat::legacy_snapshot(&[report(&format!("run-{index}"), vec![])])
+                    .unwrap();
+            snapshot.conversation_id = format!("conv-{index}");
+            snapshot.started_at_ms = index;
+            snapshot.status = if index == 0 { "active" } else { "finished" }.into();
+            conversations.push(snapshot);
+        }
+        save_snapshot(&path.file(), vec![], conversations).unwrap();
+        let restored = load_snapshot(&path.file()).unwrap();
+        assert_eq!(restored.version, 2);
+        assert_eq!(restored.conversations.len(), 100);
+        assert!(restored
+            .conversations
+            .iter()
+            .any(|s| s.conversation_id == "conv-0"));
+        assert!(!restored
+            .conversations
+            .iter()
+            .any(|s| s.conversation_id == "conv-1" || s.conversation_id == "conv-2"));
+        assert!(restored.conversations.iter().all(|s| s.turns.is_empty()));
     }
 }

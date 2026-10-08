@@ -1,4 +1,5 @@
 mod app;
+mod chat_client;
 mod config;
 mod connected;
 mod download;
@@ -20,9 +21,9 @@ mod workspace_ui;
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -73,11 +74,6 @@ pub fn run(options: TuiOptions) -> Result<()> {
 
     let (worker_sender, worker_command_receiver) = mpsc::channel::<WorkerCommand>();
     let (worker_event_sender, worker_receiver) = mpsc::channel();
-    let resource_context = Arc::new(Mutex::new(None));
-    let resource_stop = Arc::new(AtomicBool::new(false));
-    let resource_join = config.resource_sampling_enabled.then(|| {
-        worker::spawn_resource_sampler(Arc::clone(&resource_context), Arc::clone(&resource_stop))
-    });
     let worker_join = worker::spawn(
         worker_command_receiver,
         worker_event_sender,
@@ -85,7 +81,7 @@ pub fn run(options: TuiOptions) -> Result<()> {
         WorkerConfig {
             metrics_enabled: config.metrics_enabled,
             resource_sampling_enabled: config.resource_sampling_enabled,
-            resource_context,
+            settings: config.clone(),
         },
     );
     let terminal_shutdown_sender = worker_sender.clone();
@@ -108,10 +104,6 @@ pub fn run(options: TuiOptions) -> Result<()> {
         Err(error) => {
             let _ = terminal_shutdown_sender.send(WorkerCommand::Shutdown);
             let _ = worker_join.join();
-            resource_stop.store(true, Ordering::Relaxed);
-            if let Some(resource_join) = resource_join {
-                let _ = resource_join.join();
-            }
             return Err(error);
         }
     };
@@ -123,10 +115,6 @@ pub fn run(options: TuiOptions) -> Result<()> {
     let _ = terminal.terminal.show_cursor();
     app.shutdown_worker();
     let _ = worker_join.join();
-    resource_stop.store(true, Ordering::Relaxed);
-    if let Some(resource_join) = resource_join {
-        let _ = resource_join.join();
-    }
     let history_result = app.flush_history();
     drop(terminal);
     let capture_result = native_logs

@@ -29,9 +29,9 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Open the standalone speech bench or connected voice console.
+    /// Open local voice/typed Chat, Models and Telemetry.
     Tui {
-        /// Connect through Go. Without this flag, use the standalone local STT bench.
+        /// Inspect Web activity through Go; Chat and Tests always run locally.
         #[arg(long, num_args = 0..=1, default_missing_value = "http://127.0.0.1:8080")]
         server_url: Option<String>,
         /// Maximum duration for one microphone recording.

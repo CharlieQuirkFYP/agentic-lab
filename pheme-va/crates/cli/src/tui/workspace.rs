@@ -81,6 +81,13 @@ impl App {
 
     pub fn shutdown_workspace(&mut self) {
         self.voice.connection.take();
+        self.chat.connection.take();
+        if let (Some(runtime), Some(id)) = (&self.local_runtime, &self.chat.current) {
+            if let Ok(snapshot) = va_runtime::conversations::snapshot(runtime, id, true) {
+                self.chat.upsert(snapshot);
+            }
+        }
+        self.local_runtime.take();
         self.playback.take();
         if let Some(mut download) = self.download.take() {
             if let Some(reaper) = download.cancel() {
@@ -97,6 +104,10 @@ impl App {
     }
 
     pub fn paste_workspace(&mut self, text: &str) {
+        if self.chat.editing && matches!(self.screen, Screen::Bench | Screen::Processing) {
+            self.chat.editor.insert(text);
+            return;
+        }
         match self.screen {
             Screen::WebEditor => {
                 if let Some(editor) = self
@@ -130,11 +141,6 @@ impl App {
 
     /// Focused text/confirmation input is handled before global shortcuts.
     pub fn workspace_key(&mut self, code: KeyCode) -> Result<bool> {
-        if code == KeyCode::F(8) {
-            self.playback.take();
-            self.status_message = "local speech stopped".into();
-            return Ok(true);
-        }
         if self.filter_editing
             || self.screen == Screen::DirectoryInput
             || self.clear_runs_pending
@@ -145,7 +151,7 @@ impl App {
         if self.screen == Screen::WebEditor {
             match code {
                 KeyCode::Esc => self.navigate_back(),
-                KeyCode::F(6) => self.submit_web(),
+                KeyCode::Enter => self.submit_web(),
                 _ => {
                     if let Some(editor) = self
                         .voice
@@ -162,7 +168,7 @@ impl App {
         if self.screen == Screen::ServerTests && self.voice.tests.editing {
             match code {
                 KeyCode::Esc => self.voice.tests.editing = false,
-                KeyCode::F(6) => self.run_reply_test(),
+                KeyCode::Enter => self.run_reply_test(),
                 _ => self.voice.tests.buffer.key(code),
             }
             return Ok(true);
@@ -236,6 +242,15 @@ impl App {
             }
             return Ok(true);
         }
+        if code == KeyCode::Char('z')
+            && !self.chat.editing
+            && self.screen != Screen::WebEditor
+            && !(self.screen == Screen::ServerTests && self.voice.tests.editing)
+        {
+            self.playback.take();
+            self.status_message = "local speech stopped".into();
+            return Ok(true);
+        }
         if matches!(code, KeyCode::Char('w' | 'm' | 't' | 'b')) && self.screen != Screen::Help {
             // Recording owns stop/discard keys; navigation must not hide it.
             if self.recording.is_some() || self.screen == Screen::Recording {
@@ -245,7 +260,10 @@ impl App {
                 KeyCode::Char('w') => Screen::Web,
                 KeyCode::Char('m') => Screen::Models,
                 KeyCode::Char('t') => Screen::Telemetry,
-                KeyCode::Char('b') => self.tests_screen(),
+                KeyCode::Char('b') => {
+                    self.chat.isolated = false;
+                    self.tests_screen()
+                }
                 _ => unreachable!(),
             };
             if screen == self.screen {
@@ -265,7 +283,7 @@ impl App {
         if self.screen == Screen::Telemetry {
             return Ok(false);
         }
-        if code == KeyCode::F(7)
+        if code == KeyCode::Char('x')
             && self.download.is_some()
             && matches!(self.screen, Screen::Models | Screen::Loading)
         {
@@ -340,10 +358,11 @@ impl App {
                         self.folder.refresh();
                         self.navigate_to(Screen::Folder);
                     }
-                    KeyCode::F(6) | KeyCode::Char('r') => self.run_reply_test(),
-                    KeyCode::F(7) if self.voice.tests.request.is_some() => {
-                        if let Some(connection) = self.voice.connection.as_ref() {
-                            let _ = connection.send(Command::CancelTest);
+                    KeyCode::Enter | KeyCode::Char('r') => self.run_reply_test(),
+                    KeyCode::Char('x') if self.voice.tests.request.is_some() => {
+                        if let Some(connection) = self.chat.connection.as_ref() {
+                            let _ = connection
+                                .send(crate::tui::chat_client::Command::Test(Command::CancelTest));
                         }
                         self.voice.tests.finish("cancelled");
                         self.logs.info(
@@ -385,7 +404,7 @@ impl App {
                     KeyCode::Char('q') | KeyCode::Char('?') | KeyCode::Char('t')
                 ))
             }
-            Screen::Recording if self.voice.connected_mode() => {
+            Screen::Recording if self.chat.connection.is_some() => {
                 match code {
                     KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char(' ') => {
                         self.stop_recording()
@@ -431,23 +450,22 @@ impl App {
             self.voice.tests.request.is_none(),
             "an isolated test is already running"
         );
-        anyhow::ensure!(
-            self.voice.online,
-            "server inspection unavailable; no local inference fallback"
-        );
-        let snapshot = self
-            .voice
-            .snapshot
+        let runtime = self
+            .local_runtime
             .as_ref()
-            .context("no server inspection")?;
-        anyhow::ensure!(!snapshot.busy, "server is busy");
+            .context("Local runtime is not ready.")?;
+        let status = va_runtime::voice::inspect(runtime);
+        anyhow::ensure!(
+            !status.busy && !self.chat.blocked(),
+            "Local runtime or conversation is busy."
+        );
         anyhow::ensure!(
             if reply {
-                snapshot.reply.ready
+                status.reply.ready
             } else {
-                snapshot.stt.ready
+                status.stt.ready
             },
-            "server runtime not ready; next-start choices do not change active runtimes"
+            "Local model not ready; choose it on Models and restart for reply/role changes."
         );
         Ok(())
     }
@@ -459,11 +477,16 @@ impl App {
             let text = self.voice.tests.buffer.text.clone();
             let request = self.voice.tests.begin("generating");
             let sent = self
-                .voice
+                .chat
                 .connection
                 .as_ref()
-                .context("connection unavailable")
-                .and_then(|connection| connection.send(Command::Reply { request, text }));
+                .context("local runtime unavailable")
+                .and_then(|connection| {
+                    connection.send(crate::tui::chat_client::Command::Test(Command::Reply {
+                        request,
+                        text,
+                    }))
+                });
             if let Err(error) = sent {
                 self.voice.tests.finish("failed");
                 return Err(error);
@@ -487,16 +510,18 @@ impl App {
             self.voice.tests.source = source;
             let request = self.voice.tests.begin("transcribing");
             let sent = self
-                .voice
+                .chat
                 .connection
                 .as_ref()
-                .context("connection unavailable")
+                .context("local runtime unavailable")
                 .and_then(|connection| {
-                    connection.send(Command::Transcribe {
-                        request,
-                        audio,
-                        max_seconds: self.config.max_seconds.min(120),
-                    })
+                    connection.send(crate::tui::chat_client::Command::Test(
+                        Command::Transcribe {
+                            request,
+                            audio,
+                            max_seconds: self.config.max_seconds,
+                        },
+                    ))
                 });
             if let Err(error) = sent {
                 self.voice.tests.finish("failed");
@@ -530,7 +555,7 @@ impl App {
         }
     }
 
-    fn speak(&mut self, text: &str) {
+    pub(super) fn speak(&mut self, text: &str) {
         self.playback.take();
         if self.recording.is_some() {
             self.error_message = Some("stop recording before playback".into());
@@ -539,7 +564,7 @@ impl App {
         match Playback::start(text) {
             Ok(playback) => {
                 self.playback = Some(playback);
-                self.status_message = "local espeak playback (F8 Stop)".into();
+                self.status_message = "local espeak playback (z Stop)".into();
             }
             Err(error) => self.error_message = Some(error.to_string()),
         }
@@ -559,9 +584,7 @@ impl App {
                         .context("no selected model")?;
                     if !entry.artifacts_available() {
                         self.start_model_download(entry.manifest.id.clone());
-                    } else if entry.manifest.purpose() == Some(ModelPurpose::Reply)
-                        || self.voice.connected_mode()
-                    {
+                    } else if entry.manifest.purpose() == Some(ModelPurpose::Reply) {
                         self.status_message = "available local artifacts; use s to verify a next-start choice, running server unchanged".into();
                     } else {
                         anyhow::ensure!(self.current_request.is_none() && self.build.is_none(), "standalone STT is still busy; await completion before selecting a model");

@@ -50,13 +50,31 @@ impl Default for TuiConfig {
 pub fn load() -> Result<Option<TuiConfig>> {
     let path = config_path();
     match fs::read_to_string(&path) {
-        Ok(contents) => toml::from_str(&contents)
-            .with_context(|| format!("could not parse TUI configuration {}", path.display()))
-            .map(Some),
+        Ok(contents) => parse_config(&contents, &path).map(Some),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error)
             .with_context(|| format!("could not read TUI configuration {}", path.display())),
     }
+}
+
+fn parse_config(contents: &str, path: &Path) -> Result<TuiConfig> {
+    let mut config: TuiConfig = toml::from_str(contents)
+        .with_context(|| format!("could not parse TUI configuration {}", path.display()))?;
+    let parent = path
+        .parent()
+        .context("TUI configuration path has no parent")?;
+    let base = fs::canonicalize(parent).with_context(|| {
+        format!(
+            "could not resolve configuration directory {}",
+            parent.display()
+        )
+    })?;
+    for role in config.reply_role_files.values_mut().flatten() {
+        if role.is_relative() {
+            *role = base.join(&*role);
+        }
+    }
+    Ok(config)
 }
 
 pub fn save(config: &TuiConfig) -> Result<()> {
@@ -162,6 +180,21 @@ mod tests {
         ).unwrap();
         assert!(config.reply_role_files.is_empty());
         assert!(config.server_reply_model.is_none());
+    }
+
+    #[test]
+    fn relative_roles_resolve_against_saved_configuration_directory() {
+        let path = std::env::temp_dir().join("tui.toml");
+        let config = parse_config("selected_stt_model='fixture'\nmodel_manifest='models/manifest.toml'\naudio_directory='samples'\n[reply_role_files]\nreply=['roles/base.txt', '/tmp/style.txt']", &path).unwrap();
+        assert_eq!(
+            config.reply_role_files["reply"],
+            vec![
+                fs::canonicalize(std::env::temp_dir())
+                    .unwrap()
+                    .join("roles/base.txt"),
+                PathBuf::from("/tmp/style.txt"),
+            ]
+        );
     }
 
     #[test]

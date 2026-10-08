@@ -102,6 +102,7 @@ pub struct Transcript {
     pub processing_time_ms: u64,
 }
 
+#[derive(Clone)]
 pub enum AudioInput {
     Wav(PathBuf),
     Microphone(AudioBuffer),
@@ -298,7 +299,7 @@ impl Drop for Connection {
     }
 }
 
-fn api_base(target: &str) -> Result<Url> {
+pub(super) fn api_base(target: &str) -> Result<Url> {
     let mut base = Url::parse(target).context("invalid server URL")?;
     ensure!(
         matches!(base.scheme(), "http" | "https") && base.host_str().is_some(),
@@ -322,7 +323,7 @@ fn api_base(target: &str) -> Result<Url> {
     Ok(base)
 }
 
-async fn check_status(response: Response) -> Result<Response> {
+pub(super) async fn check_status(response: Response) -> Result<Response> {
     if response.status().is_success() {
         return Ok(response);
     }
@@ -452,7 +453,7 @@ fn event_text(value: &Value) -> Result<String> {
 
 /// Frame bytes before decoding UTF-8: HTTP chunks can split a code point.
 #[derive(Default)]
-struct SseParser {
+pub(super) struct SseParser {
     line: Vec<u8>,
     event: String,
     data: Vec<String>,
@@ -461,7 +462,7 @@ struct SseParser {
 }
 
 impl SseParser {
-    fn feed(&mut self, bytes: &[u8]) -> Result<Vec<(String, String)>> {
+    pub(super) fn feed(&mut self, bytes: &[u8]) -> Result<Vec<(String, String)>> {
         let mut frames = Vec::new();
         for &byte in bytes {
             if self.cr && byte == b'\n' {
@@ -501,7 +502,7 @@ impl SseParser {
     }
 }
 
-fn prepare_wav(audio: AudioInput, max_seconds: u32) -> Result<Vec<u8>> {
+pub(super) fn prepare_wav(audio: AudioInput, max_seconds: u32) -> Result<Vec<u8>> {
     let audio = match audio {
         AudioInput::Wav(path) => {
             let file = std::fs::File::open(path).context("could not open WAV")?;

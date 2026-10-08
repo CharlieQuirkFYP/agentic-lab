@@ -8,10 +8,10 @@ description = "Terminal recorder and WAV transcription client for the Pheme VA"
 
 [features]
 default = []
-whisper = ["dep:whispercpp"]
-whisper-metal = ["whisper", "whispercpp/metal"]
-whisper-coreml = ["whisper", "whispercpp/coreml"]
-zipformer = ["dep:zipformer", "zipformer/litert", "dep:litert-sys"]
+whisper = ["va_runtime/whisper"]
+whisper-metal = ["whisper", "va_runtime/whisper-metal"]
+whisper-coreml = ["whisper", "va_runtime/whisper-coreml"]
+zipformer = ["va_runtime/zipformer", "dep:litert-sys"]
 
 [dependencies]
 anyhow = "1.0"
@@ -30,8 +30,7 @@ serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"
 va_core = { package = "core", path = "../core" }
-whispercpp = { path = "../models/transcription/whispercpp", optional = true }
-zipformer = { path = "../models/transcription/zipformer", optional = true }
+va_runtime = { path = "../runtime" }
 # Directly depend on the sys crate so its verified runtime cache directory is
 # exposed to this host's build script for an executable rpath.
 litert-sys = { version = "0.2.1", optional = true }

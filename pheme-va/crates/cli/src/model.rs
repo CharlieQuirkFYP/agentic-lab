@@ -1,15 +1,10 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
+#[cfg(test)]
+use std::path::PathBuf;
 
-#[cfg(any(feature = "whisper", feature = "zipformer"))]
-use anyhow::Context;
-use anyhow::{anyhow, Result};
+use anyhow::Result;
 pub use va_core::registry::*;
 use va_core::{Engine, EngineConfig, RuleBasedFormatter, Transcriber};
-
-#[cfg(feature = "whisper")]
-use whispercpp::{WhisperConfig, WhisperTranscriber};
-#[cfg(feature = "zipformer")]
-use zipformer::{ZipformerConfig, ZipformerTranscriber};
 
 pub fn create_engine(
     model_id: &str,
@@ -29,75 +24,17 @@ pub fn create_engine(
 }
 
 fn load_transcriber(model_id: &str, manifest_path: &Path) -> Result<Box<dyn Transcriber>> {
-    let manifest = ModelManifest::load(manifest_path)?;
-    let entry = manifest.find(model_id)?;
+    let entry = ModelManifest::load(manifest_path)?.find(model_id)?;
     if entry.purpose() != Some(ModelPurpose::Transcript) {
-        return Err(anyhow!("model `{model_id}` is not a transcription model"));
+        anyhow::bail!("model `{model_id}` is not a transcription model");
     }
-    let model_path = resolve_artifact(manifest_path, &entry.model);
-
-    match entry.family.as_str() {
-        "whisper" => load_whisper(entry, model_path),
-        "zipformer" => load_zipformer(entry, manifest_path),
-        family => Err(anyhow!(
-            "model `{model_id}` uses unsupported model family `{family}`"
-        )),
-    }
-}
-
-#[cfg(feature = "whisper")]
-fn load_whisper(entry: ModelEntry, model_path: PathBuf) -> Result<Box<dyn Transcriber>> {
-    let transcriber = WhisperTranscriber::from_file_with_metadata(
-        &model_path,
-        WhisperConfig {
-            threads: std::thread::available_parallelism()
-                .map(|threads| threads.get().min(8) as i32)
-                .unwrap_or(4),
-            use_gpu: cfg!(feature = "whisper-metal"),
-            flash_attention: false,
-        },
-        entry.id,
-        entry.revision,
+    va_runtime::loader::load_stt(
+        entry,
+        manifest_path,
+        std::thread::available_parallelism()
+            .map(|t| t.get().min(8) as i32)
+            .unwrap_or(4),
     )
-    .with_context(|| format!("failed to load Whisper model {}", model_path.display()))?;
-    Ok(Box::new(transcriber))
-}
-
-#[cfg(not(feature = "whisper"))]
-fn load_whisper(_entry: ModelEntry, _model_path: PathBuf) -> Result<Box<dyn Transcriber>> {
-    Err(anyhow!(
-        "this binary was built without Whisper support; rebuild with `--features whisper`"
-    ))
-}
-
-#[cfg(feature = "zipformer")]
-fn load_zipformer(entry: ModelEntry, manifest_path: &Path) -> Result<Box<dyn Transcriber>> {
-    let tokenizer = entry
-        .tokenizer
-        .as_ref()
-        .ok_or_else(|| anyhow!("model `{}` has no tokenizer path", entry.id))?;
-    let tokens = entry
-        .tokens
-        .as_ref()
-        .ok_or_else(|| anyhow!("model `{}` has no token-list path", entry.id))?;
-    let transcriber = ZipformerTranscriber::from_files(
-        resolve_artifact(manifest_path, &entry.model),
-        resolve_artifact(manifest_path, tokenizer),
-        resolve_artifact(manifest_path, tokens),
-        ZipformerConfig {
-            model_id: entry.id,
-            model_revision: entry.revision,
-        },
-    )
-    .context("failed to load Zipformer model")?;
-    Ok(Box::new(transcriber))
-}
-
-#[cfg(not(feature = "zipformer"))]
-fn load_zipformer(_entry: ModelEntry, _manifest_path: &Path) -> Result<Box<dyn Transcriber>> {
-    Err(anyhow!(
-        "this binary was built without Zipformer support; rebuild with `--features zipformer`"
-    ))
 }
 
 pub(crate) fn family_supported(family: &str) -> bool {

@@ -413,8 +413,7 @@ dependencies = [
  "toml",
  "unicode-segmentation",
  "unicode-width 0.2.0",
- "whispercpp",
- "zipformer",
+ "va_runtime",
 ]
 
 [[package]]

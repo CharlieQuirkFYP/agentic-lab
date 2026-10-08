@@ -7,7 +7,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use metrics::MetricEvent;
 use ratatui::crossterm::event::{Event, KeyCode};
-use va_core::{AudioBuffer, TranscriptionResult};
+use va_core::AudioBuffer;
 
 use crate::model;
 use crate::recorder::Recording;
@@ -21,6 +21,9 @@ use super::model_catalog::ModelCatalog;
 use super::rebuild::{BuildTask, CacheProbeTask, CacheStatus};
 use super::telemetry::{SeriesKey, TelemetryStore};
 use super::TuiOptions;
+
+#[path = "chat.rs"]
+pub mod chat;
 
 #[path = "workspace.rs"]
 mod workspace;
@@ -73,7 +76,7 @@ impl AdapterAvailability {
             Self::Cached => "cached",
             Self::Checking => "checking cache",
             Self::Prepare => "prepare on selection",
-            Self::ReasoningModel => "reasoning/reply (server)",
+            Self::ReasoningModel => "reasoning/reply",
         }
     }
 
@@ -101,15 +104,9 @@ pub struct ActiveModel {
     pub runtime: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct ResultState {
-    pub run_id: String,
-    pub source: String,
-    pub audio_duration_seconds: f32,
-    pub result: TranscriptionResult,
-}
-
 pub struct App {
+    pub local_runtime: Option<va_runtime::AgentRuntime>,
+    pub chat: chat::ChatState,
     pub voice: super::voice::VoiceState,
     pub models: super::model_actions::ModelActions,
     pub playback: Option<super::playback::Playback>,
@@ -125,7 +122,6 @@ pub struct App {
     pub pending_model_id: Option<String>,
     pub folder: FolderState,
     pub recording: Option<Recording>,
-    pub result: Option<ResultState>,
     pub last_file: Option<PathBuf>,
     pub last_audio: Option<AudioBuffer>,
     pub current_source: Option<String>,
@@ -188,12 +184,8 @@ impl App {
         let onboarding = options.reconfigure
             || (!config_loaded && options.model_id.is_none())
             || catalog.error.is_some();
-        let startup_load = options.server_url.is_none()
-            && !onboarding
-            && (options.model_id.is_some() || has_valid_saved_model);
-        let screen = if options.server_url.is_some() {
-            Screen::Web
-        } else if catalog.error.is_some() {
+        let startup_load = !onboarding && (options.model_id.is_some() || has_valid_saved_model);
+        let screen = if catalog.error.is_some() {
             Screen::Error
         } else if onboarding {
             Screen::Welcome
@@ -229,6 +221,11 @@ impl App {
             .map(|entry| entry.manifest.id.clone());
 
         Self {
+            local_runtime: None,
+            chat: chat::ChatState {
+                follow_bottom: true,
+                ..Default::default()
+            },
             voice: super::voice::VoiceState::new(options.server_url.clone()),
             models,
             playback: None,
@@ -244,7 +241,6 @@ impl App {
             active_model: None,
             pending_model_id: None,
             recording: None,
-            result: None,
             last_file: None,
             last_audio: None,
             current_source: None,
@@ -295,10 +291,7 @@ impl App {
     }
 
     pub fn start_initial_load(&mut self) {
-        if self.voice.connected_mode() {
-            self.voice.start();
-            return;
-        }
+        self.voice.start();
         if self.startup_load {
             let model_id = self.config.selected_stt_model.clone();
             self.send_load_model(model_id, None);
@@ -307,9 +300,6 @@ impl App {
     }
 
     pub fn start_cache_probe(&mut self) {
-        if self.voice.connected_mode() {
-            return;
-        }
         let families = self
             .catalog
             .entries
@@ -403,6 +393,7 @@ impl App {
 
     pub fn tick(&mut self) {
         self.tick_workspace();
+        self.tick_chat();
         self.drain_metrics();
         self.drain_worker_events();
         self.poll_cache_probe();
@@ -412,12 +403,7 @@ impl App {
         self.persist_history();
         self.poll_history();
         if self.recording.as_ref().is_some_and(|recording| {
-            recording.elapsed().as_secs()
-                >= if self.voice.connected_mode() {
-                    self.config.max_seconds.min(120) as u64
-                } else {
-                    self.config.max_seconds as u64
-                }
+            recording.elapsed().as_secs() >= self.config.max_seconds as u64
         }) {
             self.stop_recording();
             self.status_message = "maximum recording duration reached".to_owned();
@@ -449,11 +435,7 @@ impl App {
                 self.models
                     .download_status
                     .insert(model_id.clone(), "Downloaded (script verified)".into());
-                self.status_message = if self.voice.connected_mode() {
-                    format!("{model_id} downloaded locally; choose for next start with s. Active server unchanged.")
-                } else {
-                    format!("{model_id} downloaded locally; Enter prepares available STT, s chooses for next server start.")
-                };
+                self.status_message = format!("{model_id} downloaded locally; Enter prepares STT, s saves next-start reply/server choices.");
                 self.logs.info("local-model-files", &self.status_message);
             }
             Ok(None) => {}
@@ -496,6 +478,30 @@ impl App {
         }
         if let Event::Key(key) = event {
             if key.kind != ratatui::crossterm::event::KeyEventKind::Release {
+                if self.chat_key(key)? {
+                    return Ok(());
+                }
+                if key.code == KeyCode::Enter
+                    && key
+                        .modifiers
+                        .contains(ratatui::crossterm::event::KeyModifiers::ALT)
+                {
+                    if self.screen == Screen::WebEditor {
+                        if let Some(editor) = self
+                            .voice
+                            .editor
+                            .as_mut()
+                            .filter(|e| !e.pending && !e.accepted)
+                        {
+                            editor.buffer.insert("\n");
+                        }
+                        return Ok(());
+                    }
+                    if self.screen == Screen::ServerTests && self.voice.tests.editing {
+                        self.voice.tests.buffer.insert("\n");
+                        return Ok(());
+                    }
+                }
                 if key
                     .modifiers
                     .contains(ratatui::crossterm::event::KeyModifiers::CONTROL)
@@ -716,6 +722,9 @@ impl App {
     }
 
     fn handle_telemetry_key(&mut self, code: KeyCode) -> Result<()> {
+        if self.chat_telemetry_key(code) {
+            return Ok(());
+        }
         if self.filter_editing {
             return self.handle_filter_key(code);
         }
@@ -847,7 +856,7 @@ impl App {
                         }
                         self.directory_input_error = None;
                         self.navigate_back();
-                        self.screen = if self.voice.connected_mode() {
+                        self.screen = if self.chat.isolated {
                             Screen::ServerTests
                         } else {
                             Screen::Bench
@@ -921,19 +930,10 @@ impl App {
     }
 
     fn tests_screen(&self) -> Screen {
-        if self.voice.connected_mode() {
-            Screen::ServerTests
-        } else if self.active_model.is_some() {
-            Screen::Bench
-        } else {
-            Screen::Welcome
-        }
+        Screen::Bench
     }
 
     fn start_adapter_build(&mut self, model_id: &str) {
-        if self.voice.connected_mode() {
-            return;
-        }
         let Some(entry) = self.catalog.entry_by_id(model_id) else {
             self.error_message = Some(format!("model `{model_id}` is not in the catalog"));
             return;
@@ -960,7 +960,7 @@ impl App {
         let result = (|| -> Result<()> {
             anyhow::ensure!(
                 self.download.is_none(),
-                "one local download at a time; F7 cancels it"
+                "one local download at a time; x cancels it"
             );
             anyhow::ensure!(
                 self.models.verification.is_none(),
@@ -993,7 +993,7 @@ impl App {
         let model_id = entry.manifest.id.clone();
         if entry.manifest.purpose() == Some(model::ModelPurpose::Reply) {
             self.error_message = Some(format!(
-                "{model_id} is a reasoning/reply model, not a transcription model; use the Models view for files and server next-start choices"
+                "{model_id} is a reasoning/reply model, not a transcription model; use the Models view for files and next-start reply choices"
             ));
             return;
         }
@@ -1037,7 +1037,11 @@ impl App {
     }
 
     fn send_load_model(&mut self, model_id: String, switch_from: Option<String>) {
-        if self.voice.connected_mode() {
+        if self.chat.connection.is_some() && self.chat.blocked() && !self.chat.starting {
+            self.error_message = Some(
+                "Send/discard the pending turn and wait for native work before switching models."
+                    .into(),
+            );
             return;
         }
         if let Some(index) = self.catalog.selected_index(&model_id) {
@@ -1046,7 +1050,7 @@ impl App {
             let entry = &self.catalog.entries[index];
             if entry.manifest.purpose() != Some(model::ModelPurpose::Transcript) {
                 self.error_message = Some(format!(
-                    "{model_id} is not a transcription model; use the Models view for server reply choices"
+                    "{model_id} is not a transcription model; use the Models view for next-start reply choices"
                 ));
                 return;
             }
@@ -1181,13 +1185,30 @@ impl App {
     }
 
     fn start_file(&mut self, path: PathBuf) {
-        if self.voice.connected_mode() {
-            self.start_server_audio(
-                super::connected::AudioInput::Wav(path.clone()),
-                path.display().to_string(),
-            );
+        if self.chat.connection.is_some() {
+            if self.chat.isolated {
+                self.start_server_audio(
+                    super::connected::AudioInput::Wav(path.clone()),
+                    path.display().to_string(),
+                );
+            } else {
+                self.start_chat_audio(
+                    super::connected::AudioInput::Wav(path.clone()),
+                    path.display().to_string(),
+                );
+            }
             return;
         }
+        if self.chat.blocked()
+            || self
+                .chat
+                .snapshot()
+                .is_some_and(|s| s.turns.len() >= va_core::chat::MAX_CHAT_TURNS)
+        {
+            self.chat.error = Some("Send/discard the pending turn, or finish this conversation before starting another.".into());
+            return;
+        }
+        self.chat.local_cancelled = false;
         if self.current_request.is_some() {
             return;
         }
@@ -1215,17 +1236,16 @@ impl App {
         self.current_source = Some(source);
         self.current_run = Some(run_id);
         self.current_request = Some(request_id);
-        self.result = None;
         self.error_message = None;
         self.navigate_to(Screen::Processing);
     }
 
     fn start_recording(&mut self) {
-        if self.voice.connected_mode() {
+        if self.chat.connection.is_some() {
             self.start_server_recording();
             return;
         }
-        if self.current_request.is_some() || self.recording.is_some() {
+        if self.current_request.is_some() || self.recording.is_some() || self.chat.blocked() {
             return;
         }
         let run_id = self.take_run_id();
@@ -1260,12 +1280,22 @@ impl App {
             return;
         };
         let duration = recording.elapsed().as_secs_f32();
-        if self.voice.connected_mode() {
+        if self.chat.connection.is_some() {
             match recording.finish() {
-                Ok(audio) => self.start_server_audio(
-                    super::connected::AudioInput::Microphone(audio),
-                    "live microphone".into(),
-                ),
+                Ok(audio) => {
+                    if self.chat.recording {
+                        self.chat.recording = false;
+                        self.start_chat_audio(
+                            super::connected::AudioInput::Microphone(audio),
+                            "live microphone".into(),
+                        );
+                    } else {
+                        self.start_server_audio(
+                            super::connected::AudioInput::Microphone(audio),
+                            "live microphone".into(),
+                        );
+                    }
+                }
                 Err(error) => {
                     self.error_message = Some(error.to_string());
                     self.screen = Screen::ServerTests;
@@ -1273,6 +1303,7 @@ impl App {
             }
             return;
         }
+        self.chat.recording = false;
         match recording.finish() {
             Ok(audio) => {
                 self.start_audio("live microphone".to_owned(), audio);
@@ -1332,7 +1363,6 @@ impl App {
         self.current_source = Some(source);
         self.current_run = Some(run_id);
         self.current_request = Some(request_id);
-        self.result = None;
         self.error_message = None;
         self.navigate_to(Screen::Processing);
     }
@@ -1365,6 +1395,20 @@ impl App {
 
     fn apply_worker_event(&mut self, event: WorkerEvent) {
         match event {
+            WorkerEvent::RuntimeReady {
+                runtime,
+                reply_error,
+            } => {
+                let ready = runtime.voice.reply_status().ready;
+                self.start_chat_connection(runtime);
+                if let Some(error) = reply_error {
+                    self.chat.runtime_error = Some(error.clone());
+                    self.chat.error = Some(error);
+                }
+                if ready && matches!(self.screen, Screen::Welcome | Screen::Models) {
+                    self.screen = Screen::Bench;
+                }
+            }
             WorkerEvent::ModelLoadStarted {
                 request_id,
                 model_id,
@@ -1442,7 +1486,12 @@ impl App {
                 self.current_run = Some(run_id);
                 self.current_source = Some(source.clone());
                 self.status_message = format!("processing {source}");
-                self.screen = Screen::Processing;
+                if matches!(
+                    self.screen,
+                    Screen::Bench | Screen::Processing | Screen::Recording
+                ) {
+                    self.screen = Screen::Processing;
+                }
             }
             WorkerEvent::Result {
                 request_id,
@@ -1474,18 +1523,17 @@ impl App {
                 report.result = Some(result.clone());
                 self.telemetry.upsert_report(report);
                 self.telemetry.set_active_run(None);
-                self.result = Some(ResultState {
-                    run_id: run_id.clone(),
-                    source,
-                    audio_duration_seconds,
-                    result,
-                });
                 self.current_run = Some(run_id.clone());
                 self.current_request = None;
                 self.error_message = None;
                 self.status_message = "transcription complete".to_owned();
                 self.scroll = 0;
-                self.screen = Screen::Bench;
+                if matches!(
+                    self.screen,
+                    Screen::Bench | Screen::Processing | Screen::Recording
+                ) {
+                    self.screen = Screen::Bench;
+                }
             }
             WorkerEvent::ProcessingFailed {
                 request_id,
@@ -1590,16 +1638,8 @@ impl App {
                 return;
             }
         }
-        // Root Esc stays put; fallback is not another forward navigation.
-        self.screen = if self.voice.connected_mode() {
-            if self.screen == Screen::ServerTests {
-                Screen::ServerTests
-            } else {
-                Screen::Web
-            }
-        } else {
-            self.tests_screen()
-        };
+        // Chat remains the local root regardless of the optional Web target.
+        self.screen = Screen::Bench;
         self.scroll = 0;
     }
 
@@ -1684,9 +1724,19 @@ impl App {
 
     pub fn attach_history(
         &mut self,
-        history: super::history::History,
+        mut history: super::history::History,
         reports: Vec<super::telemetry::RunReport>,
     ) {
+        self.chat.archives = std::mem::take(&mut history.conversations);
+        for snapshot in &mut self.chat.archives {
+            if snapshot.status == "active" || snapshot.status == "finishing" {
+                snapshot.status = "archived".into();
+                snapshot.busy = false;
+            }
+        }
+        if let Some(legacy) = chat::legacy_snapshot(&reports) {
+            self.chat.archives.push(legacy);
+        }
         for report in reports.into_iter().rev() {
             self.telemetry.upsert_report(report);
         }
@@ -1698,22 +1748,35 @@ impl App {
         self.current_request.is_some()
             || self.recording.is_some()
             || self.telemetry.active_run().is_some()
+            || self.chat.blocked()
     }
 
     fn persist_history(&mut self) {
         if self.clear_runs_inflight
-            || self.saved_history_revision == self.telemetry.history_revision
+            || (self.saved_history_revision == self.telemetry.history_revision
+                && self.chat.persisted_revision == self.chat.revision)
         {
             return;
         }
         if let Some(history) = self.history.as_mut() {
-            history.save(
+            history.save_conversations(
                 self.telemetry
                     .reports()
                     .filter(|report| report.status != "BUSY")
+                    .filter(|r| {
+                        !self
+                            .chat
+                            .archives
+                            .iter()
+                            .filter(|s| s.conversation_id != "legacy-standalone")
+                            .flat_map(|s| &s.runs)
+                            .any(|run| run.run_id == r.run_id)
+                    })
                     .cloned()
                     .collect(),
+                self.chat.archives.clone(),
             );
+            self.chat.persisted_revision = self.chat.revision;
             self.saved_history_revision = self.telemetry.history_revision;
         }
     }
@@ -1731,8 +1794,12 @@ impl App {
             match result {
                 Ok(()) if clear => {
                     self.telemetry.clear_runs();
+                    self.chat.archives.clear();
+                    self.chat.current = None;
+                    self.chat.detail = chat::Detail::List;
+                    self.chat.editor = Default::default();
+                    self.chat.revision += 1;
                     self.saved_history_revision = self.telemetry.history_revision;
-                    self.result = None;
                     self.current_run = None;
                     self.current_source = None;
                     self.run_detail = false;
@@ -1998,9 +2065,11 @@ pub(super) mod tests {
         });
         app.tick();
         app.history.as_mut().unwrap().flush().unwrap();
-        let (_, restored) = History::open(path.file()).unwrap();
-        assert_eq!(restored[0].error.as_deref(), Some("test failure"));
-        assert_eq!(restored[0].events[0].name, "queued sample");
+        let (restored, reports) = History::open(path.file()).unwrap();
+        assert!(reports.is_empty());
+        let run = &restored.conversations[0].runs[0];
+        assert_eq!(run.error.as_deref(), Some("test failure"));
+        assert_eq!(run.events[0].name, "queued sample");
     }
 
     #[test]

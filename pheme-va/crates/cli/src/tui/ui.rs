@@ -43,7 +43,9 @@ pub fn draw(frame: &mut Frame<'_>, app: &App) {
         Screen::Welcome => draw_welcome(frame, app),
         Screen::Bench => draw_bench(frame, app),
         Screen::Folder => draw_folder(frame, app),
+        Screen::Recording if !app.chat.isolated => app.draw_chat(frame),
         Screen::Recording => draw_recording(frame, app),
+        Screen::Processing if !app.chat.isolated => app.draw_chat(frame),
         Screen::Processing => draw_processing(frame, app),
         Screen::Telemetry => draw_telemetry(frame, app),
         Screen::DirectoryInput => draw_directory_input(frame, app),
@@ -308,7 +310,7 @@ fn draw_model_progress(
 ) {
     let block = Block::default()
         .borders(Borders::ALL)
-        .title("LOCAL DOWNLOAD / [F7] Cancel");
+        .title("LOCAL DOWNLOAD / [x] Cancel");
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let rows = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).split(inner);
@@ -330,149 +332,7 @@ fn draw_model_progress(
 }
 
 fn draw_bench(frame: &mut Frame<'_>, app: &App) {
-    let footer = format!(
-        "{}\n[?] Help  [r] Retry  [n] Next file  [f] Folder  [l] Mic  [j/k] Scroll",
-        super::workspace_ui::workspace_guide(app)
-    );
-    let chunks = Layout::default()
-        .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(3),
-            Constraint::Min(8),
-            Constraint::Length(4),
-            Constraint::Length(3),
-            Constraint::Length(1),
-            Constraint::Length(
-                super::workspace_ui::footer_height(&footer, frame.area().width).max(2),
-            ),
-        ])
-        .split(frame.area());
-    draw_header(frame, app, chunks[0], "TEST BENCH");
-
-    let top = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Percentage(30), Constraint::Percentage(70)])
-        .split(chunks[1]);
-    let source_lines = vec![
-        Line::from(Span::styled("INPUT SOURCE", Style::default().fg(ACCENT))),
-        Line::from(""),
-        Line::from("[l] Live microphone"),
-        Line::from("[f] Select WAV file"),
-        Line::from(""),
-        Line::from("Folder:"),
-        Line::from(app.folder.directory.display().to_string()),
-        Line::from(format!("{} WAV file(s)", app.folder.wav_count())),
-    ];
-    frame.render_widget(
-        Paragraph::new(Text::from(source_lines))
-            .block(Block::default().borders(Borders::ALL).title("SOURCE"))
-            .wrap(Wrap { trim: true }),
-        top[0],
-    );
-
-    let transcript = match app.result.as_ref() {
-        Some(result)
-            if result.result.status.as_str() == "speech" && !result.result.text.is_empty() =>
-        {
-            result.result.text.clone()
-        }
-        Some(result) => format!(
-            "Status: {}\n\nNo final speech transcript was produced.\n\nGate: {:?}",
-            result.result.status.as_str(),
-            result.result.gate.decision
-        ),
-        None => "No result yet.\n\nChoose a source to test the selected model.".to_owned(),
-    };
-    frame.render_widget(
-        Paragraph::new(transcript)
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title("FINAL TRANSCRIPT"),
-            )
-            .scroll((app.scroll, 0))
-            .wrap(Wrap { trim: false }),
-        top[1],
-    );
-
-    let detail_lines = if let Some(result) = app.result.as_ref() {
-        vec![
-            Line::from(format!(
-                "Status: {}    Source: {}    Run: {}",
-                result.result.status.as_str(),
-                result.source,
-                result.run_id
-            )),
-            Line::from(format!(
-                "Audio: {:.2} s    Processing: {} ms    Language: {}",
-                result.audio_duration_seconds,
-                result.result.processing_time_ms,
-                result.result.language.as_deref().unwrap_or("detected")
-            )),
-            Line::from(format!(
-                "Gate: {:?}    Peak RMS: {:.4}    Recovery: {}",
-                result.result.gate.decision,
-                result.result.gate.peak_rms,
-                yes_no(result.result.recovery_attempted)
-            )),
-        ]
-    } else {
-        vec![Line::from(format!(
-            "Status: {}    Source: {}    Run: {}",
-            if app.current_request.is_some() {
-                "busy"
-            } else {
-                "idle"
-            },
-            app.current_source.as_deref().unwrap_or("none"),
-            app.current_run.as_deref().unwrap_or("—")
-        ))]
-    };
-    frame.render_widget(
-        Paragraph::new(Text::from(detail_lines))
-            .block(Block::default().borders(Borders::ALL).title("RUN DETAILS"))
-            .wrap(Wrap { trim: false }),
-        chunks[2],
-    );
-
-    let run_id = app.current_run.as_deref();
-    let compact = [
-        ("normalization", "audio_normalization_duration_ms"),
-        ("gate", "speech_gate_duration_ms"),
-        ("transcription", "transcription_duration_ms"),
-        ("end-to-end", "end_to_end_request_duration_ms"),
-    ]
-    .iter()
-    .map(|(label, name)| format!("{label}: {}", compact_metric(&app.telemetry, name, run_id)))
-    .collect::<Vec<_>>()
-    .join("   ");
-    let compact = format!("{compact}\n{}", monitor_line(app));
-    frame.render_widget(
-        Paragraph::new(compact)
-            .block(Block::default().borders(Borders::ALL).title("METRICS"))
-            .wrap(Wrap { trim: false }),
-        chunks[3],
-    );
-    let run_id = app.current_run.as_deref();
-    let compact = [
-        ("normalization", "audio_normalization_duration_ms"),
-        ("gate", "speech_gate_duration_ms"),
-        ("transcription", "transcription_duration_ms"),
-        ("end-to-end", "end_to_end_request_duration_ms"),
-    ]
-    .iter()
-    .map(|(label, name)| format!("{label}: {}", compact_metric(&app.telemetry, name, run_id)))
-    .collect::<Vec<_>>()
-    .join("   ");
-    let compact = format!("{compact}\n{}", monitor_line(app));
-    frame.render_widget(
-        Paragraph::new(compact)
-            .block(Block::default().borders(Borders::ALL).title("METRICS"))
-            .wrap(Wrap { trim: false }),
-        chunks[3],
-    );
-    draw_status_line(frame, app, chunks[4]);
-    draw_footer(frame, app, chunks[5], &footer);
+    app.draw_chat(frame);
 }
 
 fn draw_folder(frame: &mut Frame<'_>, app: &App) {
@@ -639,10 +499,15 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
         ])
         .split(frame.area());
     draw_header(frame, app, chunks[0], "METRICS & LOGS");
-    let titles = ["[1] Overview", "[2] Metrics", "[3] Runs", "[4] Logs"]
-        .into_iter()
-        .map(Line::from)
-        .collect::<Vec<_>>();
+    let titles = [
+        "[1] Overview",
+        "[2] Metrics",
+        "[3] Conversations",
+        "[4] Logs",
+    ]
+    .into_iter()
+    .map(Line::from)
+    .collect::<Vec<_>>();
     frame.render_widget(
         Tabs::new(titles)
             .select(app.telemetry_tab.index())
@@ -654,7 +519,9 @@ fn draw_telemetry(frame: &mut Frame<'_>, app: &App) {
         TelemetryTab::Overview => draw_overview(frame, app, chunks[2]),
         TelemetryTab::Metrics => draw_metrics(frame, app, chunks[2]),
         TelemetryTab::Runs => {
-            if app.run_detail {
+            if !app.chat.archives.is_empty() {
+                app.draw_conversations(frame, chunks[2]);
+            } else if app.run_detail {
                 draw_run_report(frame, app, chunks[2]);
             } else {
                 draw_runs(frame, app, chunks[2]);
@@ -673,6 +540,8 @@ fn telemetry_footer(app: &App) -> String {
             "[Enter/Esc] finish  [Backspace] delete\nSearch: {}_",
             app.filter_query
         )
+    } else if app.telemetry_tab == TelemetryTab::Runs && !app.chat.archives.is_empty() {
+        app.conversation_footer()
     } else if app.run_detail {
         format!("[j/k ↑/↓] metric  [Enter] detail  [Esc] {}  [n/N] run\n[PgUp/PgDn] {} scroll  [/] highlight  [c] clear all runs",
             if app.historical_detail { "Close detail (report)" } else { "Close report (runs)" },
@@ -1488,18 +1357,20 @@ fn draw_help(frame: &mut Frame<'_>, app: &App) {
             "Workspace (outside Telemetry)",
             Style::default().fg(ACCENT),
         )),
-        Line::from("[w] Web | [m] Models | [t] Telemetry | [b] Tests/back"),
+        Line::from("[w] Web | [m] Models | [t] Telemetry | [b] Chat"),
         Line::from(""),
-        Line::from(Span::styled("Test bench", Style::default().fg(ACCENT))),
+        Line::from(Span::styled("Chat", Style::default().fg(ACCENT))),
         Line::from("[l] record microphone    [f] select WAV    [n] next WAV"),
-        Line::from("[r] retry source        [m] switch model  [t] telemetry"),
+        Line::from("[Enter] confirm & send  [e] edit  [i] type  [Alt+Enter] new line"),
+        Line::from("[c] new conversation  [d] finish  [x] discard/cancel  [s] isolated tests"),
+        Line::from("[p] replay  [v] auto voice  [z] stop voice  [r] retry source"),
         Line::from("[j/k] scroll transcript/details   [?] help   [q] quit"),
         Line::from(""),
         Line::from(Span::styled(
             "Telemetry (1–4 switch telemetry views; Esc returns)",
             Style::default().fg(ACCENT),
         )),
-        Line::from("[1] overview  [2] live metrics  [3] runs/reports  [4] logs"),
+        Line::from("[1] overview  [2] live metrics  [3] conversations/runs  [4] logs"),
         Line::from("[j/k or ↑/↓] select metrics/runs, otherwise scroll"),
         Line::from("[ and ] previous/next run  [f or /] live shared filter  [x] reset"),
         Line::from("[Enter/Esc] finish search  [c] clear logs / clear runs (confirm)  [Esc] back"),
@@ -1569,15 +1440,6 @@ fn draw_header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
 
 fn draw_footer(frame: &mut Frame<'_>, _app: &App, area: Rect, text: &str) {
     super::workspace_ui::draw_shortcut_footer(frame, area, text);
-}
-
-fn draw_status_line(frame: &mut Frame<'_>, app: &App, area: Rect) {
-    let (text, color) = if let Some(error) = app.error_message.as_deref() {
-        (format!("Error: {error}"), Color::Red)
-    } else {
-        (app.status_message.clone(), Color::Gray)
-    };
-    frame.render_widget(Paragraph::new(text).style(Style::default().fg(color)), area);
 }
 
 fn base_layout(area: Rect) -> std::rc::Rc<[Rect]> {
@@ -1702,14 +1564,6 @@ fn metric_number(value: Option<f64>, unit: metrics::MetricUnit) -> String {
         }
         metrics::MetricUnit::Count => format!("{value:.0}"),
         _ => format!("{value:.2}{}", super::telemetry::unit_text(unit)),
-    }
-}
-
-fn yes_no(value: bool) -> &'static str {
-    if value {
-        "yes"
-    } else {
-        "no"
     }
 }
 
@@ -1951,10 +1805,7 @@ mod tests {
                     details.contains("Purpose:         Reasoning & reply"),
                     "{details}"
                 );
-                assert!(
-                    details.contains("Server-owned reply runtime; not local STT."),
-                    "{details}"
-                );
+                assert!(details.contains("Local reply runtime;"), "{details}");
                 assert!(
                     details.contains("Files do not establish runtime readiness."),
                     "{details}"
@@ -2055,7 +1906,7 @@ mod tests {
                 assert!(rect_text(buffer, details).contains("MODEL DETAILS"));
                 let text = rect_text(buffer, progress);
                 assert!(text.contains("LOCAL DOWNLOAD"), "{text}");
-                assert!(text.contains("[F7] Cancel"), "{text}");
+                assert!(text.contains("[x] Cancel"), "{text}");
                 assert!(
                     text.contains(if percent.is_some() {
                         "67%"
@@ -2112,7 +1963,7 @@ mod tests {
                 assert!(retained.contains("LOCAL DOWNLOAD STATUS"), "{retained}");
                 assert!(retained.contains("Model: voice-fixture"), "{retained}");
                 assert!(retained.contains(status), "{retained}");
-                assert!(!rect_text(&buffer, buffer.area).contains("[F7] Cancel"));
+                assert!(!rect_text(&buffer, buffer.area).contains("[x] Cancel"));
                 assert!(rect_text(&buffer, Rect::new(0, 0, width, 3)).contains("PHEME VA / MODELS"));
             }
         }
@@ -2187,82 +2038,49 @@ mod tests {
     }
 
     #[test]
-    fn bench_keeps_workspace_navigation_and_shortcuts_visible() {
+    fn chat_keeps_navigation_panels_and_left_aligned_shortcuts_visible() {
         let mut app = super::super::app::tests::test_app();
         app.screen = Screen::Bench;
-        for (width, height) in [(80, 24), (120, 32), (190, 44)] {
-            let mut terminal =
-                ratatui::Terminal::new(ratatui::backend::TestBackend::new(width, height)).unwrap();
-            terminal.draw(|frame| draw(frame, &app)).unwrap();
-            let buffer = terminal.backend().buffer();
-            let header = buffer.content[..usize::from(width) * 3]
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            assert!(header.contains("PHEME VA / TEST BENCH"));
-            assert!(header.contains("Active STT:"));
-            for label in [
-                "1 Web",
-                "2 Tests",
-                "3 Models",
-                "4 Telemetry",
-                "[w] Web",
-                "[m] Models",
+        for (width, height) in [(80, 24), (120, 36), (190, 44)] {
+            let buffer = picker_buffer(&app, width, height);
+            let text = rect_text(&buffer, buffer.area);
+            for panel in [
+                "PHEME VA / CHAT",
+                "SOURCE",
+                "CHAT /",
+                "RUN DETAILS",
+                "LIVE METRICS",
             ] {
                 assert!(
-                    !header.contains(label),
-                    "unexpected navigation {label}: {header}"
+                    text.contains(panel),
+                    "missing {panel} at {width}x{height}: {text}"
                 );
             }
-            let footer = buffer.content[usize::from(width) * usize::from(height - 2)..]
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            for shortcut in [
+            let rows = super::super::workspace_ui::footer_height(&app.chat_footer(), width);
+            let footer = rect_text(&buffer, Rect::new(0, height - rows, width, rows));
+            for key in [
+                "[b] Chat",
                 "[w] Web",
                 "[m] Models",
                 "[t] Telemetry",
-                "[r] Retry",
-                "[n] Next file",
-                "[f] Folder",
+                "[c] New",
+                "[d] Finish",
                 "[l] Mic",
-                "[j/k] Scroll",
-                "[?] Help",
+                "[f] WAV",
+                "[n] Next file",
                 "[q] Quit",
-                "[Esc] Back",
             ] {
-                assert!(
-                    footer.contains(shortcut),
-                    "missing {shortcut} at {width}x{height}: {footer}"
-                );
+                assert!(footer.contains(key), "missing {key}: {footer}");
             }
-            assert!(!footer.contains("[b]"), "{footer}");
-            let rows = (height - 2..height)
-                .map(|y| rect_text(buffer, Rect::new(0, y, width, 1)))
-                .filter(|row| !row.trim().is_empty())
-                .collect::<Vec<_>>();
-            if width == 190 {
-                assert_eq!(rows.len(), 1, "{rows:?}");
-                assert!(rows[0].ends_with("[j/k] Scroll"), "{}", rows[0]);
-                let last = width - "[j/k] Scroll".width() as u16;
-                assert_eq!(buffer[(last, height - 2)].symbol(), "[");
-                assert!(last > width * 9 / 10);
-            } else if width == 80 {
-                assert_eq!(rows.len(), 2, "{rows:?}");
-            }
-            let text = buffer
-                .content
-                .iter()
-                .map(|cell| cell.symbol())
-                .collect::<String>();
-            for panel in ["SOURCE", "FINAL TRANSCRIPT", "RUN DETAILS", "METRICS"] {
-                assert!(text.contains(panel), "missing {panel} at {width}x{height}");
+            for row in footer.lines().filter(|s| !s.is_empty()) {
+                assert!(row.starts_with('['), "{row}");
+                assert!(!row.trim_end().contains("   "), "stretched spacing: {row}");
             }
         }
     }
 
     #[test]
-    fn bench_status_and_errors_never_overwrite_shortcuts_or_panels() {
+    fn chat_status_and_errors_never_overwrite_shortcuts_or_panels() {
         let mut app = super::super::app::tests::test_app();
         app.screen = Screen::Bench;
         app.status_message = "footer status fixture".into();
@@ -2270,34 +2088,20 @@ mod tests {
             for error in [None, Some("recoverable UI fixture".to_owned())] {
                 app.error_message = error;
                 let buffer = picker_buffer(&app, width, height);
-                let status = rect_text(&buffer, Rect::new(0, height - 3, width, 1));
-                let footer = rect_text(&buffer, Rect::new(0, height - 2, width, 2));
+                let rows = super::super::workspace_ui::footer_height(&app.chat_footer(), width);
+                let status = rect_text(&buffer, Rect::new(0, height - rows - 1, width, 1));
+                let footer = rect_text(&buffer, Rect::new(0, height - rows, width, rows));
                 assert!(
-                    status.contains(if app.error_message.is_some() {
-                        "Error: recoverable UI fixture"
-                    } else {
-                        "footer status fixture"
-                    }),
+                    status.contains(
+                        app.error_message
+                            .as_deref()
+                            .unwrap_or("footer status fixture")
+                    ),
                     "{status}"
                 );
-                for hint in [
-                    "[w] Web",
-                    "[m] Models",
-                    "[t] Telemetry",
-                    "[q] Quit",
-                    "[Esc] Back",
-                    "[?] Help",
-                    "[r] Retry",
-                    "[n] Next file",
-                    "[f] Folder",
-                    "[l] Mic",
-                    "[j/k] Scroll",
-                ] {
-                    assert!(footer.contains(hint), "missing {hint}: {footer}");
-                    assert!(!status.contains(hint), "{status}");
-                }
-                assert!(!footer.contains("fixture"), "{footer}");
-                assert!(rect_text(&buffer, Rect::new(0, 3, width, height - 6)).contains("METRICS"));
+                assert!(!footer.contains("fixture"));
+                assert!(footer.contains("[q] Quit"));
+                assert!(rect_text(&buffer, buffer.area).contains("LIVE METRICS"));
             }
         }
     }
@@ -2308,13 +2112,15 @@ mod tests {
         for (width, height) in [(80, 24), (120, 32)] {
             app.screen = Screen::Help;
             let text = rendered(&app, width, height);
-            assert!(text.contains("[w] Web | [m] Models | [t] Telemetry | [b] Tests/back"));
+            assert!(text.contains("[w] Web | [m] Models | [t] Telemetry | [b] Chat"));
             for label in ["1 Web", "2 Tests", "3 Models", "4 Telemetry"] {
                 assert!(!text.contains(label), "{text}");
             }
             assert!(text.contains("Workspace (outside Telemetry)"));
             assert!(text.contains("Telemetry (1–4 switch telemetry views; Esc returns)"));
-            assert!(text.contains("[1] overview  [2] live metrics  [3] runs/reports  [4] logs"));
+            assert!(
+                text.contains("[1] overview  [2] live metrics  [3] conversations/runs  [4] logs")
+            );
             let help_buffer = picker_buffer(&app, width, height);
             let help_footer = rect_text(&help_buffer, Rect::new(0, height - 2, width, 2));
             assert!(help_footer.contains("[Esc] Back"), "{help_footer}");
@@ -2325,7 +2131,7 @@ mod tests {
             for label in [
                 "[1] Overview",
                 "[2] Metrics",
-                "[3] Runs",
+                "[3] Conversations",
                 "[4] Logs",
                 "[1-4] tab",
             ] {
@@ -2334,7 +2140,7 @@ mod tests {
             for label in [
                 "[w] Web",
                 "[m] Models",
-                "[b] Tests/back",
+                "[b] Chat",
                 "[q] Quit",
                 "[Esc] Back",
             ] {
@@ -2376,7 +2182,7 @@ mod tests {
             for hint in [
                 "[w] Web",
                 "[m] Models",
-                "[b] Tests/back",
+                "[b] Chat",
                 "[q] Quit",
                 "[Esc] Back",
                 "[1-4] tab",

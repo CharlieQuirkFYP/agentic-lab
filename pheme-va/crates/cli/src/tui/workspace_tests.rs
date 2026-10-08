@@ -45,7 +45,7 @@ fn alphabet_keys_navigate_and_digits_only_control_telemetry() {
     app.voice.target = Some("invalid URL".into());
     for (key, screen) in [
         ('w', Screen::Web),
-        ('b', Screen::ServerTests),
+        ('b', Screen::Bench),
         ('m', Screen::Models),
     ] {
         press(&mut app, KeyCode::Char(key));
@@ -70,7 +70,7 @@ fn alphabet_keys_navigate_and_digits_only_control_telemetry() {
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.screen, Screen::Models);
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.screen, Screen::ServerTests);
+    assert_eq!(app.screen, Screen::Bench);
     press(&mut app, KeyCode::Char('t'));
     press(&mut app, KeyCode::Char('w'));
     assert_eq!(app.screen, Screen::Web);
@@ -82,7 +82,7 @@ fn standalone_back_uses_welcome_or_bench_and_web_is_accessible() {
     press(&mut app, KeyCode::Char('m'));
     assert_eq!(app.screen, Screen::Models);
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.screen, Screen::Welcome);
+    assert_eq!(app.screen, Screen::Bench);
     app.active_model = Some(ActiveModel {
         id: "fixture".into(),
         family: "whisper".into(),
@@ -91,7 +91,7 @@ fn standalone_back_uses_welcome_or_bench_and_web_is_accessible() {
     });
     press(&mut app, KeyCode::Char('m'));
     press(&mut app, KeyCode::Esc);
-    assert_eq!(app.screen, Screen::Welcome);
+    assert_eq!(app.screen, Screen::Bench);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.screen, Screen::Models);
     press(&mut app, KeyCode::Esc);
@@ -128,7 +128,7 @@ fn nested_pages_unwind_in_order_and_current_page_shortcuts_are_noops() {
     app.screen = Screen::Web;
     for (key, screen) in [
         ('w', Screen::Web),
-        ('b', Screen::ServerTests),
+        ('b', Screen::Bench),
         ('m', Screen::Models),
         ('w', Screen::Web),
         ('t', Screen::Telemetry),
@@ -151,7 +151,7 @@ fn nested_pages_unwind_in_order_and_current_page_shortcuts_are_noops() {
         Screen::Telemetry,
         Screen::Web,
         Screen::Models,
-        Screen::ServerTests,
+        Screen::Bench,
         Screen::Web,
     ] {
         press(&mut app, KeyCode::Esc);
@@ -159,13 +159,13 @@ fn nested_pages_unwind_in_order_and_current_page_shortcuts_are_noops() {
     }
     for _ in 0..3 {
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.screen, Screen::Web);
+        assert_eq!(app.screen, Screen::Bench);
         assert!(app.navigation_history.is_empty());
         assert!(!app.should_quit);
     }
     press(&mut app, KeyCode::Char('?'));
     press(&mut app, KeyCode::Char('?'));
-    assert_eq!(app.screen, Screen::Web);
+    assert_eq!(app.screen, Screen::Bench);
     assert!(app.navigation_history.is_empty());
 }
 
@@ -193,7 +193,7 @@ fn page_history_is_bounded_and_root_back_does_not_start_a_new_history() {
     }
     for _ in 0..3 {
         press(&mut app, KeyCode::Esc);
-        assert_eq!(app.screen, Screen::Web);
+        assert_eq!(app.screen, Screen::Bench);
         assert!(app.navigation_history.is_empty());
     }
 }
@@ -201,12 +201,12 @@ fn page_history_is_bounded_and_root_back_does_not_start_a_new_history() {
 #[test]
 fn connected_and_standalone_roots_only_quit_explicitly() {
     for (connected, loaded, initial, root) in [
-        (true, false, Screen::Web, Screen::Web),
-        (true, false, Screen::ServerTests, Screen::ServerTests),
-        (true, false, Screen::Models, Screen::Web),
-        (false, false, Screen::Welcome, Screen::Welcome),
-        (false, false, Screen::Models, Screen::Welcome),
-        (false, false, Screen::Web, Screen::Welcome),
+        (true, false, Screen::Web, Screen::Bench),
+        (true, false, Screen::ServerTests, Screen::Bench),
+        (true, false, Screen::Models, Screen::Bench),
+        (false, false, Screen::Welcome, Screen::Bench),
+        (false, false, Screen::Models, Screen::Bench),
+        (false, false, Screen::Web, Screen::Bench),
         (false, true, Screen::Bench, Screen::Bench),
         (false, true, Screen::Models, Screen::Bench),
         (false, true, Screen::Web, Screen::Bench),
@@ -275,6 +275,7 @@ fn tests_text_focus_then_diagnostics_close_before_page_back_without_cancelling()
     app.voice.target = Some("invalid URL".into());
     app.screen = Screen::Models;
     press(&mut app, KeyCode::Char('b'));
+    press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Char('i'));
     press(&mut app, KeyCode::Char('w'));
     let history = app.navigation_history.clone();
@@ -290,6 +291,8 @@ fn tests_text_focus_then_diagnostics_close_before_page_back_without_cancelling()
     assert!(!app.voice.tests.diagnostics);
     assert_eq!(app.screen, Screen::ServerTests);
     assert_eq!(app.navigation_history, history);
+    press(&mut app, KeyCode::Esc);
+    assert_eq!(app.screen, Screen::Bench);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.screen, Screen::Models);
     assert_eq!(app.voice.tests.request, Some(request));
@@ -550,7 +553,7 @@ fn bench_back_during_work_is_navigation_not_request_cancellation() {
 }
 
 #[test]
-fn connected_startup_and_model_actions_cannot_load_or_rebuild_a_local_runtime() {
+fn web_inspection_target_does_not_disable_local_model_loading() {
     let options = TuiOptions {
         server_url: Some("invalid URL".into()),
         model_id: Some("whisper".into()),
@@ -578,20 +581,17 @@ fn connected_startup_and_model_actions_cannot_load_or_rebuild_a_local_runtime() 
         metrics,
         Arc::new(AtomicU64::new(0)),
     );
-    assert_eq!(app.screen, Screen::Web);
     app.start_initial_load();
-    app.start_cache_probe();
-    app.send_load_model("whisper".into(), None);
-    app.start_adapter_build("whisper");
-    press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Enter);
-    assert_eq!(app.screen, Screen::Models);
-    assert!(commands.try_recv().is_err());
-    assert!(app.active_model.is_none());
-    assert!(app.build.is_none());
-    assert!(app.current_request.is_none());
+    assert!(matches!(
+        commands.try_recv().unwrap(),
+        WorkerCommand::LoadModel(_)
+    ));
+    assert!(app.current_request.is_some());
     assert!(app.voice.connection_error.is_some());
-    assert!(app.status_message.contains("use s"));
+    assert!(
+        app.chat.connection.is_none(),
+        "Web target must not create a remote chat client"
+    );
 }
 
 #[test]
@@ -616,11 +616,12 @@ fn editors_own_alphabet_and_digit_keys_and_submission_is_explicit() {
     assert!(!app.should_quit);
     press(&mut app, KeyCode::Enter);
     assert!(!app.voice.editor.as_ref().unwrap().pending);
-    press(&mut app, KeyCode::F(6));
+    press(&mut app, KeyCode::Enter);
     assert!(app.voice.editor.as_ref().unwrap().error.is_some());
     press(&mut app, KeyCode::Esc);
     assert!(app.voice.editor.as_ref().unwrap().buffer.dirty);
     press(&mut app, KeyCode::Char('b'));
+    press(&mut app, KeyCode::Char('s'));
     press(&mut app, KeyCode::Char('i'));
     for ch in "qwmtb1234".chars() {
         press(&mut app, KeyCode::Char(ch));
@@ -628,7 +629,7 @@ fn editors_own_alphabet_and_digit_keys_and_submission_is_explicit() {
     assert_eq!(app.screen, Screen::ServerTests);
     assert_eq!(app.voice.tests.buffer.text, "qwmtb1234");
     assert!(!app.should_quit);
-    press(&mut app, KeyCode::F(6));
+    press(&mut app, KeyCode::Enter);
     assert!(app.voice.tests.request.is_none());
     assert!(app.voice.tests.error.is_some());
     press(&mut app, KeyCode::Esc);
@@ -833,7 +834,7 @@ fn role_picker_owns_navigation_filter_keys_and_arbitrary_path_input() {
     assert_eq!(app.screen, Screen::Models);
     press(&mut app, KeyCode::Esc);
     press(&mut app, KeyCode::Char('b'));
-    assert_eq!(app.screen, Screen::Welcome);
+    assert_eq!(app.screen, Screen::Bench);
 }
 
 #[test]

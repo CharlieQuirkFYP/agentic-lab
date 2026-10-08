@@ -18,7 +18,12 @@ use super::model_actions::{self, Confirmation, RoleSelection};
 use super::model_catalog::{CatalogEntry, ModelCatalog};
 
 pub fn header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
-    let mode = if let Some(target) = app.voice.target.as_deref() {
+    let mode = if let Some(target) = app
+        .voice
+        .target
+        .as_deref()
+        .filter(|_| matches!(app.screen, Screen::Web | Screen::WebEditor))
+    {
         format!(
             "{} / SERVER {target}",
             if app.voice.online {
@@ -28,50 +33,49 @@ pub fn header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
             }
         )
     } else {
-        "LOCAL STANDALONE / no server inference".into()
+        "LOCAL CHAT".into()
     };
-    let active = if app.voice.connected_mode() {
-        if let Some(snapshot) = app.voice.snapshot.as_ref() {
-            let readiness = |ready| {
-                if !app.voice.online {
-                    "stale"
-                } else if ready {
+    let active =
+        if matches!(app.screen, Screen::Web | Screen::WebEditor) && app.voice.connected_mode() {
+            if let Some(snapshot) = app.voice.snapshot.as_ref() {
+                let readiness = |ready| {
+                    if !app.voice.online {
+                        "stale"
+                    } else if ready {
+                        "ready"
+                    } else {
+                        "not ready"
+                    }
+                };
+                let stt_ready = readiness(snapshot.stt.ready);
+                let reply_ready = readiness(snapshot.reply.ready);
+                let busy = if snapshot.busy { " | BUSY" } else { "" };
+                let labels = format!("Active STT:  [{stt_ready}] | Reply:  [{reply_ready}]{busy}");
+                let name_width = (area.width as usize).saturating_sub(labels.width()) / 2;
+                format!(
+                    "Active STT: {} [{stt_ready}] | Reply: {} [{reply_ready}]{busy}",
+                    compact_name(&snapshot.stt.name, name_width),
+                    compact_name(&snapshot.reply.name, name_width)
+                )
+            } else {
+                "Active STT: unavailable | Reply: unavailable".into()
+            }
+        } else {
+            let reply = app.local_runtime.as_ref().map(|r| r.voice.reply_status());
+            format!(
+                "Active STT: {} | Reply: {} [{}]",
+                app.active_model
+                    .as_ref()
+                    .map(|m| m.id.as_str())
+                    .unwrap_or("unavailable"),
+                reply.as_ref().map(|r| r.name.as_str()).unwrap_or("loading"),
+                if reply.as_ref().is_some_and(|r| r.ready) {
                     "ready"
                 } else {
                     "not ready"
                 }
-            };
-            let stt_ready = readiness(snapshot.stt.ready);
-            let reply_ready = readiness(snapshot.reply.ready);
-            let busy = if snapshot.busy { " | BUSY" } else { "" };
-            let labels = format!("Active STT:  [{stt_ready}] | Reply:  [{reply_ready}]{busy}");
-            let name_width = (area.width as usize).saturating_sub(labels.width()) / 2;
-            format!(
-                "Active STT: {} [{stt_ready}] | Reply: {} [{reply_ready}]{busy}",
-                compact_name(&snapshot.stt.name, name_width),
-                compact_name(&snapshot.reply.name, name_width)
             )
-        } else {
-            "Active STT: unavailable | Reply: unavailable".into()
-        }
-    } else {
-        format!(
-            "Active STT: {} | Reply: unavailable (standalone STT only)",
-            app.active_model
-                .as_ref()
-                .map(|model| format!(
-                    "{} [{} / {}]",
-                    model.id,
-                    model.runtime.as_deref().unwrap_or("runtime unknown"),
-                    if app.current_request.is_some() {
-                        "busy"
-                    } else {
-                        "ready"
-                    }
-                ))
-                .unwrap_or_else(|| "none [not ready]".into())
-        )
-    };
+        };
     frame.render_widget(
         Paragraph::new(vec![
             Line::from(Span::styled(
@@ -116,7 +120,7 @@ pub(super) fn workspace_guide(app: &App) -> String {
         items.push("[t] Telemetry");
     }
     if !matches!(app.screen, Screen::Bench | Screen::ServerTests) {
-        items.push("[b] Tests/back");
+        items.push("[b] Chat");
     }
     items.push("[q] Quit");
     if matches!(app.screen, Screen::Models | Screen::Loading) && app.build.is_some() {
@@ -177,17 +181,8 @@ fn pack_shortcuts(lines: &mut Vec<Line<'static>>, items: &mut Vec<&str>, width: 
     }
 }
 
-fn spread_shortcuts(items: &[&str], width: usize) -> Line<'static> {
-    let mut text = items[0].to_owned();
-    if items.len() > 1 {
-        let gaps = items.len() - 1;
-        let space = width - items.iter().map(|item| item.width()).sum::<usize>();
-        for (index, item) in items[1..].iter().enumerate() {
-            text.push_str(&" ".repeat(space / gaps + usize::from(index < space % gaps)));
-            text.push_str(item);
-        }
-    }
-    Line::from(text)
+fn spread_shortcuts(items: &[&str], _width: usize) -> Line<'static> {
+    Line::from(items.join("  "))
 }
 
 fn wrap_footer_line(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -263,7 +258,7 @@ pub fn web(frame: &mut Frame<'_>, app: &App) {
         "Discard the retained local web editor?\n[y] Confirm  [Esc] Keep".into()
     } else {
         format!(
-            "{}\n[e] Edit pending turn  [x] Discard editor  [p] Replay  [F8] Stop voice",
+            "{}\n[e] Edit pending turn  [x] Discard editor  [p] Replay  [z] Stop voice",
             workspace_guide(app)
         )
     };
@@ -274,9 +269,9 @@ pub fn web(frame: &mut Frame<'_>, app: &App) {
         &footer,
     );
     if !app.voice.connected_mode() {
-        panel(frame, area, "WEB / DISABLED IN STANDALONE", format!(
-            "[b] Tests/back returns to the local STT bench;\n[m] Models manages local files and next-start choices.\n\nConnect explicitly through Go:\n  cli tui --server-url\n  cli tui --server-url {DEFAULT_SERVER_URL}\n\nNo flag means no server polling, no reply model and no extra local inference runtime.\nA remote connection sends test audio/questions to that server. Local downloads remain on this host."
-        ), 0);
+        panel(frame, area, "WEB / NO INSPECTION TARGET", format!(
+            "[b] Chat returns to local voice/typed Chat.\n[m] Models manages local artifacts and startup choices.\n\nInspect Web explicitly through Go:\n  cli tui --server-url\n  cli tui --server-url {DEFAULT_SERVER_URL}\n\nChat and Tests always use the local Rust runtime.\nThis URL is only for Web inspection and approval.\nLocal and server models/conversations are separate."
+        ),0);
         return;
     }
     let Some(snapshot) = app.voice.snapshot.as_ref() else {
@@ -329,7 +324,7 @@ pub fn web(frame: &mut Frame<'_>, app: &App) {
 }
 
 pub fn web_editor(frame: &mut Frame<'_>, app: &App) {
-    let area = layout(frame, app, "EDIT WEB TURN", "[F6] Explicitly submit this WEB turn  [Esc] Close (retain text)  [arrows/Home/End] Move  [Enter] Newline");
+    let area = layout(frame, app, "EDIT WEB TURN", "[Enter] Explicitly submit this WEB turn  [Esc] Close (retain text)  [arrows/Home/End] Move  [Alt+Enter] Newline");
     let Some(editor) = app.voice.editor.as_ref() else {
         return;
     };
@@ -349,7 +344,7 @@ pub fn web_editor(frame: &mut Frame<'_>, app: &App) {
     });
     panel(frame, chunks[0], &format!("WEB TURN {}", editor.turn_id), format!(
         "Original: {}\n{}\nThis approves the WEB request. The answer returns to the WEB, not a TUI test.", editor.original,
-        if editor.accepted { "Approved by server — read only" } else if editor.pending { "Submission pending — no automatic retry" } else if stale { "STALE TURN — submission disabled; local text retained" } else if editor.buffer.dirty { "Unsaved local changes" } else { "Review before explicit F6 submission" }), 0);
+        if editor.accepted { "Approved by server — read only" } else if editor.pending { "Submission pending — no automatic retry" } else if stale { "STALE TURN — submission disabled; local text retained" } else if editor.buffer.dirty { "Unsaved local changes" } else { "Review before explicit Enter submission" }), 0);
     draw_editor(
         frame,
         chunks[1],
@@ -377,22 +372,23 @@ pub fn web_editor(frame: &mut Frame<'_>, app: &App) {
 pub fn tests(frame: &mut Frame<'_>, app: &App) {
     let tests = &app.voice.tests;
     let footer = if tests.editing {
-        "[F6] Run isolated reply test  [Esc] Finish editing  [arrows] Move  [Enter] Newline (not submit)".into()
+        "[Enter] Run isolated reply test  [Esc] Finish editing  [arrows] Move  [Alt+Enter] Newline"
+            .into()
     } else if tests.diagnostics {
         format!(
-            "{}\n[d] Back to tests  [↑/↓ PgUp/PgDn] Scroll  [F7] Cancel test  [F8] Stop voice",
+            "{}\n[d] Back to tests  [↑/↓ PgUp/PgDn] Scroll  [x] Cancel test  [z] Stop voice",
             workspace_guide(app)
         )
     } else {
-        format!("{}\n[i/e] Edit  [l] Mic  [f] WAV  [F6] Reply  [r] Retry  [F7] Cancel test\n[d] Diagnostics  [p] Replay  [v] Voice  [F8] Stop voice", workspace_guide(app))
+        format!("{}\n[i/e] Edit  [l] Mic  [f] WAV  [Enter] Reply  [r] Retry  [x] Cancel test\n[d] Diagnostics  [p] Replay  [v] Voice  [z] Stop voice", workspace_guide(app))
     };
-    let area = layout(frame, app, "SERVER TESTS — ISOLATED FROM WEB", &footer);
+    let area = layout(frame, app, "LOCAL TESTS — ISOLATED FROM CHAT/WEB", &footer);
     if tests.diagnostics {
-        let stt = tests.transcript.as_ref().map_or("No completed server STT result.".into(), |transcript| format!(
+        let stt = tests.transcript.as_ref().map_or("No completed local STT result.".into(), |transcript| format!(
             "Model: {} / Backend: {}\nGate status: {}\nServer STT processing: {} ms\n\nRaw transcript:\n{}\n\nCleaned transcript:\n{}",
             transcript.model_id, transcript.stt_backend, transcript.status, transcript.processing_time_ms, transcript.raw_text, transcript.text));
         panel(frame, area, "ISOLATED TEST DIAGNOSTICS", format!(
-            "Source: {}\nStage: {}\nClient last-operation total: {} (not server resource/energy data)\nError: {}\n\n{}",
+            "Source: {}\nStage: {}\nClient last-operation total: {} (not resource/energy data)\nError: {}\n\n{}",
             tests.source, tests.stage, tests.elapsed_ms.map_or("unavailable".into(), |ms| format!("{ms} ms")), tests.error.as_deref().unwrap_or("none"), stt), app.scroll);
         return;
     }
@@ -430,7 +426,7 @@ pub fn tests(frame: &mut Frame<'_>, app: &App) {
             transcript.processing_time_ms,
             transcript.raw_text,
             tests.elapsed_ms.map_or("unavailable".into(), |ms| format!(
-                "{ms} ms (not server CPU/power)"
+                "{ms} ms (not CPU/power)"
             ))
         )
     } else {
@@ -479,16 +475,16 @@ pub fn models(frame: &mut Frame<'_>, app: &App) {
 fn model_footer(app: &App) -> String {
     if let Some(roles) = app.models.role_selection.as_ref() {
         return if roles.adding_path {
-            "[Enter] Add local .txt path  [Esc] Cancel path  [Backspace] Delete\nPath input: shortcuts type text, not navigation\nApplied next server start only; active server unchanged".into()
+            "[Enter] Add local .txt path  [Esc] Cancel path  [Backspace] Delete\nPath input: shortcuts type text, not navigation\nApplied next host start only; active hosts unchanged".into()
         } else {
-            "[↑/↓] File  [Space] Toggle  [a] Add path  [Enter] Save  [Esc] Cancel\nSelection order is the combined prompt order\nApplied next server start only; active server unchanged".into()
+            "[↑/↓] File  [Space] Toggle  [a] Add path  [Enter] Save  [Esc] Cancel\nSelection order is the combined prompt order\nApplied next host start only; active hosts unchanged".into()
         };
     }
     if app.models.confirmation.is_some() {
-        return "[y] Confirm local action  [Esc] Cancel  [PgUp/PgDn] Scroll\nNetwork/download or verified next-start choice only\nRunning server unchanged; no model-management HTTP request".into();
+        return "[y] Confirm local action  [Esc] Cancel  [PgUp/PgDn] Scroll\nNetwork/download or verified next-start choice only\nActive hosts unchanged; no model-management HTTP request".into();
     }
     if app.models.preview.is_some() || app.models.command {
-        return "[PgUp/PgDn] Scroll  [Esc] Close\nFiles and roles apply next server start only\nRunning server unchanged; no model-management HTTP request".into();
+        return "[PgUp/PgDn] Scroll  [Esc] Close\nReply files/roles apply next TUI/server startup\nActive hosts unchanged; no model-management HTTP request".into();
     }
     if app.models.filtering {
         return "[Enter/Esc] Finish  [Backspace] Delete\nSearch: type filter across all models\nNavigation shortcuts disabled while editing".into();
@@ -497,13 +493,9 @@ fn model_footer(app: &App) -> String {
         .models
         .selected(&app.catalog)
         .is_some_and(|entry| entry.manifest.purpose() == Some(ModelPurpose::Reply));
-    let enter = if app.voice.connected_mode() || reply {
-        "Download"
-    } else {
-        "Download/load"
-    };
+    let enter = if reply { "Download" } else { "Download/load" };
     let extra = if app.download.is_some() {
-        "  [F7] Cancel"
+        "  [x] Cancel"
     } else {
         ""
     };
@@ -527,7 +519,7 @@ pub(super) fn model_details(
             area,
             "COMBINED ROLE PREVIEW",
             format!(
-                "Applied next server start only.\nSHA256: {}\n\n{}",
+                "Applied next host start only.\nSHA256: {}\n\n{}",
                 prompt.sha256, prompt.text
             ),
             app.models.scroll,
@@ -536,7 +528,7 @@ pub(super) fn model_details(
     }
     if app.models.command {
         panel(frame, area, "NEXT-START COMMAND", format!(
-            "Active server unchanged. No hot-swap.\nNext STT: {}\nNext reply: {}\n\nRun from pheme-va/:\n{}\n\nModel and selected role files apply only on the next server start.\nRestart loses in-memory web history. Finish or deliberately cancel web work before restarting.\nThis command does not establish server readiness.",
+            "Active server unchanged. No hot-swap.\nNext STT: {}\nNext reply: {}\n\nRun from pheme-va/:\n{}\n\nSaved reply and roles also apply on the next TUI start; quit and relaunch for local Chat.\nSTT here is the next server choice; Enter on Models selects local STT.\nRestart loses in-memory web history. Finish or deliberately cancel web work before restarting.\nThis command does not establish server readiness.",
             app.config.server_stt_model.as_deref().unwrap_or("not chosen"),
             app.config.server_reply_model.as_deref().unwrap_or("not chosen"),
             model_actions::startup_command(&app.config)), app.models.scroll);
@@ -544,9 +536,20 @@ pub(super) fn model_details(
     }
     if let Some(confirmation) = app.models.confirmation.as_ref() {
         let (title, text) = match confirmation {
-            Confirmation::Download(id) => ("CONFIRM LOCAL DOWNLOAD", download_confirmation(app, id)),
-            Confirmation::Choose(id) => ("VERIFIED NEXT-START CHOICE", format!(
-                "Model: {id}\nArtifact bundle and selected roles checked locally.\n\nThis persists a startup choice only. Active server unchanged.\nRestart loses in-memory web history; finish/cancel web work first.\n\n[y] Save locally and show command\n[Esc] Cancel")),
+            Confirmation::Download(id) => {
+                ("CONFIRM LOCAL DOWNLOAD", download_confirmation(app, id))
+            }
+            Confirmation::Choose(id) => {
+                let guidance = if entry
+                    .is_some_and(|e| e.manifest.purpose() == Some(ModelPurpose::Reply))
+                {
+                    "Reply and roles apply after TUI/server restart. Finish local Chat, quit and relaunch."
+                } else {
+                    "This STT choice applies on server restart. Enter on Models loads/prepares STT locally."
+                };
+                ("VERIFIED NEXT-START CHOICE", format!(
+                    "Model: {id}\nArtifact bundle and selected roles checked locally.\n\n{guidance}\nActive models unchanged. Archives stay read-only after restart.\n\n[y] Save locally and show command\n[Esc] Cancel"))
+            }
         };
         panel(frame, area, title, text, app.models.scroll);
         return;
@@ -630,13 +633,13 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
     ];
     if reply {
         lines.extend([
-            Line::from("Server-owned reply runtime; not local STT."),
+            Line::from("Local reply runtime; applies on next TUI startup."),
             Line::from("Files do not establish runtime readiness."),
         ]);
     }
     lines.extend([
         model_field("Standalone:", app.adapter_availability(entry).label()),
-        model_field("Server adapter:", server),
+        model_field("Adapter support:", server),
         model_field(
             "Next start:",
             if chosen {
@@ -701,7 +704,7 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
     ]);
     if !entry.artifacts_available() {
         lines.push(Line::from("[Enter] requests a confirmed local download; pinned checksums are verified by the script."));
-    } else if !app.voice.connected_mode() && !reply {
+    } else if !reply {
         lines.push(Line::from(match app.adapter_availability(entry) {
             AdapterAvailability::Compiled => "[Enter] loads this standalone STT candidate.",
             AdapterAvailability::Cached => "[Enter] uses the validated cached STT adapter; a launcher restart may occur.",
@@ -709,7 +712,7 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
             _ => "No supported standalone STT adapter for this entry.",
         }));
     } else {
-        lines.push(Line::from("Connected/server inference is unchanged by local file management. Use [s] for a verified next-start choice."));
+        lines.push(Line::from("Active inference is unchanged by local file management. Use [s] for a verified next-start choice."));
     }
     lines
 }
@@ -976,20 +979,15 @@ mod tests {
             let header = text(&buffer, Rect::new(0, 0, width, 3));
             let footer = text(&buffer, Rect::new(0, height - 3, width, 3));
             assert!(!footer.contains("[w]"), "{footer}");
-            for label in [
-                "[m] Models",
-                "[t] Telemetry",
-                "[b] Tests/back",
-                "[Esc] Back",
-            ] {
+            for label in ["[m] Models", "[t] Telemetry", "[b] Chat", "[Esc] Back"] {
                 assert!(footer.contains(label), "{footer}");
                 assert!(!header.contains(label), "{header}");
             }
             for label in ["1 Web", "2 Tests", "3 Models", "4 Telemetry", "MAIN"] {
                 assert!(!rendered.contains(label), "{rendered}");
             }
-            assert!(rendered.contains("WEB / DISABLED IN STANDALONE"));
-            assert!(rendered.contains("[b] Tests/back returns to the local STT bench"));
+            assert!(rendered.contains("WEB / NO INSPECTION TARGET"));
+            assert!(rendered.contains("[b] Chat returns to local voice/typed Chat"));
         }
     }
 
@@ -1017,7 +1015,7 @@ mod tests {
                     (Screen::Web, "[w] Web", "[w]"),
                     (Screen::Models, "[m] Models", "[m]"),
                     (Screen::Telemetry, "[t] Telemetry", "[t]"),
-                    (Screen::ServerTests, "[b] Tests/back", "[b]"),
+                    (Screen::ServerTests, "[b] Chat", "[b]"),
                 ] {
                     if screen == page {
                         assert!(!footer.contains(key), "{footer}");
@@ -1030,15 +1028,19 @@ mod tests {
                 for label in ["1 Web", "2 Tests", "3 Models", "4 Telemetry"] {
                     assert!(!rendered.contains(label), "{rendered}");
                 }
-                assert!(header.contains("STT: stt [ready]"), "{header}");
-                assert!(header.contains("Reply: reply [ready]"), "{header}");
+                if screen == Screen::Web {
+                    assert!(header.contains("STT: stt [ready]"), "{header}");
+                    assert!(header.contains("Reply: reply [ready]"), "{header}");
+                } else {
+                    assert!(header.contains("LOCAL CHAT"), "{header}");
+                }
                 assert!(header.contains("PHEME VA /"), "{header}");
                 if screen == Screen::Models {
-                    assert!(rendered.contains("[b] Tests/back"), "{rendered}");
+                    assert!(rendered.contains("[b] Chat"), "{rendered}");
                     assert!(rendered.contains("[Enter] Download"), "{rendered}");
                 }
                 if screen == Screen::ServerTests {
-                    for key in ["[F6] Reply", "[F7] Cancel test", "[F8] Stop voice"] {
+                    for key in ["[Enter] Reply", "[x] Cancel test", "[z] Stop voice"] {
                         assert!(rendered.contains(key), "{rendered}");
                     }
                 }
@@ -1050,16 +1052,19 @@ mod tests {
         snapshot.reply.name = "a-very-long-reply-model-name".into();
         let buffer = buffer(&app, 80, 24);
         let active = text(&buffer, Rect::new(0, 1, 80, 1));
-        assert_eq!(active.matches("[ready]").count(), 2, "{active}");
+        assert!(
+            !active.contains("a-very-long"),
+            "remote state must not label local Models: {active}"
+        );
         assert!(text(&buffer, Rect::new(0, 0, 80, 1)).contains("MODELS / LOCAL FILES"));
     }
 
     #[test]
-    fn shortcuts_merge_command_lines_and_spread_by_display_width() {
+    fn shortcuts_merge_command_lines_with_fixed_left_aligned_spacing() {
         let lines = footer_lines("[界] 开启  [e\u{301}] Café\n[🙂] Replay  [Esc] Back", 60);
         assert_eq!(lines.len(), 1);
         let row = lines[0].to_string();
-        assert_eq!(row.width(), 60, "{row}");
+        assert_eq!(row, "[界] 开启  [e\u{301}] Café  [🙂] Replay  [Esc] Back");
         assert!(row.starts_with("[界] 开启"), "{row}");
         assert!(row.ends_with("[Esc] Back"), "{row}");
         assert!(row.contains("[e\u{301}] Café"), "{row}");
@@ -1069,12 +1074,13 @@ mod tests {
         let narrow = footer_lines("[界] 开启  [e\u{301}] Café\n[🙂] Replay  [Esc] Back", 24);
         assert_eq!(narrow.len(), 2);
         for line in narrow {
-            assert_eq!(line.width(), 24, "{line}");
+            assert!(line.width() <= 24, "{line}");
+            assert!(!line.to_string().contains("   "));
         }
     }
 
     #[test]
-    fn unicode_footer_renders_in_cells_with_the_last_item_at_the_right_edge() {
+    fn unicode_footer_renders_in_cells_and_keeps_shortcuts_flush_left() {
         let footer = "[界] 开启  [e\u{301}] Café\n[🙂] Replay  [Esc] Back";
         for width in [24, 60] {
             let height = footer_height(footer, width);
@@ -1088,8 +1094,17 @@ mod tests {
             let buffer = terminal.backend().buffer();
             assert!(text(buffer, Rect::new(0, 0, width, 1)).contains("BODY / STATUS"));
             assert!(text(buffer, Rect::new(0, 1, width, 1)).trim().is_empty());
-            let last = text(buffer, Rect::new(width - 10, height + 1, 10, 1));
-            assert_eq!(last, "[Esc] Back");
+            let last = text(buffer, Rect::new(0, height + 1, width, 1));
+            assert!(last.trim_end().ends_with("[Esc] Back"), "{last}");
+            let expected = footer_lines(footer, width).last().unwrap().to_string();
+            let mut col = 0;
+            for grapheme in expected.graphemes(true) {
+                assert_eq!(buffer[(col, height + 1)].symbol(), grapheme);
+                col += UnicodeWidthStr::width(grapheme) as u16;
+            }
+            for x in col..width {
+                assert_eq!(buffer[(x, height + 1)].symbol(), " ");
+            }
             assert_eq!(buffer[(1, 2)].symbol(), "界");
             assert!(buffer
                 .content
@@ -1133,21 +1148,21 @@ mod tests {
                 &[
                     "[d] Back to tests",
                     "[↑/↓ PgUp/PgDn] Scroll",
-                    "[F7] Cancel test",
-                    "[F8] Stop voice",
+                    "[x] Cancel test",
+                    "[z] Stop voice",
                 ]
             } else {
                 &[
                     "[i/e] Edit",
                     "[l] Mic",
                     "[f] WAV",
-                    "[F6] Reply",
+                    "[Enter] Reply",
                     "[r] Retry",
-                    "[F7] Cancel test",
+                    "[x] Cancel test",
                     "[d] Diagnostics",
                     "[p] Replay",
                     "[v] Voice",
-                    "[F8] Stop voice",
+                    "[z] Stop voice",
                 ]
             };
             for hint in keys.iter().copied().chain([
@@ -1187,8 +1202,8 @@ mod tests {
                 for key in ["[w]", "[m]", "[b]", "[t]", "[q]", "[Esc] Back"] {
                     assert!(!footer.contains(key), "{footer}");
                 }
-                assert!(footer.contains("[F6]"), "{footer}");
-                assert!(footer.contains("[Enter] Newline"), "{footer}");
+                assert!(footer.contains("[Enter]"), "{footer}");
+                assert!(footer.contains("[Alt+Enter] Newline"), "{footer}");
                 assert!(
                     footer.contains(if screen == Screen::WebEditor {
                         "[Esc] Close (retain text)"
@@ -1224,7 +1239,7 @@ mod tests {
             for hint in [
                 "[w] Web",
                 "[t] Telemetry",
-                "[b] Tests/back",
+                "[b] Chat",
                 "[q] Quit",
                 "[Esc] Back",
                 "[↑/↓] Select",
@@ -1263,7 +1278,7 @@ mod tests {
                 "[Esc] Cancel",
                 "[PgUp/PgDn] Scroll",
                 "Network/download or verified next-start choice only",
-                "Running server unchanged; no model-management HTTP request",
+                "Active hosts unchanged; no model-management HTTP request",
             ] {
                 assert!(footer.contains(hint), "missing {hint}: {footer}");
             }
@@ -1409,7 +1424,7 @@ mod tests {
                 "[a] Add path",
                 "[Enter] Save",
                 "[Esc] Cancel",
-                "next server start only",
+                "next host start only",
             ] {
                 assert!(rendered.contains(command), "{rendered}");
             }

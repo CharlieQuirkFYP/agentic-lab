@@ -40,6 +40,10 @@ pub enum WorkerCommand {
 }
 
 pub enum WorkerEvent {
+    RuntimeReady {
+        runtime: va_runtime::AgentRuntime,
+        reply_error: Option<String>,
+    },
     ModelLoadStarted {
         request_id: RequestId,
         model_id: String,

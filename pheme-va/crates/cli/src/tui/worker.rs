@@ -1,12 +1,11 @@
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
-use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::Context;
 use metrics::{MetricSample, MetricScope, MetricUnit, MetricsConfig, MetricsContext, MetricsHub};
-use va_core::{AudioBuffer, Engine};
+use va_core::AudioBuffer;
 
 use crate::model;
 
@@ -16,27 +15,7 @@ use super::logs::{LogEntry, LogLevel};
 pub struct WorkerConfig {
     pub metrics_enabled: bool,
     pub resource_sampling_enabled: bool,
-    pub resource_context: Arc<Mutex<Option<MetricsContext>>>,
-}
-
-pub fn spawn_resource_sampler(
-    context: Arc<Mutex<Option<MetricsContext>>>,
-    stop: Arc<AtomicBool>,
-) -> std::thread::JoinHandle<()> {
-    std::thread::Builder::new()
-        .name("pheme-va-tui-resource-sampler".to_owned())
-        .spawn(move || {
-            let mut collector =
-                metrics::ResourceCollector::new(metrics::SysinfoResourceSampler::new());
-            while !stop.load(Ordering::Relaxed) {
-                let active_context = context.lock().ok().and_then(|guard| guard.clone());
-                if let Some(active_context) = active_context {
-                    collector.sample_and_record(&active_context);
-                }
-                std::thread::sleep(Duration::from_millis(250));
-            }
-        })
-        .expect("could not spawn Pheme VA TUI resource sampler")
+    pub settings: super::config::TuiConfig,
 }
 
 pub fn spawn(
@@ -59,10 +38,9 @@ struct Worker {
     metrics_hub: Arc<MetricsHub>,
     metrics_enabled: bool,
     resource_sampling_enabled: bool,
-    engine: Option<Engine>,
+    runtime: va_runtime::AgentRuntime,
+    executor: tokio::runtime::Runtime,
     active_model_id: Option<String>,
-    resource_context: Arc<Mutex<Option<MetricsContext>>>,
-    idle_metrics: MetricsContext,
     active_metrics: Option<MetricsContext>,
 }
 
@@ -72,30 +50,80 @@ impl Worker {
         metrics_hub: Arc<MetricsHub>,
         config: WorkerConfig,
     ) -> Self {
+        let conversation = va_core::ConversationConfig::default();
+        let loaded = (|| -> anyhow::Result<_> {
+            let Some(id) = &config.settings.server_reply_model else {
+                return Ok(None);
+            };
+            let manifest = model::ModelManifest::load(&config.settings.model_manifest)?;
+            let entry = manifest.find(id)?;
+            let paths = config
+                .settings
+                .reply_role_files
+                .get(id)
+                .cloned()
+                .unwrap_or_default();
+            let prompt = va_runtime::loader::reply_prompt(
+                &entry,
+                &config.settings.model_manifest,
+                &paths,
+                &conversation,
+            )?;
+            anyhow::ensure!(
+                entry
+                    .artifact_paths(&config.settings.model_manifest)
+                    .iter()
+                    .all(|p| p.is_file()),
+                "Reply artifacts missing; download the model on Models first."
+            );
+            let reply = va_runtime::loader::load_reply(
+                &entry.resolve_artifact(&config.settings.model_manifest),
+                &conversation,
+                4,
+                0,
+            )?;
+            Ok(Some((
+                Box::new(reply) as Box<dyn va_core::ConversationModel>,
+                prompt,
+            )))
+        })();
+        let (reply, prompt, reply_error) = match loaded {
+            Ok(Some((reply, prompt))) => (Some(reply), Some(prompt), None),
+            Ok(None) => (None, None, None),
+            Err(error) => (None, None, Some(format!("{error:#}"))),
+        };
+        let runtime = va_runtime::AgentRuntime::new(
+            None,
+            reply,
+            prompt,
+            va_runtime::Limits::default(),
+            MetricsConfig {
+                enabled: config.metrics_enabled,
+                incident_active: false,
+                resource_sampling: config.resource_sampling_enabled,
+            },
+            metrics_hub.clone(),
+        );
+        let _ = sender.send(WorkerEvent::RuntimeReady {
+            runtime: runtime.clone(),
+            reply_error,
+        });
         Self {
             sender,
-            metrics_hub: Arc::clone(&metrics_hub),
+            metrics_hub,
             metrics_enabled: config.metrics_enabled,
             resource_sampling_enabled: config.resource_sampling_enabled,
-            engine: None,
+            runtime,
+            executor: tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .expect("could not start local runtime"),
             active_model_id: None,
-            resource_context: config.resource_context,
-            idle_metrics: MetricsContext::new(
-                "idle",
-                None,
-                MetricsConfig {
-                    enabled: config.metrics_enabled,
-                    incident_active: false,
-                    resource_sampling: config.resource_sampling_enabled,
-                },
-                Arc::clone(&metrics_hub),
-            ),
             active_metrics: None,
         }
     }
 
     fn run(&mut self, receiver: Receiver<WorkerCommand>) {
-        self.set_resource_context(Some(self.idle_metrics.clone()));
         self.emit_log(LogEntry::info("worker", "inference worker started"));
         while let Ok(command) = receiver.recv() {
             match command {
@@ -116,6 +144,7 @@ impl Worker {
                 WorkerCommand::Shutdown => break,
             }
         }
+        self.executor.block_on(self.runtime.shutdown());
         self.emit_log(LogEntry::info("worker", "inference worker stopped"));
         let _ = self.sender.send(WorkerEvent::WorkerStopped);
     }
@@ -123,7 +152,6 @@ impl Worker {
     fn begin_run(&mut self, run_id: RunId) {
         let metrics = self.context(&run_id);
         self.active_metrics = Some(metrics.clone());
-        self.set_resource_context(Some(metrics));
     }
 
     fn end_run(&mut self, run_id: &str) {
@@ -133,16 +161,7 @@ impl Worker {
             .is_some_and(|metrics| metrics.run_id() == run_id)
         {
             self.active_metrics = None;
-            self.set_resource_context(Some(self.idle_metrics.clone()));
         }
-    }
-
-    fn restore_resource_monitor(&self) {
-        self.set_resource_context(Some(
-            self.active_metrics
-                .clone()
-                .unwrap_or_else(|| self.idle_metrics.clone()),
-        ));
     }
 
     fn load_model(&mut self, request: ModelLoadRequest) {
@@ -170,10 +189,9 @@ impl Worker {
             None,
             Some(model_id.clone()),
         ));
-        self.set_resource_context(Some(metrics.clone()));
-        let candidate =
-            model::create_engine(&model_id, &manifest_path, max_seconds, language, dictionary);
-        self.restore_resource_monitor();
+        let candidate = self.runtime.load_engine(|| {
+            model::create_engine(&model_id, &manifest_path, max_seconds, language, dictionary)
+        });
         let duration_ms = started.elapsed().as_millis();
         self.record_model_load_metrics(
             &metrics,
@@ -184,15 +202,8 @@ impl Worker {
         );
 
         match candidate {
-            Ok(candidate) if !candidate.is_ready() => {
-                let error = "candidate engine reported not ready".to_owned();
-                self.emit_model_load_failure(request_id, model_id, error, switch_from);
-            }
-            Ok(candidate) => {
-                let family = candidate.model_family().to_owned();
-                let backend = candidate.backend_name().to_owned();
+            Ok((family, backend)) => {
                 let old_model = self.active_model_id.clone();
-                self.engine = Some(candidate);
                 self.active_model_id = Some(model_id.clone());
                 self.emit_log(LogEntry::new(
                     LogLevel::Info,
@@ -283,7 +294,7 @@ impl Worker {
         source: String,
         audio: AudioBuffer,
     ) {
-        if self.engine.is_none() {
+        if !self.runtime.voice.stt_status().ready {
             self.emit_processing_failure(
                 request_id,
                 run_id.clone(),
@@ -306,13 +317,9 @@ impl Worker {
             .active_metrics
             .clone()
             .unwrap_or_else(|| self.context(&run_id));
-        self.set_resource_context(Some(metrics.clone()));
         let result = self
-            .engine
-            .as_mut()
-            .expect("engine checked above")
-            .transcribe_with_metrics(audio, metrics);
-        self.restore_resource_monitor();
+            .executor
+            .block_on(self.runtime.transcribe(audio, metrics));
 
         match result {
             Ok(result) => {
@@ -375,12 +382,6 @@ impl Worker {
             },
             Arc::clone(&self.metrics_hub),
         )
-    }
-
-    fn set_resource_context(&self, context: Option<MetricsContext>) {
-        if let Ok(mut active_context) = self.resource_context.lock() {
-            *active_context = context;
-        }
     }
 
     fn record_model_load_metrics(
