@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 	"unicode"
@@ -30,6 +31,62 @@ type Input struct {
 	Body           []byte
 	ContentType    string
 	IdempotencyKey string
+	AudioSource    string
+	MetricsCursor  *uint64
+}
+
+// ConversationOperation selects an explicit transport operation. Pheme owns its state.
+type ConversationOperation struct {
+	Action         string
+	ConversationID string
+	TurnID         string
+	RunID          string
+	Input          Input
+}
+
+func (c *Client) Conversation(ctx context.Context, op ConversationOperation) (*Response, error) {
+	segments := []string{"v1", "voice", "conversations"}
+	method, stream := http.MethodGet, false
+	if op.Action != "create" {
+		if !validID(op.ConversationID) {
+			return nil, ErrInvalidTurnID
+		}
+		segments = append(segments, op.ConversationID)
+	}
+	switch op.Action {
+	case "create":
+		method = http.MethodPost
+	case "inspect":
+	case "finish":
+		method = http.MethodPost
+		segments = append(segments, "finish")
+	case "metrics":
+		segments = append(segments, "metrics")
+	case "run":
+		if !validID(op.RunID) {
+			return nil, ErrInvalidTurnID
+		}
+		segments = append(segments, "runs", op.RunID)
+	case "start":
+		method, stream = http.MethodPost, true
+		segments = append(segments, "turns")
+	case "recover", "submit", "cancel":
+		if !validID(op.TurnID) {
+			return nil, ErrInvalidTurnID
+		}
+		segments = append(segments, "turns", op.TurnID)
+		if op.Action != "recover" {
+			method = http.MethodPost
+			segments = append(segments, op.Action)
+		}
+	default:
+		return nil, ErrInvalidResponse
+	}
+	return c.request(ctx, method, segments, op.Input, stream)
+}
+
+func validID(id string) bool {
+	return id != "" && len(id) <= 256 && id != "." && id != ".." && !strings.ContainsAny(id, "/\\") && !strings.ContainsFunc(id, unicode.IsControl)
 }
 
 type Client struct {
@@ -115,6 +172,9 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 		escapedPath += "/" + url.PathEscape(segment)
 	}
 	u.RawPath = escapedPath
+	if input.MetricsCursor != nil {
+		u.RawQuery = url.Values{"after": []string{strconv.FormatUint(*input.MetricsCursor, 10)}}.Encode()
+	}
 
 	requestCtx, cancel := context.WithCancel(ctx)
 	req, err := http.NewRequestWithContext(requestCtx, method, u.String(), bytes.NewReader(input.Body))
@@ -127,6 +187,9 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 	}
 	if input.IdempotencyKey != "" {
 		req.Header.Set("Idempotency-Key", input.IdempotencyKey)
+	}
+	if input.AudioSource != "" {
+		req.Header.Set("X-Audio-Source", input.AudioSource)
 	}
 	req.Header.Set("Accept-Encoding", "identity")
 	if stream {

@@ -8,6 +8,7 @@ import (
 
 // VoiceClient is the integration boundary; Pheme owns all conversation rules.
 type VoiceClient interface {
+	Conversation(context.Context, pheme.ConversationOperation) (*pheme.Response, error)
 	StartTurn(context.Context, pheme.Input) (*pheme.Response, error)
 	Submit(context.Context, string, pheme.Input) (*pheme.Response, error)
 	TurnStatus(context.Context, string) (*pheme.Response, error)
@@ -16,6 +17,10 @@ type VoiceClient interface {
 	Inspect(context.Context) (*pheme.Response, error)
 	TestReply(context.Context, pheme.Input) (*pheme.Response, error)
 	Transcribe(context.Context, pheme.Input) (*pheme.Response, error)
+}
+
+func (s *VoiceService) Conversation(ctx context.Context, op pheme.ConversationOperation) (*pheme.Response, error) {
+	return s.client.Conversation(ctx, op)
 }
 
 type VoiceService struct {

@@ -140,3 +140,49 @@ func TestClientDoesNotFollowRedirects(t *testing.T) {
 		t.Fatalf("redirect was followed or leaked: status=%d calls=%d headers=%v", recorder.Code, redirected.Load(), recorder.Header())
 	}
 }
+
+func TestConversationClientEscapesIDsAndPreservesCursorAndSource(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if strings.Contains(r.URL.Path, "/metrics") {
+			if r.URL.EscapedPath() != "/v1/voice/conversations/chat%20%3F%23%C3%A9/metrics" || r.URL.Query().Get("after") != "18446744073709551615" {
+				t.Errorf("unexpected metric URL: %s", r.URL)
+			}
+		} else {
+			if r.Method != "POST" || r.URL.Path != "/v1/voice/conversations/chat/turns" || r.Header.Get("X-Audio-Source") != "samples/café.wav" || r.Header.Get("Idempotency-Key") != "stable-key" {
+				t.Errorf("unexpected start: %s %s %v", r.Method, r.URL, r.Header)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{}`)
+	}))
+	defer upstream.Close()
+	client, err := NewClient(upstream.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cursor := ^uint64(0)
+	for _, op := range []ConversationOperation{
+		{Action: "metrics", ConversationID: "chat ?#é", Input: Input{MetricsCursor: &cursor}},
+		{Action: "start", ConversationID: "chat", Input: Input{Body: []byte("RIFF"), ContentType: "audio/wav", AudioSource: "samples/café.wav", IdempotencyKey: "stable-key"}},
+	} {
+		response, err := client.Conversation(t.Context(), op)
+		if err != nil {
+			t.Fatal(err)
+		}
+		response.Close()
+	}
+	for _, op := range []ConversationOperation{
+		{Action: "inspect", ConversationID: "../reset"},
+		{Action: "run", ConversationID: "chat", RunID: "a/b"},
+		{Action: "submit", ConversationID: "chat", TurnID: ".."},
+	} {
+		if _, err := client.Conversation(t.Context(), op); !errors.Is(err, ErrInvalidTurnID) {
+			t.Fatalf("invalid ID accepted: %v", err)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("unexpected upstream calls: %d", calls.Load())
+	}
+}

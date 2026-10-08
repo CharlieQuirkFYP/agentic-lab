@@ -617,3 +617,37 @@ func (repeatedByteReader) Read(buffer []byte) (int, error) {
 	}
 	return len(buffer), nil
 }
+
+func TestConversationRoutesForwardWithoutDuplicatingWorkflow(t *testing.T) {
+	var calls atomic.Int32
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		if !strings.HasPrefix(r.URL.Path, "/v1/voice/conversations") {
+			t.Errorf("unexpected path: %s", r.URL)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"status":"authoritative"}`)
+	}))
+	defer upstream.Close()
+	router := setupVoiceRouter(t, upstream.URL)
+	for _, tc := range []struct{ method, path, body string }{
+		{"POST", "/conversations", ""}, {"GET", "/conversations/chat", ""}, {"POST", "/conversations/chat/finish", ""},
+		{"GET", "/conversations/chat/metrics?after=42", ""}, {"GET", "/conversations/chat/runs/reply-1", ""},
+		{"POST", "/conversations/chat/turns", `{"text":"not yet approved"}`}, {"GET", "/conversations/chat/turns/turn-1", ""},
+		{"POST", "/conversations/chat/turns/turn-1/submit", `{"text":"  corrected text  "}`}, {"POST", "/conversations/chat/turns/turn-1/cancel", ""},
+	} {
+		response := voiceRequest(router, tc.method, tc.path, "application/json", tc.body)
+		if response.Code != 200 || !strings.Contains(response.Body.String(), "authoritative") {
+			t.Fatalf("%s %s: %d %s", tc.method, tc.path, response.Code, response.Body.String())
+		}
+	}
+	for _, cursor := range []string{"-1", "nope", "18446744073709551616"} {
+		response := voiceRequest(router, "GET", "/conversations/chat/metrics?after="+cursor, "", "")
+		if response.Code != 400 {
+			t.Fatalf("invalid cursor accepted: %s", cursor)
+		}
+	}
+	if calls.Load() != 9 {
+		t.Fatalf("invalid input reached upstream: calls=%d", calls.Load())
+	}
+}

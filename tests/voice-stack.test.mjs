@@ -337,6 +337,46 @@ test(
       },
     );
 
+    await t.test("console conversations retain context, runs and finish titles through Go", async () => {
+      const webBefore = await inspect();
+      const created = await (await request("/conversations")).json();
+      const route = `/conversations/${created.conversation_id}`;
+      const chat = async () => (await fetch(`${base}${route}`)).json();
+      for (const [index, text] of ["Console first question", "Console follow-up"].entries()) {
+        const turn = stream(await request(`${route}/turns`, text, {headers:{"Idempotency-Key":`console-${index}`}}));
+        await until(() => turn.events.some(event => event.name === "transcript.ready"), "console review");
+        assert.equal(turn.events.some(event => event.name === "reply.delta"), false);
+        const turnID = turn.events.find(event => event.name === "turn.created").data.turn_id;
+        assert.equal((await request(`${route}/turns/${turnID}/submit`, text)).status, 200);
+        assert.equal(await turn.done, true);
+        assert.equal(turn.events.at(-1).name, "reply.completed");
+        await until(async () => !(await chat()).busy, "console settled");
+      }
+      const snapshot = await chat();
+      assert.equal(snapshot.turns.length, 2);
+      assert.equal(snapshot.runs.length, 2);
+      assert.ok(snapshot.runs.every(run => run.stage === "reasoning"));
+      const generations = (await readFile(`${worker}.log`, "utf8")).trim().split("\n").map(line => JSON.parse(line)).filter(command => command.type === "generate");
+      assert.deepEqual(generations.at(-1).messages.map(message=>message.content), [combinedRole, "Console first question", "Hello café 世界 🧯", "Console follow-up"]);
+      const page1 = await (await fetch(`${base}${route}/metrics?after=0`)).json();
+      const page2 = await (await fetch(`${base}${route}/metrics?after=0`)).json();
+      assert.deepEqual(page1, page2);
+      assert.ok(page1.events.length > 0);
+      const run = await (await fetch(`${base}${route}/runs/${snapshot.runs[0].run_id}`)).json();
+      assert.ok(run.events.length > 0);
+      assert.equal(run.input, "Console first question");
+      assert.equal((await request(`${route}/finish`)).status, 200);
+      await until(async () => (await chat()).status === "finished", "console title finished");
+      const finished = await chat();
+      assert.equal(finished.title, "Hello café 世界 🧯");
+      assert.equal(finished.runs.at(-1).stage, "title");
+      assert.equal((await request(`${route}/turns`, "cannot reopen")).status,409);
+      const other = await (await request("/conversations")).json();
+      assert.equal(other.turns.length, 0);
+      assert.deepEqual((await inspect()).history, webBefore.history);
+      assert.deepEqual((await inspect()).current_turn, webBefore.current_turn);
+    });
+
     await t.test(
       "native test cancellation reaches the worker without cancelling web state",
       async () => {

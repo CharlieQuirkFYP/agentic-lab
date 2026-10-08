@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"strconv"
 	"strings"
 
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
@@ -25,6 +26,21 @@ func NewVoiceHandler(service *service.VoiceService) *VoiceHandler {
 }
 
 func (h *VoiceHandler) RegisterRoutes(group *gin.RouterGroup) {
+	for _, route := range []struct{ method, path, action string }{
+		{"POST", "/conversations", "create"},
+		{"GET", "/conversations/:conversation_id", "inspect"},
+		{"POST", "/conversations/:conversation_id/finish", "finish"},
+		{"GET", "/conversations/:conversation_id/metrics", "metrics"},
+		{"GET", "/conversations/:conversation_id/runs/:run_id", "run"},
+		{"POST", "/conversations/:conversation_id/turns", "start"},
+		{"GET", "/conversations/:conversation_id/turns/:turn_id", "recover"},
+		{"POST", "/conversations/:conversation_id/turns/:turn_id/submit", "submit"},
+		{"POST", "/conversations/:conversation_id/turns/:turn_id/cancel", "cancel"},
+	} {
+		action := route.action
+		group.Handle(route.method, route.path, func(c *gin.Context) { h.Conversation(c, action) })
+		group.OPTIONS(route.path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
+	}
 	group.POST("/turns", h.StartTurn)
 	group.POST("/turns/:turn_id/submit", h.Submit)
 	group.GET("/turns/:turn_id", h.TurnStatus)
@@ -36,6 +52,31 @@ func (h *VoiceHandler) RegisterRoutes(group *gin.RouterGroup) {
 	for _, path := range []string{"/turns", "/turns/:turn_id/submit", "/turns/:turn_id", "/turns/:turn_id/cancel", "/reset", "/inspect", "/test/reply", "/transcribe"} {
 		group.OPTIONS(path, func(c *gin.Context) { c.Status(http.StatusNoContent) })
 	}
+}
+
+func (h *VoiceHandler) Conversation(c *gin.Context, action string) {
+	op := pheme.ConversationOperation{Action: action, ConversationID: c.Param("conversation_id"), TurnID: c.Param("turn_id"), RunID: c.Param("run_id")}
+	if action == "start" || action == "submit" {
+		input, ok := voiceInput(c, action == "start", true)
+		if !ok {
+			return
+		}
+		op.Input = input
+	}
+	if action == "metrics" {
+		cursor := uint64(0)
+		if raw := c.Query("after"); raw != "" {
+			var err error
+			cursor, err = strconv.ParseUint(raw, 10, 64)
+			if err != nil {
+				voiceError(c, http.StatusBadRequest, "invalid_cursor", "invalid metrics cursor")
+				return
+			}
+		}
+		op.Input.MetricsCursor = &cursor
+	}
+	response, err := h.service.Conversation(c.Request.Context(), op)
+	forwardVoice(c, response, err)
 }
 
 func (h *VoiceHandler) StartTurn(c *gin.Context) {
@@ -129,7 +170,12 @@ func voiceInput(c *gin.Context, allowAudio, allowText bool) (pheme.Input, bool) 
 		}
 		// Pheme, not Go, validates blank/overlong text and approval/state rules.
 	}
-	return pheme.Input{Body: body, ContentType: contentType, IdempotencyKey: key}, true
+	source := c.GetHeader("X-Audio-Source")
+	if len(source) > 512 || strings.ContainsFunc(source, func(r rune) bool { return r < 32 || r == 127 }) {
+		voiceError(c, http.StatusBadRequest, "invalid_source", "invalid audio source")
+		return pheme.Input{}, false
+	}
+	return pheme.Input{Body: body, ContentType: contentType, IdempotencyKey: key, AudioSource: source}, true
 }
 
 func forwardVoice(c *gin.Context, response *pheme.Response, err error) {
