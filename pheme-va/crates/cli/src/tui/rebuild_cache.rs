@@ -10,11 +10,14 @@ use std::{fs, io};
 
 use anyhow::{Context, Result};
 
+const CACHE_HEADER: &str = "adapter-cache-v4\nrelease;locked;cli+reply-native;explicit-host\n";
+
 pub(super) struct Cache {
     workspace: PathBuf,
     root: PathBuf,
     features: Vec<String>,
     compiler: String,
+    inputs: String,
     fingerprint: String,
     entry: PathBuf,
     pub target: PathBuf,
@@ -38,10 +41,9 @@ impl Cache {
         features: &[&str],
         compiler: &str,
     ) -> Result<Self> {
-        let mut features: Vec<_> = features.iter().map(|s| s.to_string()).collect();
-        features.sort();
-        features.dedup();
-        let fingerprint = fingerprint(workspace, &features, compiler)?;
+        let features = normalize_features(features.iter().map(|s| s.to_string()).collect());
+        let inputs = fingerprint(workspace, compiler)?;
+        let fingerprint = feature_fingerprint(&features, &inputs);
         let entry = root.join("cache-v2").join(digest(fingerprint.as_bytes()));
         #[cfg(unix)]
         let target = root.join("build");
@@ -54,6 +56,7 @@ impl Cache {
             root: root.into(),
             features,
             compiler: compiler.into(),
+            inputs,
             fingerprint,
             entry,
             target,
@@ -77,7 +80,8 @@ impl Cache {
             self.build_lock = Some(lock);
         }
         // Inputs or another publisher may have changed while waiting.
-        self.fingerprint = fingerprint(&self.workspace, &self.features, &self.compiler)?;
+        self.inputs = fingerprint(&self.workspace, &self.compiler)?;
+        self.fingerprint = feature_fingerprint(&self.features, &self.inputs);
         self.entry = self
             .root
             .join("cache-v2")
@@ -86,14 +90,59 @@ impl Cache {
     }
 
     pub fn lookup(&self) -> Option<PathBuf> {
+        if let Some(binary) = self.lookup_exact() {
+            return Some(binary);
+        }
+        // A combined build can satisfy a fresh launcher or a different model
+        // family. Keep all currently enabled adapters when choosing a restart.
+        let mut candidates = Vec::new();
+        for bucket in fs::read_dir(self.root.join("cache-v2")).ok()?.flatten() {
+            let Ok(generations) = fs::read_dir(bucket.path()) else {
+                continue;
+            };
+            for generation in generations.flatten() {
+                let entry = generation.path();
+                let Ok(stored) = fs::read_to_string(entry.join("inputs")) else {
+                    continue;
+                };
+                let Some((features, inputs)) = stored
+                    .strip_prefix(CACHE_HEADER)
+                    .and_then(|s| s.split_once('\n'))
+                else {
+                    continue;
+                };
+                let Ok(features) = serde_json::from_str::<Vec<String>>(features) else {
+                    continue;
+                };
+                if inputs == self.inputs
+                    && features.iter().all(|f| {
+                        matches!(
+                            f.as_str(),
+                            "whisper" | "whisper-metal" | "whisper-coreml" | "zipformer"
+                        )
+                    })
+                    && self.features.iter().all(|f| features.contains(f))
+                    && normalize_features(features.clone()) == features
+                {
+                    candidates.push((features.len(), entry, stored));
+                }
+            }
+        }
+        candidates.sort_by(|a, b| (&a.0, &a.1).cmp(&(&b.0, &b.1)));
+        candidates
+            .into_iter()
+            .find_map(|(_, entry, fingerprint)| self.validate(&entry, &fingerprint))
+    }
+
+    fn lookup_exact(&self) -> Option<PathBuf> {
         fs::read_dir(&self.entry)
             .ok()?
             .filter_map(Result::ok)
-            .find_map(|entry| self.validate(&entry.path()))
+            .find_map(|entry| self.validate(&entry.path(), &self.fingerprint))
     }
 
-    fn validate(&self, entry: &Path) -> Option<PathBuf> {
-        if fs::read_to_string(entry.join("inputs")).ok()? != self.fingerprint {
+    fn validate(&self, entry: &Path, fingerprint: &str) -> Option<PathBuf> {
+        if fs::read_to_string(entry.join("inputs")).ok()? != fingerprint {
             return None;
         }
         let binary = entry.join(format!("cli{}", std::env::consts::EXE_SUFFIX));
@@ -138,10 +187,10 @@ impl Cache {
 
     pub fn publish(&self, binary: &Path) -> Result<PathBuf> {
         anyhow::ensure!(
-            fingerprint(&self.workspace, &self.features, &self.compiler)? == self.fingerprint,
+            fingerprint(&self.workspace, &self.compiler)? == self.inputs,
             "adapter build inputs changed during compilation; retry the build"
         );
-        if let Some(binary) = self.lookup() {
+        if let Some(binary) = self.lookup_exact() {
             return Ok(binary);
         }
         fs::create_dir_all(&self.entry)?;
@@ -177,7 +226,7 @@ impl Cache {
                 .entry
                 .join(format!("{}-{}", std::process::id(), unique_id()));
             fs::rename(&staging, &generation)?;
-            self.validate(&generation)
+            self.validate(&generation, &self.fingerprint)
                 .context("published adapter failed cache validation")
         })();
         let _ = fs::remove_dir_all(staging);
@@ -274,7 +323,19 @@ fn unique_id() -> u128 {
         + u128::from(SERIAL.fetch_add(1, Ordering::Relaxed))
 }
 
-fn fingerprint(workspace: &Path, features: &[String], compiler: &str) -> Result<String> {
+fn normalize_features(features: Vec<String>) -> Vec<String> {
+    let mut features: BTreeSet<_> = features.into_iter().collect();
+    if features.contains("whisper-metal") || features.contains("whisper-coreml") {
+        features.insert("whisper".into());
+    }
+    features.into_iter().collect()
+}
+
+fn feature_fingerprint(features: &[String], inputs: &str) -> String {
+    format!("{CACHE_HEADER}{features:?}\n{inputs}")
+}
+
+fn fingerprint(workspace: &Path, compiler: &str) -> Result<String> {
     let mut files = BTreeMap::new();
     let mut visited = BTreeSet::new();
     // Include non-Rust build inputs too: manifests, lockfile, build scripts,
@@ -328,7 +389,9 @@ fn fingerprint(workspace: &Path, features: &[String], compiler: &str) -> Result<
     }
     // Never persist credentials that may be present in Cargo's environment.
     let environment = digest(format!("{env:?}").as_bytes());
-    Ok(format!("adapter-cache-v3\nrelease;locked;cli+reply-native;explicit-host\n{workspace:?}\n{features:?}\n{compiler}\n{environment}\n{files:?}"))
+    Ok(format!(
+        "{workspace:?}\n{compiler}\n{environment}\n{files:?}"
+    ))
 }
 
 fn volatile_environment(key: &str) -> bool {
@@ -551,12 +614,19 @@ fn tree(
                 // Workspace runtime-data directories are not compilation inputs.
                 // Keep crates/models and embedded fixtures in the source snapshot.
                 && !(canonical.join("Cargo.lock").is_file()
-                                    && matches!(entry.file_name().to_str(), Some("models" | "media" | "recordings" | "datasets" | "benchmark-results")))
+                                    && matches!(entry.file_name().to_str(), Some("models" | "media" | "recordings" | "datasets" | "benchmark-results" | "samples" | "roles" | "scripts" | "docs")))
             {
                 tree(&path, files, visited)?;
             }
         } else {
-            optional_file(&path, files, visited)?;
+            // Prose is never embedded by these hosts. Native sources, build
+            // scripts, Cargo inputs and embedded fixtures remain fingerprinted.
+            if !matches!(
+                path.extension().and_then(|s| s.to_str()),
+                Some("md" | "rst")
+            ) {
+                optional_file(&path, files, visited)?;
+            }
         }
     }
     Ok(())
@@ -721,10 +791,15 @@ mod tests {
             "recordings",
             "datasets",
             "benchmark-results",
+            "samples",
+            "roles",
+            "scripts",
+            "docs",
         ] {
             fs::create_dir_all(fixture.0.join(name)).unwrap();
             fs::write(fixture.0.join(name).join("large.bin"), "runtime data").unwrap();
         }
+        fs::write(fixture.0.join("README.md"), "updated setup").unwrap();
         assert_eq!(before, fixture.cache(&["whisper"], "compiler").fingerprint);
         fs::create_dir_all(fixture.0.join("crates/models/transcription/whispercpp")).unwrap();
         fs::write(
@@ -830,5 +905,90 @@ mod tests {
         fs::write(fixture.0.join("new.rs"), "new input").unwrap();
         assert!(cache.publish(&std::env::current_exe().unwrap()).is_err());
         assert!(cache.lookup().is_none());
+    }
+
+    #[test]
+    fn switching_families_reuses_combined_build_without_removing_earlier_cache() {
+        let fixture = Fixture::new();
+        let whisper = fixture.cache(&["whisper"], "compiler");
+        let release = whisper.target.join("fixture-release");
+        fs::create_dir_all(&release).unwrap();
+        let executable = release.join(format!("cli{}", std::env::consts::EXE_SUFFIX));
+        fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        fs::copy(
+            &executable,
+            release.join(format!(
+                "pheme-reply-worker{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+        )
+        .unwrap();
+        let first = whisper.publish(&executable).unwrap();
+
+        let combined = fixture.cache(&["whisper", "zipformer"], "compiler");
+        let runtime = combined.target.join("fixture-runtime");
+        let build = release.join("build/cli-fixture");
+        fs::create_dir_all(&runtime).unwrap();
+        fs::create_dir_all(&build).unwrap();
+        let library = runtime.join(format!("libLiteRt.{}", std::env::consts::DLL_EXTENSION));
+        fs::write(&library, "fake runtime").unwrap();
+        fs::write(
+            build.join("output"),
+            format!("cargo:rustc-link-arg=-Wl,-rpath,{}\n", runtime.display()),
+        )
+        .unwrap();
+        let second = combined.publish(&executable).unwrap();
+
+        assert!(first.is_file(), "a new family must not delete older builds");
+        assert_ne!(first, second);
+        assert_eq!(
+            whisper.lookup(),
+            Some(first.clone()),
+            "prefer an exact build"
+        );
+        assert_eq!(
+            fixture.cache(&["zipformer"], "compiler").lookup(),
+            Some(second.clone())
+        );
+        fs::remove_file(&first).unwrap();
+        assert_eq!(
+            whisper.lookup(),
+            Some(second.clone()),
+            "a fresh launcher can use a combined build"
+        );
+        assert!(
+            fixture
+                .cache(&["whisper-metal"], "compiler")
+                .lookup()
+                .is_none(),
+            "required accelerators cannot be dropped"
+        );
+        assert!(fixture
+            .cache(&["zipformer"], "other compiler")
+            .lookup()
+            .is_none());
+        let worker = second.parent().unwrap().join(format!(
+            "pheme-reply-worker{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        fs::remove_file(&worker).unwrap();
+        assert!(
+            whisper.lookup().is_none(),
+            "compatible entries require their reply worker"
+        );
+        fs::copy(&executable, worker).unwrap();
+        assert_eq!(whisper.lookup(), Some(second.clone()));
+        fs::write(&library, "changed runtime").unwrap();
+        assert!(
+            whisper.lookup().is_none(),
+            "compatible entries need full integrity validation"
+        );
+        fs::write(&library, "fake runtime").unwrap();
+        fs::write(fixture.0.join("crates/cli/src/main.rs"), "changed source").unwrap();
+        assert!(fixture.cache(&["zipformer"], "compiler").lookup().is_none());
+        assert!(
+            second.is_file(),
+            "stale builds are retained, never silently deleted"
+        );
     }
 }

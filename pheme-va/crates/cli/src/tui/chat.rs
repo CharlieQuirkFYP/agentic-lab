@@ -63,6 +63,15 @@ impl ChatState {
             .as_ref()
             .and_then(|id| self.archives.iter().find(|s| &s.conversation_id == id))
     }
+    fn reviewing(&self) -> bool {
+        self.snapshot().is_some_and(|s| {
+            s.status == "active"
+                && s.turns.last().is_some_and(|t| {
+                    t.status == ChatPhase::AwaitingReview
+                        && self.draft_turn.as_deref() == Some(&t.turn_id)
+                })
+        })
+    }
     pub fn chosen(&self, query: &str) -> Option<&ChatSnapshot> {
         self.filtered(query).get(self.selected).copied()
     }
@@ -515,13 +524,15 @@ impl App {
             ensure!(
                 !self.chat.submitting
                     && !self.chat.starting
-                    && !self.chat.snapshot().is_some_and(|s| s.busy
+                    // Awaiting review is an active workflow, but approval must
+                    // reach the runtime; it atomically reserves native compute.
+                    && !self.chat.snapshot().is_some_and(|s| (s.busy && !self.chat.reviewing())
                         || s.status != "active"
                         || s.turns.last().is_some_and(|t| matches!(
                             t.status,
                             ChatPhase::Transcribing | ChatPhase::Generating
                         ))),
-                "Submission is already pending."
+                "Another operation is still running; your message is retained."
             );
             ensure!(
                 !self.chat.editor.text.trim().is_empty(),
@@ -879,7 +890,10 @@ impl App {
             footer.push_str("  [Enter] Stop recording  [x] Discard");
         } else if self.chat.starting
             || self.chat.submitting
-            || self.chat.snapshot().is_some_and(|s| s.busy)
+            || self
+                .chat
+                .snapshot()
+                .is_some_and(|s| s.busy && !self.chat.reviewing())
         {
             footer.push_str("  [x] Cancel  [i] Type next");
         } else if !self.chat.editor.text.is_empty() {
@@ -989,6 +1003,108 @@ mod tests {
             std::thread::sleep(std::time::Duration::from_millis(2));
         }
     }
+
+    #[test]
+    fn audio_review_enter_generates_reply_and_preserves_edits_without_duplicate_turns() {
+        struct Speech;
+        impl va_core::Transcriber for Speech {
+            fn name(&self) -> &str {
+                "fake-speech"
+            }
+            fn is_ready(&self) -> bool {
+                true
+            }
+            fn transcribe(
+                &mut self,
+                _: &va_core::NormalizedAudio,
+                _: &va_core::TranscriptionOptions,
+            ) -> Result<va_core::RawTranscription, va_core::EngineError> {
+                Ok(va_core::RawTranscription::text(
+                    "There is a fire at Ang Mo Kio.",
+                ))
+            }
+        }
+        let mut app = super::super::tests::test_app();
+        app.screen = Screen::Bench;
+        let (agent, control) = crate::tui::chat_client::tests::agent();
+        agent
+            .load_engine(|| Ok(va_core::Engine::new(Speech)))
+            .unwrap();
+        app.start_chat_connection(agent);
+        wait_app(&mut app, |a| a.chat.current.is_some());
+        for edited in [false, true] {
+            control
+                .hold
+                .store(true, std::sync::atomic::Ordering::Release);
+            let audio = va_core::AudioBuffer::new(
+                16_000,
+                1,
+                (0..16_000)
+                    .map(|i| if i % 20 < 10 { 0.2 } else { -0.2 })
+                    .collect(),
+            )
+            .unwrap();
+            app.start_chat_audio(AudioInput::Microphone(audio), "live microphone".into());
+            wait_app(&mut app, |a| a.chat.reviewing());
+            assert!(
+                app.chat.snapshot().unwrap().busy,
+                "review keeps the workflow alive"
+            );
+            assert!(!app.chat.editing);
+            assert!(app.chat_footer().contains("[Enter] Confirm & send"));
+            assert!(app.chat_footer().contains("[e] Edit"));
+            if edited {
+                key(&mut app, KeyCode::Char('e'));
+                app.chat.editor = Editor::new("  Correction: fire at AMK — 你好\n".into());
+            }
+            let submitted = app.chat.editor.text.clone();
+            key(&mut app, KeyCode::Enter);
+            assert!(app.chat.error.is_none(), "{:?}", app.chat.error);
+            key(&mut app, KeyCode::Enter);
+            wait_app(&mut app, |a| {
+                a.chat.editor.text.is_empty()
+                    && a.chat.snapshot().is_some_and(|s| {
+                        s.turns
+                            .last()
+                            .is_some_and(|t| t.status == ChatPhase::Generating)
+                    })
+            });
+            control
+                .hold
+                .store(false, std::sync::atomic::Ordering::Release);
+            wait_app(&mut app, |a| {
+                a.chat.snapshot().is_some_and(|s| {
+                    !s.busy
+                        && s.turns
+                            .last()
+                            .is_some_and(|t| t.status == ChatPhase::Completed)
+                })
+            });
+            let snapshot = app.chat.snapshot().unwrap();
+            assert_eq!(snapshot.turns.len(), if edited { 2 } else { 1 });
+            assert_eq!(
+                snapshot.turns.last().unwrap().approved_text.as_deref(),
+                Some(submitted.as_str())
+            );
+            assert_eq!(snapshot.turns.last().unwrap().reply, "Local answer — 你好.");
+            assert_eq!(snapshot.runs.len(), snapshot.turns.len() * 2);
+            assert_eq!(
+                control
+                    .calls
+                    .lock()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .last()
+                    .unwrap()
+                    .content,
+                submitted
+            );
+        }
+        assert_eq!(control.calls.lock().unwrap().len(), 2);
+        app.shutdown_workspace();
+    }
+
     #[test]
     fn typed_ui_is_local_even_with_web_target_and_keeps_next_draft_during_generation() {
         let mut app = super::super::tests::test_app();
@@ -1014,6 +1130,7 @@ mod tests {
         key(&mut app, KeyCode::Enter);
         wait_app(&mut app, |a| {
             a.chat.editor.text.is_empty()
+                && control.calls.lock().unwrap().len() == 1
                 && a.chat.snapshot().is_some_and(|s| {
                     s.turns
                         .last()
@@ -1183,6 +1300,8 @@ mod tests {
             transcription_run: None,
             reasoning_run: None,
         });
+        // A real voice turn stays active while its worker awaits approval.
+        snapshot.busy = true;
         events
             .try_send(Event::Snapshot(snapshot.clone()))
             .ok()

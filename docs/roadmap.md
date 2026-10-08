@@ -52,7 +52,7 @@ Implement the reusable core, optional whisper.cpp and Zipformer adapter boundari
 
 Implement the Ratatui developer console, manifest model picker, WAV/microphone paths, asynchronous worker, live model switching, telemetry tabs, metric details, historical run reports, bounded logs, native diagnostics on Unix, allowlisted artifact downloads, adapter preparation/cache restart, persistent local run history, resource sampling, and retry/error states.
 
-The TUI remains a development/model-evaluation console. Its local Chat/Tests and optional Web inspector with Models/Telemetry supports reviewed console conversations and grouped run measurements, observes/approves pending web turns through Go, keeps Tests local and isolated and downloads/selects next-start model artifacts locally. The server supports manifest STT/reply choices; FFI remains direct-path Whisper. Production incident confirmation, partial streaming STT and verified whole-device power measurement are not implemented.
+The TUI remains a development/model-evaluation console. Its local Chat/Tests and optional Web inspector with Models/Telemetry supports reviewed console conversations and grouped run measurements, observes/approves pending web turns through Go, keeps Tests local and isolated and prepares/selects model artifacts locally. The Models entry screen remembers both selections automatically and gates Chat on both local models being ready. The server supports manifest STT/reply choices; FFI remains direct-path Whisper. Production incident confirmation, partial streaming STT and verified whole-device power measurement are not implemented.
 
 ## Milestone 1 — Connect the Go API to Pheme VA
 

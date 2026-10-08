@@ -21,7 +21,6 @@ pub struct Group {
 
 pub enum Confirmation {
     Download(String),
-    Choose(String),
 }
 
 #[derive(Clone, Debug)]
@@ -47,7 +46,6 @@ pub struct ModelActions {
     pub command: bool,
     pub download_status: HashMap<String, String>,
     pub verification: Option<Verification>,
-    pub verified_choice: Option<ModelEntry>,
 }
 
 impl ModelActions {

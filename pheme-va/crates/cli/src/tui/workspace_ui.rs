@@ -18,6 +18,55 @@ use super::model_actions::{self, Confirmation, RoleSelection};
 use super::model_catalog::{CatalogEntry, ModelCatalog};
 
 pub fn header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
+    if matches!(app.screen, Screen::Models | Screen::Loading) {
+        let voice_state = if app.pending_model_id.is_some() {
+            "preparing"
+        } else if app.active_model.is_some() {
+            "ready"
+        } else {
+            "not ready"
+        };
+        let reply_state = if app.models.verification.is_some() {
+            "preparing"
+        } else if app
+            .local_runtime
+            .as_ref()
+            .is_some_and(|r| r.voice.reply_status().ready)
+        {
+            "ready"
+        } else {
+            "not ready"
+        };
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(Span::styled(
+                    "PHEME VA / MODELS",
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD),
+                )),
+                Line::from(format!(
+                    "Voice: {} [{voice_state}]",
+                    compact_name(
+                        &app.config.selected_stt_model,
+                        area.width.saturating_sub(24) as usize
+                    )
+                )),
+                Line::from(format!(
+                    "Reply: {} [{reply_state}]",
+                    compact_name(
+                        app.config
+                            .server_reply_model
+                            .as_deref()
+                            .unwrap_or("select a model"),
+                        area.width.saturating_sub(24) as usize
+                    )
+                )),
+            ]),
+            area,
+        );
+        return;
+    }
     let mode = if let Some(target) = app
         .voice
         .target
@@ -481,7 +530,7 @@ fn model_footer(app: &App) -> String {
         };
     }
     if app.models.confirmation.is_some() {
-        return "[y] Confirm local action  [Esc] Cancel  [PgUp/PgDn] Scroll\nNetwork/download or verified next-start choice only\nActive hosts unchanged; no model-management HTTP request".into();
+        return "[y] Download  [Esc] Cancel  [PgUp/PgDn] Scroll".into();
     }
     if app.models.preview.is_some() || app.models.command {
         return "[PgUp/PgDn] Scroll  [Esc] Close\nReply files/roles apply next TUI/server startup\nActive hosts unchanged; no model-management HTTP request".into();
@@ -493,14 +542,26 @@ fn model_footer(app: &App) -> String {
         .models
         .selected(&app.catalog)
         .is_some_and(|entry| entry.manifest.purpose() == Some(ModelPurpose::Reply));
-    let enter = if reply { "Download" } else { "Download/load" };
+    let enter = if app
+        .models
+        .selected(&app.catalog)
+        .is_some_and(|e| !e.artifacts_available())
+    {
+        "Download"
+    } else {
+        "Select"
+    };
     let extra = if app.download.is_some() {
         "  [x] Cancel"
     } else {
         ""
     };
-    format!("{}\n[↑/↓] Select  [/] Search  [Enter] {enter}  [s] Startup  [r] Rescan\n[PgUp/PgDn] Details  [p] Preview  [g] Command{}{extra}",
-        workspace_guide(app), if reply { "  [o] Roles" } else { "" })
+    let guide = if app.chat_ready() {
+        workspace_guide(app)
+    } else {
+        workspace_guide(app).replace("[b] Chat", "[b] Chat (locked)")
+    };
+    format!("{guide}\n[↑/↓] Browse  [/] Search  [Enter] {enter}  [r] Rescan\n[PgUp/PgDn] Details  [p] Preview{}{extra}", if reply { "  [o] Roles" } else { "" })
 }
 
 pub(super) fn model_details(
@@ -538,17 +599,6 @@ pub(super) fn model_details(
         let (title, text) = match confirmation {
             Confirmation::Download(id) => {
                 ("CONFIRM LOCAL DOWNLOAD", download_confirmation(app, id))
-            }
-            Confirmation::Choose(id) => {
-                let guidance = if entry
-                    .is_some_and(|e| e.manifest.purpose() == Some(ModelPurpose::Reply))
-                {
-                    "Reply and roles apply after TUI/server restart. Finish local Chat, quit and relaunch."
-                } else {
-                    "This STT choice applies on server restart. Enter on Models loads/prepares STT locally."
-                };
-                ("VERIFIED NEXT-START CHOICE", format!(
-                    "Model: {id}\nArtifact bundle and selected roles checked locally.\n\n{guidance}\nActive models unchanged. Archives stay read-only after restart.\n\n[y] Save locally and show command\n[Esc] Cancel"))
             }
         };
         panel(frame, area, title, text, app.models.scroll);
@@ -589,23 +639,12 @@ fn model_field(label: &str, value: impl std::fmt::Display) -> Line<'static> {
 fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
     let manifest = &entry.manifest;
     let reply = manifest.purpose() == Some(ModelPurpose::Reply);
-    let verified = app
-        .models
-        .verified_choice
-        .as_ref()
-        .is_some_and(|choice| choice.id == manifest.id);
     let artifacts = if !entry.artifacts_available() {
         "missing"
-    } else if verified {
-        "verified for startup choice"
     } else {
-        "present (not verified)"
+        "available"
     };
-    let chosen = match manifest.purpose() {
-        Some(ModelPurpose::Transcript) => app.config.server_stt_model.as_ref(),
-        Some(ModelPurpose::Reply) => app.config.server_reply_model.as_ref(),
-        None => None,
-    } == Some(&manifest.id);
+    let chosen = app.model_selected(entry);
     let server = model_actions::startup_supported(manifest).map_or_else(
         |error| format!("unsupported: {error}"),
         |_| "supported family; inspect readiness".into(),
@@ -631,22 +670,12 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
             },
         ),
     ];
-    if reply {
-        lines.extend([
-            Line::from("Local reply runtime; applies on next TUI startup."),
-            Line::from("Files do not establish runtime readiness."),
-        ]);
-    }
     lines.extend([
         model_field("Standalone:", app.adapter_availability(entry).label()),
         model_field("Adapter support:", server),
         model_field(
-            "Next start:",
-            if chosen {
-                "chosen (saved locally)"
-            } else {
-                "not chosen"
-            },
+            "Selection:",
+            if chosen { "SELECTED" } else { "not selected" },
         ),
     ]);
     if reply {
@@ -684,23 +713,57 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
     }
     lines.extend([
         model_field("Family:", &manifest.family),
-        model_field("Runtime:", manifest.runtime.as_deref().unwrap_or("not specified")),
-        model_field("Revision:", manifest.revision.as_deref().unwrap_or("not specified")),
-        model_field("Size:", manifest.model_size.as_deref().unwrap_or("unavailable")),
-        model_field("Bytes:", manifest.model_size_bytes.map_or("unavailable".into(), |bytes| bytes.to_string())),
-        model_field("Quantization:", manifest.quantization.as_deref().unwrap_or("not recorded")),
-        model_field("Languages:", if manifest.languages.is_empty() { "not recorded".into() } else { manifest.languages.join(", ") }),
-        model_field("License:", manifest.license.as_deref().unwrap_or("not recorded")),
-        model_field("Source:", manifest.repository.as_deref().unwrap_or("unavailable")),
-        model_field("SHA256:", manifest.sha256.as_deref().unwrap_or("unavailable")),
+        model_field(
+            "Runtime:",
+            manifest.runtime.as_deref().unwrap_or("not specified"),
+        ),
+        model_field(
+            "Revision:",
+            manifest.revision.as_deref().unwrap_or("not specified"),
+        ),
+        model_field(
+            "Size:",
+            manifest.model_size.as_deref().unwrap_or("unavailable"),
+        ),
+        model_field(
+            "Bytes:",
+            manifest
+                .model_size_bytes
+                .map_or("unavailable".into(), |bytes| bytes.to_string()),
+        ),
+        model_field(
+            "Quantization:",
+            manifest.quantization.as_deref().unwrap_or("not recorded"),
+        ),
+        model_field(
+            "Languages:",
+            if manifest.languages.is_empty() {
+                "not recorded".into()
+            } else {
+                manifest.languages.join(", ")
+            },
+        ),
+        model_field(
+            "License:",
+            manifest.license.as_deref().unwrap_or("not recorded"),
+        ),
+        model_field(
+            "Source:",
+            manifest.repository.as_deref().unwrap_or("unavailable"),
+        ),
+        model_field(
+            "SHA256:",
+            manifest.sha256.as_deref().unwrap_or("unavailable"),
+        ),
         model_field("Model path:", entry.model_path.display()),
-        model_field("Download:", script_download_id(manifest).unwrap_or_else(|error| format!("unavailable: {error}"))),
-        model_field("Next STT:", app.config.server_stt_model.as_deref().unwrap_or("not chosen")),
-        model_field("Next reply:", app.config.server_reply_model.as_deref().unwrap_or("not chosen")),
+        model_field(
+            "Download:",
+            script_download_id(manifest).unwrap_or_else(|error| format!("unavailable: {error}")),
+        ),
         model_field("Timestamps:", manifest.timestamps),
         model_field("Streaming:", manifest.streaming),
         Line::from(""),
-        Line::from("Highlighting does not activate a model. [s] verifies artifacts and roles before confirming a startup choice."),
+        Line::from("Press Enter to select a model. Selections are remembered automatically."),
     ]);
     if !entry.artifacts_available() {
         lines.push(Line::from("[Enter] requests a confirmed local download; pinned checksums are verified by the script."));
@@ -712,7 +775,7 @@ fn model_info(app: &App, entry: &CatalogEntry) -> Vec<Line<'static>> {
             _ => "No supported standalone STT adapter for this entry.",
         }));
     } else {
-        lines.push(Line::from("Active inference is unchanged by local file management. Use [s] for a verified next-start choice."));
+        lines.push(Line::from("[Enter] prepares and selects this reply model."));
     }
     lines
 }
@@ -1032,12 +1095,14 @@ mod tests {
                     assert!(header.contains("STT: stt [ready]"), "{header}");
                     assert!(header.contains("Reply: reply [ready]"), "{header}");
                 } else {
-                    assert!(header.contains("LOCAL CHAT"), "{header}");
+                    if screen != Screen::Models {
+                        assert!(header.contains("LOCAL CHAT"), "{header}");
+                    }
                 }
                 assert!(header.contains("PHEME VA /"), "{header}");
                 if screen == Screen::Models {
                     assert!(rendered.contains("[b] Chat"), "{rendered}");
-                    assert!(rendered.contains("[Enter] Download"), "{rendered}");
+                    assert!(rendered.contains("[Enter] Select"), "{rendered}");
                 }
                 if screen == Screen::ServerTests {
                     for key in ["[Enter] Reply", "[x] Cancel test", "[z] Stop voice"] {
@@ -1056,7 +1121,48 @@ mod tests {
             !active.contains("a-very-long"),
             "remote state must not label local Models: {active}"
         );
-        assert!(text(&buffer, Rect::new(0, 0, 80, 1)).contains("MODELS / LOCAL FILES"));
+        assert!(text(&buffer, Rect::new(0, 0, 80, 1)).contains("PHEME VA / MODELS"));
+    }
+
+    #[test]
+    fn selected_models_stay_visible_while_browsing_another_row() {
+        let mut app = model_app();
+        app.config.selected_stt_model = "voice-a".into();
+        app.config.server_reply_model = Some("reply-fixture".into());
+        app.local_runtime = Some(super::super::chat_client::tests::agent().0);
+        app.active_model = Some(super::super::app::ActiveModel {
+            id: "voice-a".into(),
+            family: "whisper".into(),
+            backend: "fake".into(),
+            runtime: None,
+        });
+        for id in ["voice-a", "voice-b"] {
+            app.catalog.entries.push(CatalogEntry {
+                manifest: toml::from_str(&format!(
+                    "id='{id}'\nfamily='whisper'\nmodel='fixture.bin'"
+                ))
+                .unwrap(),
+                model_path: "fixture.bin".into(),
+                missing_paths: vec![],
+                adapter_compiled: true,
+            });
+        }
+        app.models.group_mut().highlighted = Some("voice-b".into());
+        for (width, height) in [(80, 24), (120, 32)] {
+            let rendered = buffer(&app, width, height);
+            let header = text(&rendered, Rect::new(0, 0, width, 3));
+            assert!(header.contains("Voice: voice-a [ready]"), "{header}");
+            assert!(header.contains("Reply: reply-fixture [ready]"), "{header}");
+            let screen = text(&rendered, rendered.area);
+            assert!(screen.contains("[SELECTED] voice-a"), "{screen}");
+            assert!(screen.contains("[SELECTED] reply-fixture"), "{screen}");
+            assert!(!screen.contains("[SELECTED] voice-b"), "{screen}");
+            assert!(!screen.contains("Save locally"), "{screen}");
+            assert!(!screen.contains("NEXT-START"), "{screen}");
+        }
+        app.active_model = None;
+        let rendered = buffer(&app, 80, 24);
+        assert!(text(&rendered, rendered.area).contains("[b] Chat (locked)"));
     }
 
     #[test]
@@ -1242,20 +1348,38 @@ mod tests {
                 "[b] Chat",
                 "[q] Quit",
                 "[Esc] Back",
-                "[↑/↓] Select",
+                "[↑/↓] Browse",
                 "[/] Search",
-                "[Enter] Download",
-                "[s] Startup",
+                "[Enter] Select",
                 "[r] Rescan",
                 "[PgUp/PgDn] Details",
                 "[p] Preview",
-                "[g] Command",
                 "[o] Roles",
             ] {
                 assert!(footer.contains(hint), "missing {hint}: {footer}");
             }
             assert!(!footer.contains("[m]"), "{footer}");
         }
+        let entry = app
+            .catalog
+            .entries
+            .iter_mut()
+            .find(|e| e.manifest.id == "reply-fixture")
+            .unwrap();
+        entry.missing_paths.push(entry.model_path.clone());
+        for (width, height) in [(80, 24), (120, 32)] {
+            let rendered = buffer(&app, width, height);
+            let footer = text(&rendered, Rect::new(0, height - 3, width, 3));
+            assert!(footer.contains("[Enter] Download"), "{footer}");
+            assert!(!footer.contains("[Enter] Select"), "{footer}");
+        }
+        app.catalog
+            .entries
+            .iter_mut()
+            .find(|e| e.manifest.id == "reply-fixture")
+            .unwrap()
+            .missing_paths
+            .clear();
         for (width, height) in [(80, 24), (120, 32)] {
             app.models.filtering = true;
             let rendered = buffer(&app, width, height);
@@ -1273,13 +1397,7 @@ mod tests {
             app.models.confirmation = Some(Confirmation::Download("reply-fixture".into()));
             let rendered = buffer(&app, width, height);
             let footer = text(&rendered, Rect::new(0, height - 3, width, 3));
-            for hint in [
-                "[y] Confirm local action",
-                "[Esc] Cancel",
-                "[PgUp/PgDn] Scroll",
-                "Network/download or verified next-start choice only",
-                "Active hosts unchanged; no model-management HTTP request",
-            ] {
+            for hint in ["[y] Download", "[Esc] Cancel", "[PgUp/PgDn] Scroll"] {
                 assert!(footer.contains(hint), "missing {hint}: {footer}");
             }
             assert!(!footer.contains("[Esc] Back"), "{footer}");
@@ -1317,7 +1435,7 @@ mod tests {
             ("SHA256:", "aaaaaaaa"),
             ("Role choice:", "manifest default"),
             ("Selected roles:", "1. incident-reporting.txt"),
-            ("Next start:", "chosen (saved locally)"),
+            ("Selection:", "SELECTED"),
         ] {
             assert!(info.contains(&format!("{label:<16} {value}")), "{info}");
         }
@@ -1370,21 +1488,15 @@ mod tests {
         let mut app = model_app();
         for (width, height) in [(80, 24), (120, 32)] {
             let (list, details) = columns(width, height);
-            for confirmation in [
-                Confirmation::Download("reply-fixture".into()),
-                Confirmation::Choose("reply-fixture".into()),
-            ] {
+            {
+                let confirmation = Confirmation::Download("reply-fixture".into());
                 app.models.confirmation = Some(confirmation);
                 let buffer = buffer(&app, width, height);
                 assert!(text(&buffer, list).contains("MANIFEST ENTRIES"));
                 let right = text(&buffer, details);
-                assert!(
-                    right.contains("CONFIRM LOCAL DOWNLOAD")
-                        || right.contains("VERIFIED NEXT-START CHOICE"),
-                    "{right}"
-                );
-                assert!(text(&buffer, buffer.area).contains("[y] Confirm local action"));
-                assert!(text(&buffer, Rect::new(0, 0, width, 3)).contains("MODELS / LOCAL FILES"));
+                assert!(right.contains("CONFIRM LOCAL DOWNLOAD"), "{right}");
+                assert!(text(&buffer, buffer.area).contains("[y] Download"));
+                assert!(text(&buffer, Rect::new(0, 0, width, 3)).contains("PHEME VA / MODELS"));
             }
             app.models.confirmation = None;
             app.models.preview = Some(crate::model::LoadedPrompt {

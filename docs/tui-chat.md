@@ -7,7 +7,24 @@ cargo build --release -p cli -p reply-native --features cli/whisper
 ./target/release/cli tui
 ```
 
-On Models, download a reply artifact, press **s** to verify/save its next-start choice, then restart the TUI. The existing `server_reply_model` configuration key now supplies the local reply selection too; ordered per-model role files are loaded once at startup. Typed chat works when the reply model is ready even without a speech model. STT uses `selected_stt_model` and can be switched while inference is idle. Missing reply files, worker or invalid roles leave transcription usable and show a startup error.
+The TUI opens Models with the saved voice and reply selections visible in the header and marked **[SELECTED]** in the list. **Enter** prepares and selects the highlighted model, remembering the choice automatically. Missing files first request download confirmation. A missing speech adapter compiles or reuses its cached build; activating a different reply model automatically relaunches the TUI. Selecting an already active model keeps it loaded. **b** opens Chat only after both selected models are ready. Subsequent launches restore and load the saved pair without reselecting them. The existing `selected_stt_model` and `server_reply_model` configuration keys are retained. Ordered per-model role files are loaded once at startup.
+
+```text
+PHEME VA / MODELS
+Voice: whisper-large-v3-turbo [ready]
+Reply: qwen2.5-1.5b-instruct-q4-k-m [ready]
+┌ MODELS ─────────────────────────────┐ ┌ MODEL DETAILS ──────────────────────┐
+│ Voice & transcription               │ │ zipformer-small                    │
+│   [SELECTED] whisper-large-v3-turbo  │ │ Selection: not selected            │
+│ > zipformer-small                   │ │ Adapter: prepare on selection      │
+│   zipformer-medium                  │ │                                    │
+│ Reasoning & reply                   │ │ Enter prepares and selects model.  │
+│   [SELECTED] qwen2.5-1.5b…           │ │ Choices are remembered.            │
+└─────────────────────────────────────┘ └────────────────────────────────────┘
+[b] Chat  [t] Telemetry  [w] Web  [↑/↓] Browse  [Enter] Select
+```
+
+Adapter caches are retained independently of the chosen weights. A fresh launcher can reuse a combined Whisper/Zipformer build when it contains every required adapter and accelerator; exact builds are preferred. Source, dependencies, compiler, build configuration and native runtime integrity determine reuse. Changing samples, runtime roles or documentation does not require recompilation. Version 4 cache metadata lives in the existing `target/tui-adapters/cache-v2/` directory; earlier generations remain on disk but must be rebuilt before reuse.
 
 ```text
 TUI Chat / Tests ── Rust calls + bounded channels ──→ va_runtime → core + adapters
@@ -31,7 +48,7 @@ The Source panel keeps microphone and WAV selection. While a complete clip is be
 | Other pages | m Models; t Telemetry; w Web; s isolated local tests from Chat |
 | Playback | p replay; v toggle automatic speech; z stop speech |
 
-Bracketed actions appear in the footer. Letters and digits are literal text while editing. Shortcuts have two spaces between items, start at the left, and wrap whole items; there are no function-key actions. Multiline paste preserves newlines. New/Finish cannot discard an unsent draft or bypass unsettled inference.
+Bracketed actions appear in the footer. Transcript review keeps its workflow active, but still offers **Enter** to confirm/send and **e** to edit; native compute availability is checked by the runtime at submission. Letters and digits are literal text while editing. Shortcuts have two spaces between items, start at the left, and wrap whole items; there are no function-key actions. Multiline paste preserves newlines. New/Finish cannot discard an unsent draft or bypass unsettled inference.
 
 A wide screen during review looks like this (example content, measurements illustrative):
 
@@ -95,6 +112,6 @@ An audio turn creates separate STT and reasoning runs linked to one turn/convers
 
 Resource samples distinguish the hosting process, system and device scopes and measurement sources. Reply-child CPU/RAM, power and energy remain unavailable when no adapter measures them. Nested timings and cumulative counters are not summed into invented totals.
 
-History version 2 reads version 1 runs into a Legacy group without invented chat turns. Archives retain at most 100 stage runs/legacy reports, 10,000 raw events per run and 64 MiB; oldest closed conversations are evicted as a whole, active conversations are protected, and each conversation stops at 32 turns. Aggregates survive raw-event truncation. Saved histories are read-only; they do not resume authoritative runtime sessions after restart. Without a reply model, local transcription and review remain available; sending requires a saved reply selection and restart.
+History version 2 reads version 1 runs into a Legacy group without invented chat turns. Archives retain at most 100 stage runs/legacy reports, 10,000 raw events per run and 64 MiB; oldest closed conversations are evicted as a whole, active conversations are protected, and each conversation stops at 32 turns. Aggregates survive raw-event truncation. Saved histories are read-only; they do not resume authoritative runtime sessions after restart. Missing or failed models keep Chat locked; the separate Tests view still supports whichever local adapter is ready.
 
 See [API routes and measurement fields](api/voice.md#console-conversations). Live microphone/TTS behavior and real-model output quality still need device acceptance testing.

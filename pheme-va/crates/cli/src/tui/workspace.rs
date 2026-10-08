@@ -56,6 +56,10 @@ impl App {
                 }
             }
         }
+        self.poll_model_selection();
+    }
+
+    fn poll_model_selection(&mut self) {
         let verified = self.models.verification.as_mut().and_then(|verification| {
             verification.receiver.try_recv().ok().map(|result| {
                 (
@@ -67,14 +71,37 @@ impl App {
         });
         if let Some((id, entry, result)) = verified {
             self.models.verification.take();
-            match result {
-                Ok(()) => {
-                    self.models.verified_choice = Some(entry);
-                    self.models.scroll = 0;
-                    self.models.confirmation = Some(Confirmation::Choose(id));
-                    self.logs.info("local-model-files", "artifact checksums and role verified; awaiting startup-choice confirmation");
+            let result = result.map_err(anyhow::Error::msg).and_then(|()| {
+                let current = self
+                    .catalog
+                    .entry_by_id(&id)
+                    .context("model no longer in catalog")?;
+                anyhow::ensure!(
+                    current.artifacts_available()
+                        && serde_json::to_value(&current.manifest)?
+                            == serde_json::to_value(&entry)?,
+                    "model catalog changed; select the model again"
+                );
+                let next = model_actions::next_start_config(&self.config, &self.catalog, &entry)?;
+                let restart = entry.purpose() == Some(ModelPurpose::Reply)
+                    && !(self.config.server_reply_model.as_deref() == Some(&id)
+                        && self
+                            .local_runtime
+                            .as_ref()
+                            .is_some_and(|r| r.voice.reply_status().ready));
+                let binary = restart.then(std::env::current_exe).transpose()?;
+                config::save_to(&next, &self.config_path)?;
+                self.config = next;
+                self.error_message = None;
+                self.status_message = format!("Selected {id}");
+                if let Some(binary) = binary {
+                    self.restart = Some((binary, self.config.selected_stt_model.clone()));
+                    self.should_quit = true;
                 }
-                Err(error) => self.error_message = Some(error),
+                Ok(())
+            });
+            if let Err(error) = result {
+                self.error_message = Some(format!("Could not select {id}: {error:#}"));
             }
         }
     }
@@ -465,7 +492,7 @@ impl App {
             } else {
                 status.stt.ready
             },
-            "Local model not ready; choose it on Models and restart for reply/role changes."
+            "Local model not ready; select it on Models."
         );
         Ok(())
     }
@@ -585,9 +612,16 @@ impl App {
                     if !entry.artifacts_available() {
                         self.start_model_download(entry.manifest.id.clone());
                     } else if entry.manifest.purpose() == Some(ModelPurpose::Reply) {
-                        self.status_message = "available local artifacts; use s to verify a next-start choice, running server unchanged".into();
+                        self.select_reply_model()?;
                     } else {
-                        anyhow::ensure!(self.current_request.is_none() && self.build.is_none(), "standalone STT is still busy; await completion before selecting a model");
+                        anyhow::ensure!(
+                            self.current_request.is_none()
+                                && self.build.is_none()
+                                && self.models.verification.is_none()
+                                && self.recording.is_none()
+                                && !self.chat.blocked(),
+                            "finish the pending turn or model preparation before switching voice models"
+                        );
                         self.sync_model_selection();
                         self.choose_catalog_model();
                     }
@@ -621,21 +655,7 @@ impl App {
                         .context("no selected model")?;
                     self.start_model_download(entry.manifest.id.clone());
                 }
-                KeyCode::Char('s') => {
-                    anyhow::ensure!(
-                        self.models.verification.is_none(),
-                        "startup-choice verification is already running"
-                    );
-                    let entry = self
-                        .models
-                        .selected(&self.catalog)
-                        .context("no selected model")?;
-                    model_actions::next_start_config(&self.config, &self.catalog, &entry.manifest)?;
-                    self.models.verification =
-                        Some(Verification::start(entry, &self.catalog.manifest_path)?);
-                    self.status_message =
-                        "verifying startup choice in background; server unchanged".into();
-                }
+                KeyCode::Char('s') => self.select_reply_model()?,
                 KeyCode::Esc => self.navigate_back(),
                 _ => {}
             }
@@ -645,6 +665,52 @@ impl App {
         if let Err(error) = result {
             self.error_message = Some(error.to_string());
         }
+    }
+
+    fn select_reply_model(&mut self) -> Result<()> {
+        anyhow::ensure!(
+            self.models.verification.is_none(),
+            "a model is already being prepared"
+        );
+        let entry = self
+            .models
+            .selected(&self.catalog)
+            .context("no selected model")?;
+        anyhow::ensure!(
+            entry.manifest.purpose() == Some(ModelPurpose::Reply),
+            "use Enter to select a voice model"
+        );
+        anyhow::ensure!(
+            self.current_request.is_none() && self.build.is_none() && self.recording.is_none(),
+            "wait for model preparation or recording to finish"
+        );
+        let already_active = self.config.server_reply_model.as_deref() == Some(&entry.manifest.id)
+            && self
+                .local_runtime
+                .as_ref()
+                .is_some_and(|r| r.voice.reply_status().ready);
+        if !already_active {
+            anyhow::ensure!(
+                !self.chat.blocked()
+                    && self
+                        .chat
+                        .snapshot()
+                        .map_or(true, |s| s.turns.is_empty() || s.status != "active"),
+                "finish the conversation before switching reply models"
+            );
+        }
+        let next = model_actions::next_start_config(&self.config, &self.catalog, &entry.manifest)?;
+        if already_active {
+            config::save_to(&next, &self.config_path)?;
+            self.config = next;
+            self.error_message = None;
+            self.status_message = format!("Selected {}", entry.manifest.id);
+            return Ok(());
+        }
+        self.models.verification = Some(Verification::start(entry, &self.catalog.manifest_path)?);
+        self.error_message = None;
+        self.status_message = format!("Preparing {}", entry.manifest.id);
+        Ok(())
     }
 
     fn confirm_model_action(&mut self, code: KeyCode) {
@@ -661,7 +727,6 @@ impl App {
         }
         if code == KeyCode::Esc {
             self.models.confirmation.take();
-            self.models.verified_choice.take();
             return;
         }
         if code != KeyCode::Char('y') {
@@ -690,35 +755,6 @@ impl App {
                         "local-model-files",
                         format!("direct script download started: {id}; active server unchanged"),
                     );
-                }
-                Confirmation::Choose(id) => {
-                    let verified = self
-                        .models
-                        .verified_choice
-                        .take()
-                        .context("choice has not been verified")?;
-                    let entry = self
-                        .catalog
-                        .entry_by_id(&id)
-                        .context("model no longer in catalog")?;
-                    anyhow::ensure!(
-                        entry.artifacts_available()
-                            && serde_json::to_value(&entry.manifest)?
-                                == serde_json::to_value(&verified)?,
-                        "catalog changed after verification; verify again"
-                    );
-                    let next = model_actions::next_start_config(
-                        &self.config,
-                        &self.catalog,
-                        &entry.manifest,
-                    )?;
-                    config::save(&next)?;
-                    self.config = next;
-                    self.models.command = true;
-                    self.logs.info("startup-choice", format!("saved next-start choice {id}; no activation or HTTP management request"));
-                    self.status_message =
-                        "startup choice saved locally; restart required, running server unchanged"
-                            .into();
                 }
             }
             Ok(())

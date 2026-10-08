@@ -180,17 +180,14 @@ impl App {
             .unwrap_or(0);
         let has_valid_saved_model = catalog
             .entry_by_id(&config.selected_stt_model)
-            .is_some_and(|entry| entry.selectable());
-        let onboarding = options.reconfigure
-            || (!config_loaded && options.model_id.is_none())
-            || catalog.error.is_some();
-        let startup_load = !onboarding && (options.model_id.is_some() || has_valid_saved_model);
+            .is_some_and(|entry| entry.artifacts_available());
+        let onboarding = options.reconfigure;
+        let startup_load =
+            !onboarding && (options.model_id.is_some() || config_loaded && has_valid_saved_model);
         let screen = if catalog.error.is_some() {
             Screen::Error
         } else if onboarding {
             Screen::Welcome
-        } else if startup_load {
-            Screen::Loading
         } else {
             Screen::Models
         };
@@ -296,6 +293,30 @@ impl App {
             let model_id = self.config.selected_stt_model.clone();
             self.send_load_model(model_id, None);
             self.startup_load = false;
+        }
+    }
+
+    pub fn chat_ready(&self) -> bool {
+        self.active_model.is_some()
+            && self.config.server_reply_model.is_some()
+            && self
+                .local_runtime
+                .as_ref()
+                .is_some_and(|r| r.voice.reply_status().ready)
+            && self.pending_model_id.is_none()
+            && self.build.is_none()
+            && self.models.verification.is_none()
+    }
+
+    pub fn model_selected(&self, entry: &super::model_catalog::CatalogEntry) -> bool {
+        match entry.manifest.purpose() {
+            Some(model::ModelPurpose::Transcript) => {
+                self.config.selected_stt_model == entry.manifest.id
+            }
+            Some(model::ModelPurpose::Reply) => {
+                self.config.server_reply_model.as_deref() == Some(&entry.manifest.id)
+            }
+            None => false,
         }
     }
 
@@ -435,7 +456,7 @@ impl App {
                 self.models
                     .download_status
                     .insert(model_id.clone(), "Downloaded (script verified)".into());
-                self.status_message = format!("{model_id} downloaded locally; Enter prepares STT, s saves next-start reply/server choices.");
+                self.status_message = format!("{model_id} downloaded. Press Enter to select it.");
                 self.logs.info("local-model-files", &self.status_message);
             }
             Ok(None) => {}
@@ -901,7 +922,15 @@ impl App {
     fn handle_error_key(&mut self, code: KeyCode) -> Result<()> {
         match code {
             KeyCode::Char('r') => {
-                if let Some(model_id) = self.pending_model_id.clone() {
+                let retry_model = self.pending_model_id.clone().or_else(|| {
+                    self.catalog
+                        .entry(self.catalog_index)
+                        .filter(|entry| {
+                            entry.manifest.purpose() == Some(model::ModelPurpose::Transcript)
+                        })
+                        .map(|entry| entry.manifest.id.clone())
+                });
+                if let Some(model_id) = retry_model {
                     self.send_load_model(
                         model_id,
                         self.active_model.as_ref().map(|model| model.id.clone()),
@@ -964,7 +993,7 @@ impl App {
             );
             anyhow::ensure!(
                 self.models.verification.is_none(),
-                "startup-choice verification is still running; await its confirmation first"
+                "a model is being prepared; wait for it to finish"
             );
             let entry = self
                 .catalog
@@ -993,7 +1022,7 @@ impl App {
         let model_id = entry.manifest.id.clone();
         if entry.manifest.purpose() == Some(model::ModelPurpose::Reply) {
             self.error_message = Some(format!(
-                "{model_id} is a reasoning/reply model, not a transcription model; use the Models view for files and next-start reply choices"
+                "{model_id} is a reasoning/reply model, not a transcription model; select it on Models"
             ));
             return;
         }
@@ -1008,6 +1037,17 @@ impl App {
         }
         if !entry.artifacts_available() {
             self.start_model_download(model_id);
+            return;
+        }
+        if self
+            .active_model
+            .as_ref()
+            .is_some_and(|active| active.id == model_id)
+        {
+            self.error_message = config::save_to(&self.config, &self.config_path)
+                .err()
+                .map(|error| format!("Could not remember {model_id}: {error:#}"));
+            self.status_message = format!("Selected {model_id}");
             return;
         }
         if !entry.adapter_compiled {
@@ -1050,7 +1090,7 @@ impl App {
             let entry = &self.catalog.entries[index];
             if entry.manifest.purpose() != Some(model::ModelPurpose::Transcript) {
                 self.error_message = Some(format!(
-                    "{model_id} is not a transcription model; use the Models view for next-start reply choices"
+                    "{model_id} is not a transcription model; select it on Models"
                 ));
                 return;
             }
@@ -1081,7 +1121,9 @@ impl App {
         self.current_request = Some(request_id);
         self.pending_model_id = Some(model_id.clone());
         self.status_message = format!("loading {model_id}");
-        self.navigate_to(Screen::Loading);
+        if self.screen != Screen::Models {
+            self.navigate_to(Screen::Loading);
+        }
     }
 
     fn begin_run(&mut self, run_id: String, source: String) -> bool {
@@ -1399,14 +1441,11 @@ impl App {
                 runtime,
                 reply_error,
             } => {
-                let ready = runtime.voice.reply_status().ready;
                 self.start_chat_connection(runtime);
                 if let Some(error) = reply_error {
+                    self.error_message = Some(format!("Reply model unavailable: {error}"));
                     self.chat.runtime_error = Some(error.clone());
                     self.chat.error = Some(error);
-                }
-                if ready && matches!(self.screen, Screen::Welcome | Screen::Models) {
-                    self.screen = Screen::Bench;
                 }
             }
             WorkerEvent::ModelLoadStarted {
@@ -1419,7 +1458,9 @@ impl App {
                     Some(previous) => format!("switching from {previous} to {model_id}"),
                     None => format!("loading {model_id}"),
                 };
-                self.screen = Screen::Loading;
+                if self.screen != Screen::Models {
+                    self.screen = Screen::Loading;
+                }
             }
             WorkerEvent::ModelReady {
                 request_id,
@@ -1440,7 +1481,8 @@ impl App {
                     runtime,
                 });
                 self.config.selected_stt_model = model_id.clone();
-                if let Err(error) = config::save(&self.config) {
+                let save_error = config::save_to(&self.config, &self.config_path).err();
+                if let Some(error) = &save_error {
                     self.logs
                         .warn("config", format!("could not save selected model: {error}"));
                 }
@@ -1457,9 +1499,20 @@ impl App {
                 }
                 self.pending_model_id = None;
                 self.current_request = None;
-                self.error_message = None;
+                self.error_message = save_error
+                    .map(|error| {
+                        format!("Selected {model_id}, but could not remember it: {error:#}")
+                    })
+                    .or_else(|| {
+                        self.chat
+                            .runtime_error
+                            .as_ref()
+                            .map(|error| format!("Reply model unavailable: {error}"))
+                    });
                 self.status_message = format!("model {model_id} ready");
-                self.screen = Screen::Bench;
+                if matches!(self.screen, Screen::Welcome | Screen::Loading) {
+                    self.screen = Screen::Models;
+                }
             }
             WorkerEvent::ModelLoadFailed {
                 request_id,
@@ -1467,13 +1520,13 @@ impl App {
                 error,
                 switch_from,
             } if self.accepts_request(request_id) => {
-                self.pending_model_id = Some(model_id.clone());
+                self.pending_model_id = None;
                 self.current_request = None;
                 self.error_message = Some(match switch_from.as_deref() {
                     Some(previous) => {
                         format!("model switch failed; {previous} remains active: {error}")
                     }
-                    None => error.clone(),
+                    None => format!("Could not load {model_id}: {error}"),
                 });
                 self.logs.error("model-loader", error);
                 self.screen = Screen::Error;
@@ -1599,6 +1652,12 @@ impl App {
     }
 
     fn navigate_to(&mut self, screen: Screen) {
+        if screen == Screen::Bench && !self.chat_ready() {
+            self.error_message =
+                Some("Select a voice model and a reply model before opening Chat.".into());
+            self.screen = Screen::Models;
+            return;
+        }
         if screen == self.screen {
             return;
         }
@@ -1638,14 +1697,18 @@ impl App {
                 return;
             }
         }
-        // Chat remains the local root regardless of the optional Web target.
-        self.screen = Screen::Bench;
+        self.screen = if self.chat_ready() {
+            Screen::Bench
+        } else {
+            Screen::Models
+        };
         self.scroll = 0;
     }
 
     fn can_restore_screen(&self, screen: Screen) -> bool {
         // Work can finish while browsing. Never reopen an expired busy page.
         match screen {
+            Screen::Bench => self.chat_ready(),
             Screen::Loading => {
                 self.build.is_some()
                     || (self.current_request.is_some() && self.pending_model_id.is_some())
@@ -1880,7 +1943,29 @@ pub(super) mod tests {
             metric_receiver,
             Arc::new(AtomicU64::new(0)),
         );
+        app.config_path = std::env::temp_dir().join(format!(
+            "pheme-tui-test-{}-{}.toml",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
         app.screen = Screen::Telemetry;
+        app
+    }
+
+    pub fn ready_app() -> App {
+        let mut app = test_app();
+        app.active_model = Some(ActiveModel {
+            id: "fixture-stt".into(),
+            family: "whisper".into(),
+            backend: "fake".into(),
+            runtime: None,
+        });
+        app.config.selected_stt_model = "fixture-stt".into();
+        app.config.server_reply_model = Some("fixture-reply".into());
+        app.local_runtime = Some(crate::tui::chat_client::tests::agent().0);
         app
     }
 

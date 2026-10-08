@@ -236,8 +236,8 @@ Currently implemented:
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
 - dedicated Go Pheme client/service/handlers for `/api/v1/voice/`, separate from the mock incident analyzer
 - local Rust Ratatui Chat/Tests/Models/Telemetry workspace and optional Go-backed Web inspector with alphabetic main navigation (`w`/`b`/`m`/`t`), Telemetry-only `1–4` sub-tabs, pending-web-turn editing/approval and isolated tests
-- one manifest-backed Models page for both purposes, grouped rows/details, confirmed Enter downloads, standalone-only STT loading/preparation, and inline retained download progress
-- direct TUI/script/startup downloads into `models/transcript/` and `models/reply/`, checksum-verified next-start choices, no model-management HTTP endpoints
+- one manifest-backed Models page for both purposes, visible remembered selections, Enter loading/preparation with automatic persistence, confirmed downloads and inline retained progress; Chat requires both selected local models ready
+- direct TUI/script/startup downloads into `models/transcript/` and `models/reply/`, checksum-verified reply selection with automatic TUI activation, retained compatible adapter caches, no model-management HTTP endpoints
 - reply-only local Roles picker, ordered bounded `.txt` composition from `roles/incident-reporting.txt` by default, per-model saved role paths, and startup-only repeated `--prompt-file` overrides with combined prompt hashes
 - shared `va_runtime` conversation orchestration, typed events/snapshots, model constructors and inference gate reused by local TUI and thin HTTP host
 - reviewed local TUI voice/WAV/typed conversations with Pheme-owned bounded context, separate transcription/reasoning runs, streamed model replies, and finish-time model titles

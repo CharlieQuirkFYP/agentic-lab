@@ -40,7 +40,7 @@ fn entry(id: &str, purpose: &str, available: bool) -> CatalogEntry {
 
 #[test]
 fn alphabet_keys_navigate_and_digits_only_control_telemetry() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.screen = Screen::Web;
     app.voice.target = Some("invalid URL".into());
     for (key, screen) in [
@@ -78,7 +78,7 @@ fn alphabet_keys_navigate_and_digits_only_control_telemetry() {
 
 #[test]
 fn standalone_back_uses_welcome_or_bench_and_web_is_accessible() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     press(&mut app, KeyCode::Char('m'));
     assert_eq!(app.screen, Screen::Models);
     press(&mut app, KeyCode::Char('b'));
@@ -107,7 +107,7 @@ fn standalone_back_uses_welcome_or_bench_and_web_is_accessible() {
 #[test]
 fn web_back_restores_the_actual_bench_or_models_origin() {
     for origin in [Screen::Bench, Screen::Models] {
-        let mut app = crate::tui::app::tests::test_app();
+        let mut app = crate::tui::app::tests::ready_app();
         app.screen = origin;
         press(&mut app, KeyCode::Char('w'));
         assert_eq!(app.navigation_history, vec![origin]);
@@ -123,7 +123,7 @@ fn web_back_restores_the_actual_bench_or_models_origin() {
 
 #[test]
 fn nested_pages_unwind_in_order_and_current_page_shortcuts_are_noops() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.voice.target = Some("invalid URL".into());
     app.screen = Screen::Web;
     for (key, screen) in [
@@ -171,7 +171,7 @@ fn nested_pages_unwind_in_order_and_current_page_shortcuts_are_noops() {
 
 #[test]
 fn page_history_is_bounded_and_root_back_does_not_start_a_new_history() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.voice.target = Some("invalid URL".into());
     app.screen = Screen::Web;
     let mut visited = Vec::new();
@@ -201,17 +201,17 @@ fn page_history_is_bounded_and_root_back_does_not_start_a_new_history() {
 #[test]
 fn connected_and_standalone_roots_only_quit_explicitly() {
     for (connected, loaded, initial, root) in [
-        (true, false, Screen::Web, Screen::Bench),
-        (true, false, Screen::ServerTests, Screen::Bench),
-        (true, false, Screen::Models, Screen::Bench),
-        (false, false, Screen::Welcome, Screen::Bench),
-        (false, false, Screen::Models, Screen::Bench),
-        (false, false, Screen::Web, Screen::Bench),
+        (true, false, Screen::Web, Screen::Models),
+        (true, false, Screen::ServerTests, Screen::Models),
+        (true, false, Screen::Models, Screen::Models),
+        (false, false, Screen::Welcome, Screen::Models),
+        (false, false, Screen::Models, Screen::Models),
+        (false, false, Screen::Web, Screen::Models),
         (false, true, Screen::Bench, Screen::Bench),
         (false, true, Screen::Models, Screen::Bench),
         (false, true, Screen::Web, Screen::Bench),
     ] {
-        let mut app = crate::tui::app::tests::test_app();
+        let mut app = crate::tui::app::tests::ready_app();
         app.voice.target = connected.then(|| "invalid URL".into());
         app.active_model = loaded.then(|| ActiveModel {
             id: "fixture".into(),
@@ -271,7 +271,7 @@ fn web_editor_and_discard_confirmation_close_before_leaving_web() {
 
 #[test]
 fn tests_text_focus_then_diagnostics_close_before_page_back_without_cancelling() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.voice.target = Some("invalid URL".into());
     app.screen = Screen::Models;
     press(&mut app, KeyCode::Char('b'));
@@ -317,13 +317,6 @@ fn model_subviews_cancel_locally_without_consuming_page_history() {
     press(&mut app, KeyCode::Esc);
     assert!(app.models.confirmation.is_none());
     assert!(app.download.is_none());
-    assert_eq!(app.navigation_history, history);
-    app.models.verified_choice = Some(entry("reply", "reply", true).manifest);
-    app.models.confirmation = Some(Confirmation::Choose("reply".into()));
-    press(&mut app, KeyCode::Esc);
-    assert!(app.models.confirmation.is_none());
-    assert!(app.models.verified_choice.is_none());
-    assert!(app.config.server_reply_model.is_none());
     assert_eq!(app.navigation_history, history);
     app.models.role_selection = Some(RoleSelection {
         model_id: "reply".into(),
@@ -416,7 +409,7 @@ fn telemetry_help_filter_confirmation_and_details_unwind_inside_the_page() {
 #[test]
 fn folder_directory_input_and_help_return_to_their_actual_openers() {
     for connected in [false, true] {
-        let mut app = crate::tui::app::tests::test_app();
+        let mut app = crate::tui::app::tests::ready_app();
         app.voice.target = connected.then(|| "invalid URL".into());
         app.screen = Screen::Web;
         app.active_model = Some(ActiveModel {
@@ -457,7 +450,7 @@ fn folder_directory_input_and_help_return_to_their_actual_openers() {
 #[test]
 fn recording_keys_remain_local_and_discard_returns_to_the_opener() {
     for connected in [false, true] {
-        let mut app = crate::tui::app::tests::test_app();
+        let mut app = crate::tui::app::tests::ready_app();
         app.voice.target = connected.then(|| "invalid URL".into());
         app.screen = if connected {
             Screen::ServerTests
@@ -543,13 +536,60 @@ fn new_work_cannot_reopen_busy_pages_from_an_earlier_operation() {
 
 #[test]
 fn bench_back_during_work_is_navigation_not_request_cancellation() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.screen = Screen::Models;
     app.navigate_to(Screen::Bench);
     app.current_request = Some(7);
     press(&mut app, KeyCode::Esc);
     assert_eq!(app.screen, Screen::Models);
     assert_eq!(app.current_request, Some(7));
+}
+
+#[test]
+fn chat_requires_both_selected_models_to_be_ready() {
+    for (voice, reply, runtime_ready) in [
+        (false, false, false),
+        (true, false, true),
+        (false, true, true),
+        (true, true, false),
+        (true, true, true),
+    ] {
+        let mut app = crate::tui::app::tests::ready_app();
+        if !voice {
+            app.active_model = None;
+        }
+        if !reply {
+            app.config.server_reply_model = None;
+        }
+        if !runtime_ready {
+            app.local_runtime = None;
+        }
+        app.screen = Screen::Models;
+        let ready = voice && reply && runtime_ready;
+        press(&mut app, KeyCode::Char('b'));
+        assert_eq!(
+            app.screen,
+            if ready { Screen::Bench } else { Screen::Models }
+        );
+        assert_eq!(app.chat_ready(), ready);
+        if !ready {
+            assert!(app
+                .error_message
+                .as_deref()
+                .unwrap()
+                .contains("Select a voice model and a reply model"));
+            press(&mut app, KeyCode::Esc);
+            assert_eq!(app.screen, Screen::Models);
+        }
+    }
+    let mut app = crate::tui::app::tests::ready_app();
+    app.pending_model_id = Some("new-voice".into());
+    app.screen = Screen::Models;
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.screen, Screen::Models);
+    app.pending_model_id = None;
+    press(&mut app, KeyCode::Char('b'));
+    assert_eq!(app.screen, Screen::Bench);
 }
 
 #[test]
@@ -596,7 +636,7 @@ fn web_inspection_target_does_not_disable_local_model_loading() {
 
 #[test]
 fn editors_own_alphabet_and_digit_keys_and_submission_is_explicit() {
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     app.screen = Screen::Web;
     app.voice.target = Some("invalid URL".into());
     app.voice
@@ -698,7 +738,7 @@ fn unified_rows_sync_catalog_index_before_standalone_enter_loads() {
     assert!(app.models.verification.is_none());
     press(&mut app, KeyCode::Up);
     press(&mut app, KeyCode::Enter);
-    assert_eq!(app.screen, Screen::Loading);
+    assert_eq!(app.screen, Screen::Models);
     assert!(
         matches!(commands.try_recv().unwrap(), WorkerCommand::LoadModel(request) if request.model_id == "stt-b")
     );
@@ -790,7 +830,7 @@ fn role_picker_owns_navigation_filter_keys_and_arbitrary_path_input() {
         "Trusted incident role",
     )
     .unwrap();
-    let mut app = crate::tui::app::tests::test_app();
+    let mut app = crate::tui::app::tests::ready_app();
     let mut reply = entry("reply", "reply", true);
     reply.manifest.system_prompt = Some("incident-reporting.txt".into());
     app.catalog.manifest_path = fixture.0.join("manifest.toml");
@@ -838,7 +878,7 @@ fn role_picker_owns_navigation_filter_keys_and_arbitrary_path_input() {
 }
 
 #[test]
-fn verified_startup_choice_is_modal_and_revalidates_roles_before_any_save() {
+fn selecting_reply_is_remembered_automatically_and_prepared_for_activation() {
     use sha2::{Digest, Sha256};
 
     let fixture = Fixture::new();
@@ -852,30 +892,283 @@ fn verified_startup_choice_is_modal_and_revalidates_roles_before_any_save() {
     )).unwrap();
     let mut app = crate::tui::app::tests::test_app();
     app.catalog = ModelCatalog::load(manifest);
+    app.config_path = fixture.0.join("tui.toml");
     press(&mut app, KeyCode::Char('m'));
-    press(&mut app, KeyCode::Char('s'));
+    press(&mut app, KeyCode::Enter);
     assert!(app.models.verification.is_some());
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     while app.models.verification.is_some() && std::time::Instant::now() < deadline {
         app.tick_workspace();
         std::thread::sleep(std::time::Duration::from_millis(10));
     }
-    assert!(matches!(app.models.confirmation, Some(Confirmation::Choose(ref id)) if id == "reply"));
-    assert!(app.models.verified_choice.is_some());
-    assert!(app.config.server_reply_model.is_none());
-    for ch in "wmtb1234".chars() {
-        press(&mut app, KeyCode::Char(ch));
-        assert_eq!(app.screen, Screen::Models);
-    }
-    // Invalidate the prompt after verification: confirmation must not write config.
-    std::fs::write(role, "").unwrap();
-    let before = toml::to_string(&app.config).unwrap();
-    press(&mut app, KeyCode::Char('y'));
-    assert!(app.error_message.is_some());
-    assert_eq!(toml::to_string(&app.config).unwrap(), before);
-    assert!(app.config.server_reply_model.is_none());
+    assert!(app.error_message.is_none(), "{:?}", app.error_message);
+    assert!(app.models.confirmation.is_none());
+    assert!(!app.models.command);
+    assert_eq!(app.config.server_reply_model.as_deref(), Some("reply"));
+    let saved: TuiConfig =
+        toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+    assert_eq!(saved.server_reply_model.as_deref(), Some("reply"));
+    assert!(app.model_selected(&app.catalog.entries[0]));
+    assert!(
+        app.restart.is_some(),
+        "new reply selection is activated automatically"
+    );
+    assert!(app.should_quit);
     assert!(app.current_request.is_none());
     assert!(app.active_model.is_none());
+}
+
+#[test]
+fn reply_selection_failure_retains_previous_choice_and_never_opens_confirmation() {
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.join("role.txt"), "Incident role").unwrap();
+    std::fs::write(fixture.0.join("reply.gguf"), b"corrupt fixture").unwrap();
+    let manifest = fixture.0.join("manifest.toml");
+    std::fs::write(&manifest, format!("[[models]]\nid='reply'\nfamily='qwen2'\npurpose='reply'\nruntime='llama.cpp'\nmodel='reply.gguf'\nsystem_prompt='role.txt'\nsha256='{:x}'", Sha256::digest(b"good fixture"))).unwrap();
+    let mut app = crate::tui::app::tests::test_app();
+    app.catalog = ModelCatalog::load(manifest);
+    app.config_path = fixture.0.join("tui.toml");
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while app.models.verification.is_some() && std::time::Instant::now() < deadline {
+        app.tick_workspace();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(app
+        .error_message
+        .as_deref()
+        .is_some_and(|s| s.contains("checksum mismatch")));
+    assert!(app.config.server_reply_model.is_none());
+    assert!(!app.config_path.exists());
+    assert!(app.models.confirmation.is_none());
+    assert!(app.restart.is_none());
+    assert!(!app.should_quit);
+}
+
+#[test]
+fn selecting_the_active_reply_needs_no_verification_confirmation_or_restart() {
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.join("role.txt"), "Incident role").unwrap();
+    std::fs::write(fixture.0.join("reply.gguf"), b"fixture").unwrap();
+    let manifest = fixture.0.join("manifest.toml");
+    std::fs::write(&manifest, "[[models]]\nid='fixture-reply'\nfamily='qwen2'\npurpose='reply'\nruntime='llama.cpp'\nmodel='reply.gguf'\nsystem_prompt='role.txt'").unwrap();
+    let mut app = crate::tui::app::tests::ready_app();
+    app.catalog = ModelCatalog::load(manifest);
+    app.config_path = fixture.0.join("tui.toml");
+    app.chat.editor.text = "Keep my draft".into();
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app.error_message.is_none(), "{:?}", app.error_message);
+    assert!(app.models.verification.is_none());
+    assert!(app.models.confirmation.is_none());
+    assert!(app.restart.is_none());
+    assert!(!app.should_quit);
+    assert_eq!(app.chat.editor.text, "Keep my draft");
+    let saved: TuiConfig =
+        toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+    assert_eq!(saved.server_reply_model.as_deref(), Some("fixture-reply"));
+}
+
+#[test]
+fn failed_automatic_save_preserves_the_reply_selection_and_does_not_restart() {
+    use sha2::{Digest, Sha256};
+    let fixture = Fixture::new();
+    std::fs::write(fixture.0.join("role.txt"), "Incident role").unwrap();
+    std::fs::write(fixture.0.join("reply.gguf"), b"fixture").unwrap();
+    let manifest = fixture.0.join("manifest.toml");
+    std::fs::write(&manifest, format!("[[models]]\nid='reply'\nfamily='qwen2'\npurpose='reply'\nruntime='llama.cpp'\nmodel='reply.gguf'\nsystem_prompt='role.txt'\nsha256='{:x}'", Sha256::digest(b"fixture"))).unwrap();
+    let mut app = crate::tui::app::tests::test_app();
+    app.catalog = ModelCatalog::load(manifest);
+    app.config.server_reply_model = Some("previous-reply".into());
+    let blocked_parent = fixture.0.join("file-not-directory");
+    std::fs::write(&blocked_parent, "original").unwrap();
+    app.config_path = blocked_parent.join("tui.toml");
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    while app.models.verification.is_some() && std::time::Instant::now() < deadline {
+        app.tick_workspace();
+        std::thread::sleep(std::time::Duration::from_millis(2));
+    }
+    assert!(app
+        .error_message
+        .as_deref()
+        .unwrap()
+        .contains("Could not select reply"));
+    assert_eq!(
+        app.config.server_reply_model.as_deref(),
+        Some("previous-reply")
+    );
+    assert_eq!(std::fs::read_to_string(blocked_parent).unwrap(), "original");
+    assert!(app.restart.is_none());
+    assert!(!app.should_quit);
+    assert!(app.models.confirmation.is_none());
+}
+
+#[test]
+fn failed_voice_switch_keeps_the_selected_pair_available_and_can_retry() {
+    let mut app = crate::tui::app::tests::ready_app();
+    app.catalog.entries = vec![entry("voice-b", "transcript", true)];
+    let (sender, commands) = mpsc::channel();
+    app.worker_sender = sender;
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    let WorkerCommand::LoadModel(request) = commands.try_recv().unwrap() else {
+        panic!("model load expected");
+    };
+    app.apply_worker_event(crate::tui::events::WorkerEvent::ModelLoadFailed {
+        request_id: request.request_id,
+        model_id: request.model_id,
+        error: "fixture failure".into(),
+        switch_from: request.switch_from,
+    });
+    assert_eq!(app.config.selected_stt_model, "fixture-stt");
+    assert_eq!(app.active_model.as_ref().unwrap().id, "fixture-stt");
+    assert!(
+        app.chat_ready(),
+        "failed switch must not leave a preparation gate active"
+    );
+    press(&mut app, KeyCode::Char('r'));
+    assert!(
+        matches!(commands.try_recv().unwrap(), WorkerCommand::LoadModel(request) if request.model_id == "voice-b")
+    );
+    assert!(!app.chat_ready());
+}
+
+#[test]
+fn reply_startup_failure_remains_visible_after_voice_becomes_ready() {
+    let fixture = Fixture::new();
+    let mut app = crate::tui::app::tests::test_app();
+    app.config_path = fixture.0.join("tui.toml");
+    app.screen = Screen::Models;
+    app.config.server_reply_model = Some("reply".into());
+    let runtime = va_runtime::AgentRuntime::new(
+        None,
+        None,
+        None,
+        va_runtime::Limits::default(),
+        metrics::MetricsConfig::enabled(),
+        Arc::new(metrics::MetricsHub::new()),
+    );
+    app.apply_worker_event(crate::tui::events::WorkerEvent::RuntimeReady {
+        runtime,
+        reply_error: Some("reply worker missing".into()),
+    });
+    app.current_request = Some(1);
+    app.apply_worker_event(crate::tui::events::WorkerEvent::ModelReady {
+        request_id: 1,
+        model_id: "voice".into(),
+        model_family: "whisper".into(),
+        backend: "fake".into(),
+        load_duration_ms: 1,
+        switch_from: None,
+    });
+    assert!(app
+        .error_message
+        .as_deref()
+        .unwrap()
+        .contains("reply worker missing"));
+    assert!(!app.chat_ready());
+    assert_eq!(app.screen, Screen::Models);
+    app.shutdown_workspace();
+}
+
+#[test]
+fn model_preparation_cannot_restart_and_discard_an_unsent_chat_draft() {
+    let mut app = crate::tui::app::tests::ready_app();
+    let mut voice = entry("uncompiled-voice", "transcript", true);
+    voice.adapter_compiled = false;
+    app.catalog.entries = vec![voice];
+    app.chat.editor.text = "Keep my draft".into();
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Enter);
+    assert!(app
+        .error_message
+        .as_deref()
+        .unwrap()
+        .contains("finish the pending turn"));
+    assert!(app.build.is_none());
+    assert!(app.restart.is_none());
+    assert_eq!(app.config.selected_stt_model, "fixture-stt");
+    assert_eq!(app.chat.editor.text, "Keep my draft");
+}
+
+#[test]
+fn voice_selection_is_saved_and_restored_without_reselecting_models() {
+    use crate::tui::events::WorkerEvent;
+    let fixture = Fixture::new();
+    let mut app = crate::tui::app::tests::ready_app();
+    app.config_path = fixture.0.join("tui.toml");
+    app.catalog.entries = vec![
+        entry("voice-a", "transcript", true),
+        entry("voice-b", "transcript", true),
+        entry("fixture-reply", "reply", true),
+    ];
+    let (sender, commands) = mpsc::channel();
+    app.worker_sender = sender;
+    press(&mut app, KeyCode::Char('m'));
+    press(&mut app, KeyCode::Down);
+    press(&mut app, KeyCode::Enter);
+    let WorkerCommand::LoadModel(request) = commands.try_recv().unwrap() else {
+        panic!("selection must load the highlighted voice model");
+    };
+    assert_eq!(request.model_id, "voice-b");
+    app.apply_worker_event(WorkerEvent::ModelReady {
+        request_id: request.request_id,
+        model_id: request.model_id,
+        model_family: "whisper".into(),
+        backend: "fake".into(),
+        load_duration_ms: 1,
+        switch_from: request.switch_from,
+    });
+    assert!(app.error_message.is_none());
+    assert!(app.chat_ready());
+    assert!(app.model_selected(&app.catalog.entries[1]));
+    assert!(app.model_selected(&app.catalog.entries[2]));
+    let saved: TuiConfig =
+        toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+    let options = TuiOptions {
+        server_url: None,
+        model_id: None,
+        model_manifest: None,
+        audio_directory: None,
+        max_seconds: None,
+        language: None,
+        dictionary: None,
+        reconfigure: false,
+    };
+    let (sender, commands) = mpsc::channel();
+    let (_, events) = mpsc::channel();
+    let (_, metrics) = mpsc::channel();
+    let mut restored = App::new(
+        &options,
+        saved,
+        true,
+        app.catalog.clone(),
+        sender,
+        events,
+        metrics,
+        Arc::new(AtomicU64::new(0)),
+    );
+    assert_eq!(restored.screen, Screen::Models);
+    assert_eq!(restored.config.selected_stt_model, "voice-b");
+    assert_eq!(
+        restored.config.server_reply_model.as_deref(),
+        Some("fixture-reply")
+    );
+    assert!(restored.model_selected(&restored.catalog.entries[1]));
+    assert!(restored.model_selected(&restored.catalog.entries[2]));
+    assert!(
+        !restored.chat_ready(),
+        "wait for the restored models to load"
+    );
+    restored.start_initial_load();
+    assert!(
+        matches!(commands.try_recv().unwrap(), WorkerCommand::LoadModel(request) if request.model_id == "voice-b")
+    );
+    assert_eq!(restored.screen, Screen::Models);
 }
 
 #[test]

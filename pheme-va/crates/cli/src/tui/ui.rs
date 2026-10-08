@@ -157,6 +157,7 @@ pub(super) fn draw_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
     let progress = app.download.is_some()
         || app.build.is_some()
         || app.models.verification.is_some()
+        || app.pending_model_id.is_some()
         || app.screen == Screen::Loading
         || retained_download.is_some();
     let (list_area, details_area, progress_area) = model_columns(area, progress);
@@ -210,25 +211,46 @@ pub(super) fn draw_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
                 } else {
                     Color::Yellow
                 };
+                let ready = match entry.manifest.purpose() {
+                    Some(ModelPurpose::Transcript) => app
+                        .active_model
+                        .as_ref()
+                        .is_some_and(|m| m.id == entry.manifest.id),
+                    Some(ModelPurpose::Reply) => {
+                        app.model_selected(entry)
+                            && app
+                                .local_runtime
+                                .as_ref()
+                                .is_some_and(|r| r.voice.reply_status().ready)
+                    }
+                    None => false,
+                };
                 let artifact = app
                     .models
                     .download_status
                     .get(&entry.manifest.id)
                     .map(String::as_str)
-                    .unwrap_or(if entry.artifacts_available() {
-                        "Present (not verified)"
+                    .unwrap_or(if ready {
+                        "Ready"
+                    } else if entry.artifacts_available() {
+                        "Available"
                     } else {
                         "Missing"
                     });
                 let status = format!("{artifact} | {}", availability.label());
-                let text = format!("{}  {status}", entry.manifest.id);
+                let label = if app.model_selected(entry) {
+                    format!("[SELECTED] {}", entry.manifest.id)
+                } else {
+                    entry.manifest.id.clone()
+                };
+                let text = format!("{label}  {status}");
                 if text.width() <= row_width {
                     ListItem::new(Line::from(vec![
-                        Span::raw(format!("{}  ", entry.manifest.id)),
+                        Span::raw(format!("{label}  ")),
                         Span::styled(status, Style::default().fg(color)),
                     ]))
                 } else {
-                    let mut lines = super::editor::Editor::new(entry.manifest.id.clone())
+                    let mut lines = super::editor::Editor::new(label)
                         .wrapped(row_width)
                         .0
                         .into_iter()
@@ -278,9 +300,20 @@ pub(super) fn draw_picker(frame: &mut Frame<'_>, app: &App, area: Rect) {
             draw_build_output(frame, app, area);
         } else {
             let status = if let Some(task) = app.models.verification.as_ref() {
-                Some(("VERIFYING STARTUP CHOICE", format!("Model: {}\nChecking artifact hashes and selected roles locally.\nActive server unchanged.", task.model_id)))
-            } else if app.screen == Screen::Loading {
-                Some(("LOADING STANDALONE STT", format!("Model: {}\nLoading candidate in the inference worker.\nCurrent model is retained on failure.", app.pending_model_id.as_deref().unwrap_or(&app.config.selected_stt_model))))
+                Some((
+                    "PREPARING MODEL",
+                    format!("Model: {}\nChecking model files and roles.", task.model_id),
+                ))
+            } else if app.pending_model_id.is_some() || app.screen == Screen::Loading {
+                Some((
+                    "LOADING VOICE MODEL",
+                    format!(
+                        "Model: {}\nLoading model.\nCurrent model is retained on failure.",
+                        app.pending_model_id
+                            .as_deref()
+                            .unwrap_or(&app.config.selected_stt_model)
+                    ),
+                ))
             } else {
                 retained_download.map(|(model_id, status)| {
                     (
@@ -1781,7 +1814,7 @@ mod tests {
         let buffer = picker_buffer(&app, 80, 24);
         let list = picker_list_text(&buffer);
         assert_picker_highlight(&buffer, "cached-voice-fixture");
-        assert!(list.contains("Present (not verified) | cached"), "{list}");
+        assert!(list.contains("Available | cached"), "{list}");
         let details = rect_text(&buffer, model_columns(model_body(80, 24), false).1);
         assert!(details.contains("Standalone:      cached"), "{details}");
     }
@@ -1805,16 +1838,13 @@ mod tests {
                     details.contains("Purpose:         Reasoning & reply"),
                     "{details}"
                 );
-                assert!(details.contains("Local reply runtime;"), "{details}");
-                assert!(
-                    details.contains("Files do not establish runtime readiness."),
-                    "{details}"
-                );
+                assert!(details.contains("Selection:"), "{details}");
+                assert!(details.contains("Adapter support:"), "{details}");
                 assert!(
                     details.contains(if missing {
                         "Artifacts:       missing"
                     } else {
-                        "Artifacts:       present (not verified)"
+                        "Artifacts:       available"
                     }),
                     "{details}"
                 );
