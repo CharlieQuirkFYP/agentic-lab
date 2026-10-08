@@ -40,8 +40,8 @@ jobs:
       - name: Run tests
         run: cargo test --workspace
 
-      - name: Verify combined Whisper and reply binaries
-        run: cargo build -p server -p reply-native --features server/whisper
+      - name: Verify TUI/HTTP Whisper and reply binaries
+        run: cargo build -p cli -p server -p reply-native --features cli/whisper,server/whisper
 
       - name: Test direct model downloads offline
         run: bash scripts/test-download-model.sh

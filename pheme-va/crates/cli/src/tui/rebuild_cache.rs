@@ -102,6 +102,23 @@ impl Cache {
         {
             return None;
         }
+        let worker = entry.join(format!(
+            "pheme-reply-worker{}",
+            std::env::consts::EXE_SUFFIX
+        ));
+        let worker_bytes = fs::read(&worker).ok()?;
+        if worker_bytes.is_empty()
+            || fs::read_to_string(entry.join("worker-hash")).ok()? != digest(&worker_bytes)
+        {
+            return None;
+        }
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            if fs::metadata(&worker).ok()?.permissions().mode() & 0o111 == 0 {
+                return None;
+            }
+        }
         let runtimes: BTreeMap<String, String> =
             toml::from_str(&fs::read_to_string(entry.join("runtimes.toml")).ok()?).ok()?;
         for (path, hash) in runtimes {
@@ -135,6 +152,17 @@ impl Cache {
         let result = (|| {
             let name = format!("cli{}", std::env::consts::EXE_SUFFIX);
             fs::copy(binary, staging.join(&name))?;
+            let worker_name = format!("pheme-reply-worker{}", std::env::consts::EXE_SUFFIX);
+            let worker = binary
+                .parent()
+                .context("CLI executable has no directory")?
+                .join(&worker_name);
+            let bytes = fs::read(&worker).context(
+                "build/ship pheme-reply-worker beside the CLI before publishing its backend cache",
+            )?;
+            anyhow::ensure!(!bytes.is_empty(), "reply worker executable is empty");
+            fs::copy(worker, staging.join(worker_name))?;
+            fs::write(staging.join("worker-hash"), digest(&bytes))?;
             let bytes = fs::read(staging.join(&name))?;
             anyhow::ensure!(!bytes.is_empty(), "adapter executable is empty");
             fs::write(staging.join("binary-hash"), digest(&bytes))?;
@@ -300,7 +328,7 @@ fn fingerprint(workspace: &Path, features: &[String], compiler: &str) -> Result<
     }
     // Never persist credentials that may be present in Cargo's environment.
     let environment = digest(format!("{env:?}").as_bytes());
-    Ok(format!("adapter-cache-v2\nrelease;locked;cli;explicit-host\n{workspace:?}\n{features:?}\n{compiler}\n{environment}\n{files:?}"))
+    Ok(format!("adapter-cache-v3\nrelease;locked;cli+reply-native;explicit-host\n{workspace:?}\n{features:?}\n{compiler}\n{environment}\n{files:?}"))
 }
 
 fn volatile_environment(key: &str) -> bool {
@@ -641,6 +669,14 @@ mod tests {
         .unwrap();
         let binary = release.join("cli");
         fs::copy(std::env::current_exe().unwrap(), &binary).unwrap();
+        fs::copy(
+            &binary,
+            release.join(format!(
+                "pheme-reply-worker{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+        )
+        .unwrap();
         let published = cache.publish(&binary).unwrap();
         assert_eq!(cache.lookup(), Some(published));
         fs::write(&library, "modified runtime").unwrap();
@@ -653,6 +689,26 @@ mod tests {
         // primary runtime when republishing after Cargo reports a fresh build.
         fs::write(runtime.join("libLiteRtAccelerator.so"), "plugin").unwrap();
         assert!(cache.publish(&binary).is_err());
+    }
+
+    #[test]
+    fn missing_or_corrupted_reply_worker_invalidates_cached_cli() {
+        let fixture = Fixture::new();
+        let cache = fixture.cache(&["whisper"], "compiler");
+        let release = cache.target.join("fixture-release");
+        fs::create_dir_all(&release).unwrap();
+        let executable = release.join("cli");
+        fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        assert!(cache.publish(&executable).is_err());
+        let worker_name = format!("pheme-reply-worker{}", std::env::consts::EXE_SUFFIX);
+        fs::copy(&executable, release.join(&worker_name)).unwrap();
+        let published = cache.publish(&executable).unwrap();
+        let worker = published.parent().unwrap().join(worker_name);
+        assert_eq!(cache.lookup(), Some(published));
+        fs::write(&worker, "corrupted").unwrap();
+        assert!(cache.lookup().is_none());
+        fs::remove_file(worker).unwrap();
+        assert!(cache.lookup().is_none());
     }
 
     #[test]
@@ -686,7 +742,19 @@ mod tests {
         let fixture = Fixture::new();
         let cache = fixture.cache(&["whisper"], "compiler one");
         assert!(cache.lookup().is_none());
-        let binary = cache.publish(&std::env::current_exe().unwrap()).unwrap();
+        let release = cache.target.join("fixture-release");
+        fs::create_dir_all(&release).unwrap();
+        let executable = release.join("cli");
+        fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        fs::copy(
+            &executable,
+            release.join(format!(
+                "pheme-reply-worker{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+        )
+        .unwrap();
+        let binary = cache.publish(&executable).unwrap();
         assert_eq!(
             fixture.cache(&["whisper"], "compiler one").lookup(),
             Some(binary.clone())

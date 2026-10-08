@@ -430,6 +430,8 @@ fn build_command(workspace: &Path, target: &Path, features: &[&str], host: &str)
             "--locked",
             "-p",
             "cli",
+            "-p",
+            "reply-native",
             "--color",
             "never",
         ])
@@ -642,6 +644,14 @@ mod tests {
         std::fs::create_dir_all(&release).unwrap();
         let executable = release.join(format!("cli{}", std::env::consts::EXE_SUFFIX));
         std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
+        std::fs::copy(
+            &executable,
+            release.join(format!(
+                "pheme-reply-worker{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+        )
+        .unwrap();
         if selected.contains(&"zipformer") {
             // Feature-enabled launchers preserve Zipformer, so publication must
             // validate its runtime too. Keep this fixture independent of actual
@@ -771,6 +781,8 @@ mod tests {
                 "--locked",
                 "-p",
                 "cli",
+                "-p",
+                "reply-native",
                 "--color",
                 "never",
                 "--manifest-path",
