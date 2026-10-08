@@ -79,9 +79,9 @@ cargo clippy --workspace --all-targets -- -D warnings
 The workspace contains:
 
 - `crates/core`: portable audio normalization, mono 16 kHz conversion, speech gating, dictionary prompts, transcript guards, replaceable adapter traits, and conservative incident extraction
-- `crates/models/whispercpp`: in-process whisper.cpp model adapter
-- `crates/models/zipformer`: optional LiteRT Zipformer CTC model adapter
-- `crates/models/reply`: persistent stdio reply client plus the `reply-native` llama.cpp worker
+- `crates/models/transcription/whispercpp`: in-process whisper.cpp model adapter
+- `crates/models/transcription/zipformer`: optional LiteRT Zipformer CTC model adapter
+- `crates/models/reasoning`: persistent stdio reply client plus the `reply-native` llama.cpp worker
 - `crates/cli`: standalone STT bench and server-connected Web/Tests/Models/Telemetry TUI
 - `crates/server`: development HTTP host around the same core
 - `crates/ffi`: C ABI for native iOS/Android hosts

@@ -20,7 +20,7 @@ The relevant code is under `pheme-va/`:
 - `crates/cli/src/model.rs` loads `models/manifest.toml`, resolves a model ID, and constructs an `Engine` using the model's `family`.
 - `crates/core/` owns audio normalization, speech gating, transcription, transcript guards, and the shared `Transcriber` boundary.
 - `crates/metrics/` provides typed `MetricEvent`, `MetricSample`, `MetricsContext`, `MetricsHub`, `ResourceCollector`, and the desktop `SysinfoResourceSampler`.
-- `crates/models/whispercpp/` and `crates/models/zipformer/` are separate optional model adapters.
+- `crates/models/transcription/whispercpp/` and `crates/models/transcription/zipformer/` are separate optional model adapters.
 - The current TUI starts a Ratatui event loop, owns a worker for model loading and transcription, supports multiple WAV/microphone runs, exposes telemetry and logs, and stays open until the user exits. Completed and failed run reports are also persisted in bounded local JSON history.
 
 The current model manifest contains:

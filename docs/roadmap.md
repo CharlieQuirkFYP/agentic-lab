@@ -22,11 +22,11 @@ The following foundation is implemented on this branch:
 
 - `pheme-va/crates/core`: WAV/PCM validation, 8/16/24/32-bit integer and 32-bit float WAV decoding, downmixing, windowed-sinc resampling to mono 16 kHz, configurable energy gating, dictionary prompts, decoder options, transcript guards, cleanup traits, model-neutral transcription, and conservative rule-based incident extraction.
 - `pheme-va/crates/metrics`: versioned scalar events, per-run contexts, synchronous pub/sub, stage timers, resource snapshots, explicit unavailable values, desktop sampling, Linux GPU/temperature/battery extensions, and batch formation.
-- `pheme-va/crates/models/whispercpp`: optional prewarmed in-process whisper.cpp adapter with model metadata and model timing support.
-- `pheme-va/crates/models/zipformer`: optional LiteRT Zipformer CTC adapter for the manifest's small/medium/large variants.
+- `pheme-va/crates/models/transcription/whispercpp`: optional prewarmed in-process whisper.cpp adapter with model metadata and model timing support.
+- `pheme-va/crates/models/transcription/zipformer`: optional LiteRT Zipformer CTC adapter for the manifest's small/medium/large variants.
 - `pheme-va/crates/cli`: manifest-driven `transcribe` and `tui` commands; TUI onboarding, WAV browsing, live microphone capture, worker-owned model loading/switching, metric graphs/details, structured logs, allowlisted model downloads, adapter cache/build/restart, and bounded JSON run history.
 - `pheme-va/crates/server`: Axum host preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
-- `pheme-va/crates/models/reply`: normal reply adapter and server-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
+- `pheme-va/crates/models/reasoning`: normal reply adapter and server-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
 - `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
 - `api/`: Gin public API, asynchronous in-memory benchmark lifecycle, and separate in-memory metric-batch ingestion.
 - `web/`: WAV microphone capture, editable transcript review, streamed replies, local-service voice playback and GET-only recovery through Go; benchmark navigation remains a placeholder.

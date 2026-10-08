@@ -101,7 +101,7 @@ test(
     const dir = await mkdtemp(path.join(os.tmpdir(), "pheme-stack-"));
     const worker = path.join(dir, "worker.sh");
     await copyFile(
-      path.join(workspace, "crates/models/reply/tests/fixtures/worker.sh"),
+      path.join(workspace, "crates/models/reasoning/tests/fixtures/worker.sh"),
       worker,
     );
     await chmod(worker, 0o700);

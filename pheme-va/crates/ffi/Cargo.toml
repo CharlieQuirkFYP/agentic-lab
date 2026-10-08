@@ -19,4 +19,4 @@ whisper-coreml = ["whisper", "whispercpp/coreml"]
 metrics = { path = "../metrics", default-features = false }
 serde_json.workspace = true
 va_core = { package = "core", path = "../core" }
-whispercpp = { path = "../models/whispercpp", optional = true }
+whispercpp = { path = "../models/transcription/whispercpp", optional = true }

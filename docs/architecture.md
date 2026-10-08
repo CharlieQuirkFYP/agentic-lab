@@ -9,7 +9,7 @@ This document separates the implemented foundation from the target architecture.
 - `pheme-va/crates/cli/`: manifest-driven model selection, the one-shot WAV `transcribe` command, and a Ratatui TUI with onboarding, WAV browsing, microphone capture, worker-owned model switching, telemetry, structured logs, automatic allowlisted model downloads, adapter preparation, and bounded persistent run history.
 - `pheme-va/crates/server/`: an Axum host with stateless STT/deterministic extraction plus web-owned review/approval, request-scoped reply SSE, recovery/inspection, cancellation/reset, and isolated reply tests. It loads manifest-selected Whisper/Zipformer and reply weights once; bounded web history remains in memory.
 - `pheme-va/crates/ffi/`: a direct-path Whisper C ABI for a future native mobile host, including optional metrics-batch draining. Native audio capture and mobile lifecycle remain host responsibilities.
-- `pheme-va/crates/models/reply/`: a normal stdio conversation adapter and `reply-native` llama.cpp worker, separate from Whisper/cleanup. The HTTP server owns the persistent child, isolating incompatible GGML symbols; no extra HTTP service, reply feature flag or runtime build/download endpoint exists. Include its PID in inference resource accounting; child-specific CPU/RAM remain unavailable with the current sampler.
+- `pheme-va/crates/models/reasoning/`: a normal stdio conversation adapter and `reply-native` llama.cpp worker, separate from Whisper/cleanup. The HTTP server owns the persistent child, isolating incompatible GGML symbols; no extra HTTP service, reply feature flag or runtime build/download endpoint exists. Include its PID in inference resource accounting; child-specific CPU/RAM remain unavailable with the current sampler.
 - `web/`: React/TypeScript/Vite/Tailwind voice console with WAV capture, transcript review, streamed answers, cancellation/reset/recovery and local-service voice playback. The benchmark page is a placeholder for the still-planned real dashboard.
 
 ### Current HTTP routes
@@ -99,9 +99,9 @@ pheme-va/
   crates/cli/                   WAV client, microphone host, and TUI
   crates/server/                Development HTTP host
   crates/ffi/                   Native embedding boundary
-  crates/models/whispercpp/     whisper.cpp model adapter
-  crates/models/zipformer/      Optional LiteRT Zipformer adapter
-  crates/models/reply/          Persistent reply client and native worker
+  crates/models/transcription/whispercpp/     whisper.cpp model adapter
+  crates/models/transcription/zipformer/      Optional LiteRT Zipformer adapter
+  crates/models/reasoning/          Persistent reply client and native worker
   prompts/                     Checked-in incident system instruction
   models/manifest.toml          Manifest model catalog
   models/README.md              Artifact sources/checksums/status

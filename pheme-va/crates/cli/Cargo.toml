@@ -30,8 +30,8 @@ serde.workspace = true
 serde_json.workspace = true
 toml = "0.8"
 va_core = { package = "core", path = "../core" }
-whispercpp = { path = "../models/whispercpp", optional = true }
-zipformer = { path = "../models/zipformer", optional = true }
+whispercpp = { path = "../models/transcription/whispercpp", optional = true }
+zipformer = { path = "../models/transcription/zipformer", optional = true }
 # Directly depend on the sys crate so its verified runtime cache directory is
 # exposed to this host's build script for an executable rpath.
 litert-sys = { version = "0.2.1", optional = true }

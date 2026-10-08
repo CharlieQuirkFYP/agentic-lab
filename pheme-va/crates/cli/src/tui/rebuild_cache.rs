@@ -670,8 +670,14 @@ mod tests {
             fs::write(fixture.0.join(name).join("large.bin"), "runtime data").unwrap();
         }
         assert_eq!(before, fixture.cache(&["whisper"], "compiler").fingerprint);
-        fs::create_dir_all(fixture.0.join("crates/models/whispercpp")).unwrap();
-        fs::write(fixture.0.join("crates/models/whispercpp/lib.rs"), "source").unwrap();
+        fs::create_dir_all(fixture.0.join("crates/models/transcription/whispercpp")).unwrap();
+        fs::write(
+            fixture
+                .0
+                .join("crates/models/transcription/whispercpp/lib.rs"),
+            "source",
+        )
+        .unwrap();
         assert_ne!(before, fixture.cache(&["whisper"], "compiler").fingerprint);
     }
 

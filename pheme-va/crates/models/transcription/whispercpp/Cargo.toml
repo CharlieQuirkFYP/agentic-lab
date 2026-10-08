@@ -13,4 +13,4 @@ coreml = ["whisper-rs/coreml"]
 
 [dependencies]
 whisper-rs.workspace = true
-va_core = { package = "core", path = "../../core" }
+va_core = { package = "core", path = "../../../core" }
