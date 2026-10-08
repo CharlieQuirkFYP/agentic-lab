@@ -25,8 +25,9 @@ The following foundation is implemented on this branch:
 - `pheme-va/crates/models/transcription/whispercpp`: optional prewarmed in-process whisper.cpp adapter with model metadata and model timing support.
 - `pheme-va/crates/models/transcription/zipformer`: optional LiteRT Zipformer CTC adapter for the manifest's small/medium/large variants.
 - `pheme-va/crates/cli`: manifest-driven `transcribe` and `tui` commands; TUI onboarding, WAV browsing, live microphone capture, worker-owned model loading/switching, metric graphs/details, structured logs, allowlisted model downloads, adapter cache/build/restart, and bounded JSON run history.
-- `pheme-va/crates/server`: Axum host preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
-- `pheme-va/crates/models/reasoning`: normal reply adapter and server-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
+- `pheme-va/crates/runtime`: reusable conversation orchestration, typed channels/snapshots, shared inference gate, native settlement and metrics.
+- `pheme-va/crates/server`: Axum adapter preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
+- `pheme-va/crates/models/reasoning`: normal reply adapter and host-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
 - `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
 - `api/`: Gin public API, asynchronous in-memory benchmark lifecycle, and separate in-memory metric-batch ingestion.
 - `web/`: WAV microphone capture, editable transcript review, streamed replies, local-service voice playback and GET-only recovery through Go; benchmark navigation remains a placeholder.
@@ -51,7 +52,7 @@ Implement the reusable core, optional whisper.cpp and Zipformer adapter boundari
 
 Implement the Ratatui developer console, manifest model picker, WAV/microphone paths, asynchronous worker, live model switching, telemetry tabs, metric details, historical run reports, bounded logs, native diagnostics on Unix, allowlisted artifact downloads, adapter preparation/cache restart, persistent local run history, resource sampling, and retry/error states.
 
-The TUI remains a development/model-evaluation console. Its server-connected Web/Tests/Models/Telemetry workspace observes/approves pending web turns, keeps tests isolated and downloads/selects next-start model artifacts locally. The server supports manifest STT/reply choices; FFI remains direct-path Whisper. Production incident confirmation, partial streaming STT and verified whole-device power measurement are not implemented.
+The TUI remains a development/model-evaluation console. Its local Chat/Tests and optional Web inspector with Models/Telemetry supports reviewed console conversations and grouped run measurements, observes/approves pending web turns through Go, keeps Tests local and isolated and downloads/selects next-start model artifacts locally. The server supports manifest STT/reply choices; FFI remains direct-path Whisper. Production incident confirmation, partial streaming STT and verified whole-device power measurement are not implemented.
 
 ## Milestone 1 — Connect the Go API to Pheme VA
 

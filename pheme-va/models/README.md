@@ -123,29 +123,29 @@ configuration or a guarantee of incident-reporting quality.
 ```
 
 The `reply-native` crate pins `llama-cpp-2` and the matching sys binding to
-`0.1.158`. It builds `pheme-reply-worker`, a **server-owned persistent stdio
+`0.1.158`. It builds `pheme-reply-worker`, a **host-owned persistent stdio
 child**, not another HTTP service. Whisper and llama.cpp ship incompatible
-GGML symbols, so linking both directly into the server is unsafe. The normal
+GGML symbols, so linking both directly into one host is unsafe. The normal
 `reply-model` dependency implements the same trait over bounded, versioned
 NDJSON; the worker alone links llama.cpp. There is no enable-reply Cargo feature.
 Building the worker requires a C/C++ toolchain, CMake and libclang for bindgen.
 Build/ship both executables together:
 
 ```bash
-cargo build --release -p server -p reply-native --features server/whisper
+cargo build --release -p cli -p server -p reply-native --features cli/whisper,server/whisper
 ```
 
-The server finds `pheme-reply-worker` beside its own executable; an explicit
+Each TUI/server host finds `pheme-reply-worker` beside its own executable; an explicit
 trusted `PHEME_VA_REPLY_WORKER` path can override that location. Runtime startup
 never invokes Cargo. A missing worker fails before a reply download is attempted.
-The server starts/stops/reaps its worker; clients never manage a second service.
+The host starts/stops/reaps its worker; clients never manage a second service.
 Cancellation reaches the child's native atomic through an independent input
 thread. An unresponsive/crashed worker is killed/reaped and answering becomes
-not-ready until an explicit server restart, without a transcription fallback.
+not-ready until an explicit host restart, without a transcription fallback.
 Ordinary cancelled/completed turns keep the same loaded weights.
 
 Resource accounting must include the native child PID. The current desktop
-sampler covers the server process, not its reply child; reply-specific CPU/RAM
+sampler covers the hosting process, not its reply child; reply-specific CPU/RAM
 metrics therefore remain explicitly unavailable rather than understated.
 The default dependency disables optional accelerator/OpenMP/common-library
 features; use `gpu_layers=0` with this CPU build. Nonzero GPU layers fail clearly
@@ -172,7 +172,7 @@ produce the preview/turn SHA-256. This does not increase the existing default
 12,000-character aggregate role + history + question budget; startup rejects
 a role consuming that entire budget. Missing/invalid roles never fall back
 to generic instructions. Trusted overrides and edits apply only after a
-server restart, not through a live prompt-reload endpoint. The prompt does
+TUI/server restart. The prompt does
 not authorize saving, dispatch, retrieval or other tools.
 
 The unified TUI Models page derives both purpose groups from this manifest.

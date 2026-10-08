@@ -10,9 +10,9 @@ Implemented in `pheme-va/`:
 - optional in-process `whispercpp` and Zipformer CLI adapters;
 - an Axum development server with stateless transcription, deterministic incident extraction, health/readiness, and an in-memory metrics-batch drain;
 - a direct-path Whisper C ABI for future native hosts; and
-- a local TUI with standalone STT and server-connected Web/Tests/Models/Telemetry views, not operational incident sessions;
+- a local TUI Chat/Tests runtime with optional Go-backed Web inspection, Models and Telemetry, not operational incident sessions;
 - web-owned reviewed turns with request-scoped reply SSE, inspection/recovery, cancellation/reset, and isolated tests; and
-- a normal reply client and server-owned persistent llama.cpp stdio worker with the pinned incident role.
+- a normal reply client and host-owned persistent llama.cpp stdio worker with the pinned incident role.
 
 The Go API delegates dedicated `/api/v1/voice/` operations through its Pheme client. The existing incident endpoint remains wired to `MockIncidentAnalyzer`; structured model-backed extraction is not implied by conversational replies. The web voice console captures WAV, reviews text, receives actual reply deltas and uses client-side local voices. Stateful incident sessions, revision-bound confirmation, persistence/retrieval and action execution remain planned. See the [implemented voice API](voice.md) for the development loop.
 

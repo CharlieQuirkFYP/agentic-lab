@@ -233,12 +233,15 @@ Currently implemented:
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
 - conservative deterministic incident-field extraction for offline development
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
-- normal reply dependency with a server-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
+- normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
 - dedicated Go Pheme client/service/handlers for `/api/v1/voice/`, separate from the mock incident analyzer
-- server-connected Ratatui Web/Tests/Models/Telemetry workspace with alphabetic main navigation (`w`/`b`/`m`/`t`), Telemetry-only `1–4` sub-tabs, pending-web-turn editing/approval and isolated tests
+- local Rust Ratatui Chat/Tests/Models/Telemetry workspace and optional Go-backed Web inspector with alphabetic main navigation (`w`/`b`/`m`/`t`), Telemetry-only `1–4` sub-tabs, pending-web-turn editing/approval and isolated tests
 - one manifest-backed Models page for both purposes, grouped rows/details, confirmed Enter downloads, standalone-only STT loading/preparation, and inline retained download progress
 - direct TUI/script/startup downloads into `models/transcript/` and `models/reply/`, checksum-verified next-start choices, no model-management HTTP endpoints
 - reply-only local Roles picker, ordered bounded `.txt` composition from `roles/incident-reporting.txt` by default, per-model saved role paths, and startup-only repeated `--prompt-file` overrides with combined prompt hashes
+- shared `va_runtime` conversation orchestration, typed events/snapshots, model constructors and inference gate reused by local TUI and thin HTTP host
+- reviewed local TUI voice/WAV/typed conversations with Pheme-owned bounded context, separate transcription/reasoning runs, streamed model replies, and finish-time model titles
+- conversation stats and per-run metric drill-down, retained resource samples, version 2 read-only local conversation archives with version 1 migration, and left-aligned alphabetic/Enter shortcut footers
 - deterministic core/runtime/client tests and fake-worker Go-to-Pheme voice integration
 
 * historical Python scaffold removed from the active worktree
@@ -247,7 +250,7 @@ Planned but not yet implemented:
 
 - model-backed structured extraction and Go `PhemeVAIncidentAnalyzer` (conversational reply adapter is implemented separately)
 - structured model-backed incident extraction with validated output and cancellation/timeouts
-- Pheme-owned multi-turn sessions, clarification, corrections, and revision-bound confirmation
+- persistent Pheme-owned incident sessions, structured clarification/corrections, and revision-bound report confirmation (development conversation context is implemented)
 - Pheme-owned SQLite session/report storage and incident retrieval
 - native mobile speech synthesis/audio workflow; live browser/TUI microphone/TTS acceptance and offline behavior still require validation
 - real benchmark runner, evaluation dataset, and resource/energy measurements

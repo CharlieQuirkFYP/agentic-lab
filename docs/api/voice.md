@@ -1,6 +1,6 @@
 # Development voice conversation API
 
-Implemented development flow: Web → Go → Pheme. One in-memory web conversation, with no session setup, join flow, global subscriptions, database or model-management HTTP routes. Independent TUI tests share loaded compute but never use/update web history, inspection content or web response streams. This does **not** implement confirmed incident report storage/retrieval or replace the existing structured incident analyzer.
+Implemented development flow: Web → Go → Pheme. One in-memory web conversation plus independent console conversations, with no join flow, global subscriptions, database or model-management HTTP routes. Local TUI Chat/Tests use `va_runtime` directly; only its optional Web inspector uses Go HTTP. HTTP isolated-test endpoints remain available to development clients. This does **not** implement confirmed incident report storage/retrieval or replace the existing structured incident analyzer.
 
 ## Hosts and readiness
 
@@ -137,14 +137,40 @@ Custom failures use `{ "error": { "code": "...", "message": "..." } }`. Common s
 
 Local registry `pheme-va/models/manifest.toml` retains `[[models]]` entries. `purpose`, `download_id` and manifest-relative `system_prompt` distinguish ASR artifacts from instruction replies. The starter Qwen default is `../roles/incident-reporting.txt`, resolving to `pheme-va/roles/incident-reporting.txt`; approved text never goes back to Whisper for an answer.
 
-The single local TUI Models page (`m`) covers both manifest purposes. Enter confirms a network download for missing artifacts; available STT loads/prepares only in standalone mode, never in connected clients. Available reply entries instead provide startup guidance. `s` hashes/confirms next-start choices, `o` opens a reply-only `.txt` Roles picker, `p` previews the combined role/hash, and `g` shows the generated command. Downloads remain inline below the right-hand model information, including their terminal status. These controls do not change the HTTP contract or an active server.
+The single local TUI Models page (`m`) covers both manifest purposes. Enter confirms a network download for missing artifacts; available STT loads/prepares in the local runtime while idle. Available reply entries instead provide startup guidance. `s` hashes/confirms next-start choices, `o` opens a reply-only `.txt` Roles picker, `p` previews the combined role/hash, and `g` shows the generated command. Downloads remain inline below the right-hand model information, including their terminal status. These controls do not change the HTTP contract or an active server.
 
 Trusted roles are startup-only: combine 1–32 validated non-empty UTF-8 files in selected order with exact `\n\n` separators, preserving source whitespace. `MAX_PROMPT_CHARS` is 16,384 Unicode scalar values including separators; the existing 12,000-character aggregate role/history/question budget still applies. `role.name` identifies the first source, while `role.sha256` and turn `role_sha256` hash the exact combined UTF-8 bytes. Ordered source paths are reported at startup, not a new inspection field.
 
 TUI config stores model-ID → absolute path lists in `reply_role_files`; dedicated `StartupChoices` adds optional `reply_prompt_files`, whose relative paths resolve from the choices file directory. Repeated `--prompt-file` flags override saved matching-model roles and conflict with single-file `--system-prompt`. A different explicit reply model does not inherit the previous model's roles; without a saved/explicit role choice it uses its manifest default. Raw `--reply-path` requires explicit prompt flags. See [local controls and startup setup](../../pheme-va/README.md#unified-models-page). User requests cannot supply paths or replace system instructions. Model text is assistance, not authorization to save/dispatch/execute actions.
 
-The server owns a persistent stdio `pheme-reply-worker` to isolate incompatible native GGML libraries. It must be built/shipped beside the server or located through trusted `PHEME_VA_REPLY_WORKER`. No client or HTTP endpoint builds it. See [setup](../../pheme-va/README.md#shared-webtui-voice-loop).
+Each TUI/server runtime owns a persistent stdio `pheme-reply-worker` to isolate incompatible native GGML libraries. It must be built/shipped beside its host or located through trusted `PHEME_VA_REPLY_WORKER`. No client or HTTP endpoint builds it. See [setup](../../pheme-va/README.md#shared-webtui-voice-loop).
 
 The server returns text only. Web speaks a validated live completion through browser-reported local voices; TUI inspection is silent and tests/replay optionally use local `espeak`. TTS failure preserves text and never regenerates a response. Restored results never automatically speak. Local-service browser voice flags are not an independently verified offline guarantee.
 
-Existing metrics batches separate model loads, human review, first-text/full generation, total turn duration, operation origin, status, character counts, bounded history/truncation and role hash. Logs/metrics contain no question/reply text by default. Token counts and child-process CPU/RAM remain explicitly unavailable; server-process sampling is not a measurement of its native reply child. Client playback outcomes stay local, not a server-side power/energy measurement.
+Existing metrics batches separate model loads, human review, first-text/full generation, total turn duration, operation origin, status, character counts, bounded history/truncation and role hash. Logs/metrics contain no question/reply text by default. Token counts and child-process CPU/RAM remain explicitly unavailable; host-process sampling is not a measurement of its native reply child. Client playback outcomes stay local, not a server-side power/energy measurement.
+
+## Console conversations
+
+These additive routes use the same Go/Pheme voice bases and loaded compute. Pheme owns approval, successful context and cancellation; Go forwards bodies, status and SSE. Web `/inspect`, `/reset` and isolated tests keep their existing behavior and exclude console conversation content.
+
+| Method | Path | Behavior |
+| --- | --- | --- |
+| POST | `/conversations` | Create an active conversation with a UTC date/time placeholder title |
+| GET | `/conversations/:conversation_id` | Snapshot of turns, stage-run metadata and aggregates; raw events omitted |
+| POST | `/conversations/:conversation_id/turns` | Start reviewed WAV or JSON text; direct SSE response uses the existing turn events |
+| GET | `/conversations/:conversation_id/turns/:turn_id` | Recover one retained turn |
+| POST | `/conversations/:conversation_id/turns/:turn_id/submit` | Approve exact reviewed text |
+| POST | `/conversations/:conversation_id/turns/:turn_id/cancel` | Cancel/discard this turn; compute remains reserved until native settlement |
+| POST | `/conversations/:conversation_id/finish` | Close admission and summarize completed exchanges; idempotent while finishing/finished |
+| GET | `/conversations/:conversation_id/metrics?after=0` | Non-destructive cursor page with `events`, `next_cursor`, `truncated` |
+| GET | `/conversations/:conversation_id/runs/:run_id` | One stage run with its retained raw events and aggregates |
+
+A snapshot contains `conversation_id`, `title`, `title_status`, `status` (`active`, `finishing`, `finished`), start/finish timestamps, `turns`, `runs`, `busy`, and measurement flags. Each turn links optional `transcription_run` and `reasoning_run`. Typed input creates no STT run. Each run records model/backend/revision/role hash, stage, source, status, exact submitted text, output/raw transcript, audio/gate metadata, errors, timestamps, raw events, dropped-event count and per-series summaries. Absent measurements remain unavailable.
+
+Series keys include metric name, unit, source and scope. Summary fields include `latest`, `minimum`, `maximum`, `total`, `numeric_count`, `count`, `unavailable_count` and reason; numeric mean is `total / numeric_count`. These are descriptive sample aggregates; nested stage timings and cumulative counters are not added to produce processing/energy totals. Server process/system samples are separate from unavailable reply-child measurements. A 250 ms sampler runs during native operations only when resource sampling is enabled.
+
+Metric pages contain at most 256 events and retain a 10,000-event conversation journal. `after` is an unsigned 64-bit cursor. Repeated reads do not drain other observers or the existing metrics batch exporter. When `truncated` is true, clients can retrieve each run's retained events independently; aggregates survive raw-event eviction. Source metadata may use `X-Audio-Source` (at most 512 bytes through Go). Start retries use the same `Idempotency-Key` semantics as web turns.
+
+Finish uses a trusted title instruction with bounded excerpts of **completed** exchanges, a maximum 32 output tokens and a 20-second deadline. Its `title` maintenance run and truncation counts stay separate from STT/reasoning runs. A failed/empty/invalid summary preserves the date/time placeholder; `title_status` records failure. Title generation grants no report tools or authorization. Active conversations accept at most 32 turns and cannot be reopened after finish. At most 100 server conversations are retained, evicting oldest finished entries; active entries are protected.
+
+The TUI explicitly sends unchanged/edited transcript text with Enter; typed Enter sends and approves atomically through the local Rust runtime without STT or review. Local channel notifications and authoritative snapshots recover updates without regeneration. HTTP conversation endpoints remain compatible reviewed inputs for external clients. Quitting cancels only this console's pending turn. Local version 2 JSON archives preserve history for inspection, with whole-conversation eviction and legacy version 1 migration; they do not restore authoritative runtime sessions after restart. Incident report confirmation/storage/retrieval remains planned.

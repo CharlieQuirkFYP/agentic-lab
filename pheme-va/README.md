@@ -24,6 +24,7 @@ The workspace contains these crates:
 | Crate          | Purpose                                                        |
 | -------------- | -------------------------------------------------------------- |
 | `core`         | Platform-independent pipeline and adapter traits               |
+| `va_runtime`   | Shared conversation orchestration, inference gate and events    |
 | `metrics`      | Per-run pub/sub metrics, resource samplers, and batch contract |
 | `cli`          | WAV client and small terminal microphone recorder              |
 | `server`       | Development HTTP wrapper around the same core                  |
@@ -31,7 +32,7 @@ The workspace contains these crates:
 | `whispercpp`   | `whisper.cpp` model adapter                                    |
 | `zipformer`    | Optional LiteRT Zipformer CTC model adapter                    |
 | `reply-model`  | Persistent stdio conversation adapter; no native GGML linkage  |
-| `reply-native` | llama.cpp adapter and server-owned `pheme-reply-worker` binary |
+| `reply-native` | llama.cpp adapter and host-owned `pheme-reply-worker` binary |
 
 Model weights are not committed. The local `models/` directory contains the checksum manifest; run `./scripts/download-model.sh --list` to see the explicitly selectable artifacts. The no-argument command downloads and verifies the supported Whisper baseline.
 
@@ -49,10 +50,10 @@ Model weights are not committed. The local `models/` directory contains the chec
 - A model-agnostic `Transcriber` trait in `core`, separate `whispercpp` and optional LiteRT `zipformer` model crates, and manifest-based CLI model selection. SeaLLMs-Audio remains download-only and is not part of the active runtime.
 - A WAV fixture test that exercises the complete audio path without model weights.
 - An ignored real-model transcription test for a supplied speech recording.
-- A ratatui-based local TUI with first-run onboarding, manifest model selection, worker-owned model switching, WAV browsing, live microphone capture, final transcript display, metrics graphs, and structured logs.
+- A ratatui-based local TUI with first-run onboarding, manifest model selection, worker-owned model switching, WAV browsing, live microphone capture, local voice/typed Chat, metrics graphs, and structured logs.
 - An HTTP host with stateless WAV transcription and web-owned reviewed turns, streamed replies, cancellation/reset, recovery/inspection, and isolated reply tests.
 - A separate local GGUF reply runtime with native cancellation, fresh per-call KV state, and a registry-bound incident role. Qwen2.5-1.5B-Instruct Q4_K_M is the starter model, not a validated deployment choice.
-- A TUI workspace with alphabetic Web/Tests/Models/Telemetry navigation, turn-bound transcript editing, one manifest-backed Models page in standalone/connected modes, inline local downloads, next-start model/role choices, combined prompt preview/hash, and optional local `espeak` replay.
+- A TUI workspace with alphabetic Chat/Web/Tests/Models/Telemetry navigation, turn-bound transcript editing, one manifest-backed Models page, inline local downloads, next-start model/role choices, combined prompt preview/hash, and optional local `espeak` replay.
 - A Go-delegated React voice console with complete-turn WAV capture, explicit review, real reply streaming, and local-voice-only browser speech synthesis.
 - A portable `metrics` crate with synchronous pub/sub, per-run filtering, application timings/status events, resource snapshots, explicit unavailable values, and batched export data.
 - Linux/macOS/Windows process/system CPU and RAM sampling through `sysinfo`, with extension points for native mobile sensors and device power/thermal providers.
@@ -88,17 +89,18 @@ cargo run --release -p cli --features whisper -- \
 
 The WAV may have any supported sample rate/channel count. It is normalized inside the core before the selected speech model receives it.
 
-### Local TUI test bench
+### Local TUI chat and test bench
 
 On Linux, install the system audio development package required by `cpal` if it is missing, for example `libasound2-dev` on Debian/Ubuntu. Start the TUI from `pheme-va`:
 
 ```bash
-cargo run --release -p cli -- tui
+cargo build --release -p cli -p reply-native --features cli/whisper
+./target/release/cli tui
 ```
 
 The first launch opens onboarding, then the unified Models page for manifest-backed selection. The WAV browser defaults to `samples/` when launched from `pheme-va` (`pheme-va/samples/` when launched from the repository root). Use `--audio-directory` to override it or `tui --reconfigure` to reopen setup.
 
-On Models, Enter on a missing row requests a network-confirmed download; Enter on an available transcription row loads/prepares it only in standalone mode. Model details report whether its adapter is compiled into the launcher, already cached, being checked, or needs preparation. A cached status means the validated backend can be reused without invoking Cargo build; selecting it performs the quick launcher restart needed to enter that feature-enabled executable. Cache misses build in the background, preserving already-enabled adapters, then restart automatically. Existing pre-cache builds require one new build to populate the cache. On Unix, the preparation screen streams actual Cargo/native output and automatically follows the newest lines. Press `t` for full logs or Escape on the preparation screen to cancel; failure leaves the current model available. Settings and saved run reports survive normal exits and automatic backend restarts. Live metrics, logs, and retry audio remain in memory only.
+On Models, Enter on a missing row requests a network-confirmed download; Enter on an available transcription row loads/prepares it locally. Model details report whether its adapter is compiled into the launcher, already cached, being checked, or needs preparation. A cached status means the validated backend can be reused without invoking Cargo build; selecting it performs the quick launcher restart needed to enter that feature-enabled executable. Cache misses build in the background, preserving already-enabled adapters, then restart automatically. Cached generations include a verified `pheme-reply-worker` beside the CLI; old generations require a fresh build. On Unix, the preparation screen streams actual Cargo/native output and automatically follows the newest lines. Press `t` for full logs or Escape on the preparation screen to cancel; failure leaves the current model available. Settings and saved run reports survive normal exits and automatic backend restarts. Live metrics, logs, and retry audio remain in memory only.
 
 Automatic setup requires the original source checkout, Cargo/Rust, and native build dependencies. Known Whisper/Zipformer model IDs can download missing pinned, checksum-verified artifacts through `scripts/download-model.sh`. Cargo may also download dependencies or the LiteRT runtime. Backend cache generations live under `target/tui-adapters/cache-v2/`; Unix builds reuse a locked `target/tui-adapters/build/` for incremental compilation. Neither overwrites the running executable. This is a development convenience, not runtime compilation for mobile deployments.
 
@@ -126,17 +128,21 @@ You can also download Zipformer artifacts manually:
 ./scripts/download-model.sh zipformer-small
 ```
 
-The standalone test bench supports `[f]` WAV selection, `[l]` microphone recording, `[n]` next WAV, and `[r]` retry. `[m]` opens the unified Models page, `[t]` opens Telemetry, `[b]` opens Tests/back, and `[w]` opens Web inspection. Only inside Telemetry does `[1–4]` select Overview, Metrics, Runs, or Logs; Escape returns to the previous workspace. Runs opens a list first; Enter opens a report with individually spaced metadata, transcript/raw transcript, and a scrollable run-only metric snapshot. Arrows or `j/k` select a snapshot metric; Enter opens its history/details and Escape returns to the report. PageUp/PageDown scroll metadata/details; `[` / `]` switches reports. Graphs are not shown until requested. `[f]`, `/`, or Ctrl+F edits shared search; `[x]` clears it. Missing readings remain unavailable, not zero. On Unix, native stderr (including Whisper/ALSA diagnostics) is captured into bounded logs instead of corrupting the screen; capture is not yet implemented on other platforms.
+The landing screen is Chat, with the existing microphone/WAV Source panel. After transcription the draft appears under **EDIT YOUR MESSAGE / NOT SENT**: **Enter** sends it, **e** opens editing, **Alt+Enter** adds a newline, and **Esc** returns to review while retaining edits. **i** starts a typed message. **c** finishes the current conversation and starts another; **d** finishes it. **x** discards/cancels the current turn. All shortcut rows start at the left with fixed spacing and wrap whole items. Chat and Tests call the shared `va_runtime` library directly. Download and save a reply choice with **s** on Models, then restart; no Go or HTTP service is needed. Typed Chat works without STT. The **MESSAGE** composer stays visible, and **i** can draft the next message during generation; sending waits for the current inference to settle.
+
+**m** opens Models, **t** opens Telemetry, **b** returns to Chat, and **w** opens Web inspection. Only inside Telemetry does **1–4** select Overview, Metrics, Conversations, or Logs. Conversations opens a list first; Enter opens aggregate stats, **r** lists individual stage runs, and **h** shows saved chat. Enter on a metric opens its raw samples and graph. Missing readings remain unavailable. See [chat controls, screen examples and retained measurements](../docs/tui-chat.md).
+
+On Unix, native stderr (including Whisper/ALSA diagnostics) is captured into bounded logs; capture is not yet implemented on other platforms.
 
 #### Saved run history and privacy
 
-Completed and failed Runs reports persist locally, including processed/raw transcripts, source filenames, model/runtime/revision metadata, timestamps, errors, and raw metric events (including unavailable reasons). **This can contain sensitive speech and paths.** No recordings or audio buffers are written to history. The backend-specific `TranscriptionResult` is not restored; historical report display uses the saved metadata and events.
+Conversation snapshots and legacy run reports persist locally, including chat messages, reviewed wording, processed/raw transcripts, source filenames, model/runtime/revision metadata, timestamps, errors, and raw metric events (including unavailable reasons). **This can contain sensitive speech and paths.** No recordings or audio buffers are written to history. The backend-specific `TranscriptionResult` is not restored; historical report display uses the saved metadata and events.
 
 History is a versioned JSON snapshot at `$XDG_STATE_HOME/pheme-va/tui-history.json` (absolute XDG path), falling back to `$HOME/.local/state/pheme-va/tui-history.json`. This is bounded development-console history, not the planned SQLite incident/session database; it reuses the existing JSON dependency rather than adding a database runtime. Keep one TUI session per history path. On Unix, newly created state directories use mode `0700` and snapshot files `0600`; this is not encryption. Existing parent directory permissions are not changed.
 
-The newest 100 reports and newest 10,000 events per report are retained. Snapshots have a 64 MiB size ceiling; an oversized save reports an error and retains the previous snapshot. Writes run on a background thread, coalesce pending snapshots, and use file sync plus atomic replacement. Completed/failed reports are queued on the next TUI tick; shutdown drains worker results and flushes history before any automatic restart. Forced termination can still lose an unflushed update. Malformed, oversized, or unsupported history prevents startup without overwriting the file: move it aside for inspection or explicitly remove it to start fresh. Write/clear failures appear in status and logs, and a failed shutdown flush prevents automatic restart.
+Version 2 reads legacy version 1 files. History retains at most 100 stage runs/legacy reports and 10,000 raw events per run; oldest closed conversations are evicted together and active conversations are protected. Each conversation accepts at most 32 turns. Aggregates retain counts/min/mean/max even when old raw events are dropped. Restored conversations are read-only archives; restarting does not resume runtime context. Snapshots have a 64 MiB size ceiling; an oversized save reports an error and retains the previous snapshot. Writes run on a background thread, coalesce pending snapshots, and use file sync plus atomic replacement. Completed/failed reports are queued on the next TUI tick; shutdown drains worker results and flushes history before any automatic restart. Forced termination can still lose an unflushed update. Malformed, oversized, or unsupported history prevents startup without overwriting the file: move it aside for inspection or explicitly remove it to start fresh. Write/clear failures appear in status and logs, and a failed shutdown flush prevents automatic restart.
 
-In Runs, press `c`, then `y` to delete **all** saved reports (not only filtered reports); Escape cancels. Clearing is disabled while a request or recording is active. Reports disappear only after deletion succeeds; other input is paused while deletion is in flight. This does not delete source WAVs, memory-only retry audio, or external backups, and is not secure erasure.
+In Conversations, press `c`, then `y` to delete **all** saved conversations and reports (not only filtered reports); Escape cancels. Clearing is disabled while a request or recording is active. Reports disappear only after deletion succeeds; other input is paused while deletion is in flight. This does not delete source WAVs, memory-only retry audio, or external backups, and is not secure erasure.
 
 Resource readings include process/system CPU and RAM, available component temperatures, and Linux DRM GPU utilization and single-battery capacity drain. Process CPU can exceed 100% because it sums core utilization. GPU is the busiest readable card, not per-process use; temperature is the hottest reported component, not ambient temperature. Battery drain is a signed percentage-point decrease since the sampler's first valid reading (negative while charging), with coarse sensor resolution. Whole-device power and energy remain unavailable without a verified provider; component or battery-terminal power is not silently relabeled.
 
@@ -146,7 +152,7 @@ Current manifest models return a final transcript after a complete clip; they do
 
 ### Shared web/TUI voice loop
 
-From `pheme-va/`, build both server-owned runtime binaries, then start with an explicit transcription/reply pair:
+From `pheme-va/`, build the HTTP host and reply worker, then start with an explicit transcription/reply pair:
 
 ```bash
 cargo build --release -p server -p reply-native --features server/whisper
@@ -158,7 +164,7 @@ cargo build --release -p server -p reply-native --features server/whisper
 
 Explicit catalog choices download missing pinned files directly through `scripts/download-model.sh`. The Whisper and reply downloads are approximately 1.62 GB and 1.12 GB respectively. Alternatively download in the TUI Models view first. Startup validates the incident prompt and loads/prewarms the selected runtimes once. The normal reply dependency has **no feature flag**; `server/whisper` is the existing optional STT build choice. For Zipformer use `server/zipformer` and its catalog ID.
 
-`pheme-reply-worker` must be beside the server executable (or set `PHEME_VA_REPLY_WORKER` to its trusted path). This server-owned stdio child isolates conflicting Whisper/llama.cpp GGML libraries; it is not a second HTTP server. See [runtime/model details](models/README.md#qwen-native-reply-baseline). A failed worker requires a server restart; CPU/RAM accounting must include that child.
+`pheme-reply-worker` must be beside the server executable (or set `PHEME_VA_REPLY_WORKER` to its trusted path). This host-owned stdio child isolates conflicting Whisper/llama.cpp GGML libraries; it is not a second HTTP server. See [runtime/model details](models/README.md#qwen-native-reply-baseline). A failed worker requires its host to restart; CPU/RAM accounting must include that child.
 
 Start Go from `api/` in another terminal (`API_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 go run ./cmd/server`); it delegates voice calls to `http://127.0.0.1:8000` by default through `PHEME_VA_URL`. Start the web from `web/` (`npm ci && npm run dev`), then open `/voice`. Vite proxies the public Go API. Inspect the same server with:
 
@@ -166,20 +172,21 @@ Start Go from `api/` in another terminal (`API_CORS_ORIGINS=http://localhost:517
 cargo run --release -p cli -- tui --server-url http://127.0.0.1:8080
 ```
 
-- **w Web:** observe the web conversation; `e` edits its pending transcript, **F6** approves that turn. The answer still streams to/spoken by the web. Inspection is silent; `p` is deliberate local replay.
-- **b Tests/back:** isolated microphone/WAV STT or typed/reviewed reply tests; no web history/stream updates. **F6** answers the reviewed test text. Server-connected clients never load another local model.
-- **m Models:** one local manifest-backed page for both purposes, downloads and next-start choices; it also works disconnected. See [Models controls](#unified-models-page).
-- **t Telemetry:** existing Overview/Metrics/Runs/Logs keep **1–4** only while this screen is open; **Esc** returns to the previous workspace. Numeric keys do not select main views. Minimum terminal size is 80×24. **F8** stops local playback; `q` quits only this client.
+- **b Chat:** reviewed voice/WAV/typed turns with conversation context, model typing indicators and streamed replies. **Enter** confirms/sends, **e** edits, **c** starts a new conversation, **d** finishes, and **x** cancels/discards.
+- **w Web:** observe the web conversation; **e** edits its pending transcript and **Enter** approves. The answer still streams to the web. Inspection is silent; **p** is deliberate local replay.
+- **s Tests** from Chat: isolated microphone/WAV STT or typed/reviewed reply tests, without conversation history. **Enter** submits reviewed text. These use the local runtime and its compute gate, with independent test context.
+- **m Models:** local manifest catalog, downloads and next-start choices; see [Models controls](#unified-models-page).
+- **t Telemetry:** Overview/Metrics/Conversations/Logs keep **1–4** while open; **Esc** returns. Minimum size is 80×24. **z** stops local playback; **q** quits the client and cancels its own pending console turn.
 
-The same grouped list/details Models page serves standalone and connected modes. **Voice & transcription** (`purpose = "transcript"`) and **Reasoning & reply** (`purpose = "reply"`) come from the manifest, not purpose tabs or a second picker. Legacy Whisper/Zipformer entries without `purpose` remain transcription entries. Reply entries use the server-owned runtime, never the standalone STT engine. Artifact presence is shown separately from runtime readiness.
+The same grouped list/details Models page serves standalone and connected modes. **Voice & transcription** (`purpose = "transcript"`) and **Reasoning & reply** (`purpose = "reply"`) come from the manifest, not purpose tabs or a second picker. Legacy Whisper/Zipformer entries without `purpose` remain transcription entries. Local Chat uses the saved reply selection at TUI startup. Each host owns one persistent engine, reply adapter and shared inference gate. Artifact presence is shown separately from runtime readiness.
 
 Optional TUI speech uses a locally installed `espeak` executable; synthesis errors preserve displayed replies. Web only chooses browser-reported local voices and has no remote fallback—verify actual offline behavior on your browser/OS.
 
-`--server-url` without a value uses Go on port 8080; omitting the flag preserves standalone local STT mode. TUI saved next-start choices live with its XDG config; server uses them unless explicit model flags override each slot. `--startup-choices <file>` supplies dedicated TOML choices, including optional ordered `reply_prompt_files`. Model-ID/path flags conflict rather than silently override one another. See [role composition and startup precedence](#reply-roles-and-startup-precedence); model/prompt edits require restart.
+`--server-url` without a value uses Go on port 8080 for Web inspection/approval only; Chat and Tests stay local with or without it. Separate server and TUI processes do not share loaded weights or sessions. TUI saved next-start choices live with its XDG config; server uses them unless explicit model flags override each slot. `--startup-choices <file>` supplies dedicated TOML choices, including optional ordered `reply_prompt_files`. Model-ID/path flags conflict rather than silently override one another. See [role composition and startup precedence](#reply-roles-and-startup-precedence); model/prompt edits require restart.
 
 Defaults: one active inference, one pending web turn, six successful history pairs, 32 retained turn results, 300-second review, 120-second reply generation, 180-second STT deadline. Failed/cancelled replies are not successful history. WAV/STT is complete-turn, not partial streaming; only reply text streams, with TTS after completion. The STT adapter has no native cancellation boundary yet: cancelled/timed-out STT keeps compute reserved until it settles. Restart loses web history; explicit Reset clears web history, not isolated tests. Retry protection retains at most 256 lifetime keys; a full ledger rejects new keys rather than duplicate inference.
 
-This is one trusted development conversation, **not a multi-user/session/report-storage system**. Both listeners default to loopback; network exposure needs HTTPS, explicit allowed origins and external authentication/access controls. Neither the web nor any HTTP readiness/inference endpoint downloads/selects models. See [voice API](../docs/api/voice.md) and [cross-service tests](../tests/README.md).
+These are trusted development conversations with in-memory runtime context and read-only local archives. Confirmed incident reports and persistent resumable sessions remain planned. Both listeners default to loopback; network exposure needs HTTPS, explicit allowed origins and external authentication/access controls. Neither the web nor any HTTP readiness/inference endpoint downloads/selects models. See [voice API](../docs/api/voice.md) and [cross-service tests](../tests/README.md).
 
 ### Unified Models page
 
@@ -190,13 +197,13 @@ Open `m` in either mode. The left side retains grouped manifest rows for both pu
 | `/`                | Search across all manifest entries.                                                                                                                                                                                                                    |
 | Arrows / `j` / `k` | Select a model row.                                                                                                                                                                                                                                    |
 | PgUp / PgDn        | Scroll model details.                                                                                                                                                                                                                                  |
-| Enter              | Missing artifacts: confirm source/license/size/destination and network access, then download. Available STT: load/prepare only in standalone mode; connected mode gives startup guidance. Available reply: startup guidance, never a local reply load. |
-| `s`                | Hash/verify the artifact bundle and confirm a supported next-start choice; no active model change.                                                                                                                                                     |
+| Enter              | Missing artifacts: confirm source/license/size/destination and network access, then download. Available STT: load/prepare locally when idle. Available reply: next-start guidance; save with `s`, then restart the TUI. |
+| `s`                | Hash/verify and confirm a next-start choice. Reply applies to TUI/server; STT applies to the server (`Enter` selects local STT).                                                                                                                                                     |
 | `p`                | Preview the reply row's combined role text and exact-byte SHA-256.                                                                                                                                                                                     |
 | `o`                | Open Roles for a reply row only.                                                                                                                                                                                                                       |
 | `g`                | Show the generated server command, including chosen model IDs and saved ordered prompt flags.                                                                                                                                                          |
 | `r`                | Rescan local artifact state.                                                                                                                                                                                                                           |
-| F7                 | Cancel the local download; partial files remain available for explicit retry/resume.                                                                                                                                                                   |
+| `x`                 | Cancel the local download; partial files remain available for explicit retry/resume.                                                                                                                                                                   |
 
 Download progress/logs appear **inline below the right-hand model information** and remain visible after completion, failure or cancellation. Downloading never activates a model; terminal status is retained rather than replaced by a separate progress screen. Local files, chosen-for-next-start IDs and server-reported active/readiness badges stay distinct. `s`/`g` do not restart or remotely manage the server.
 
@@ -204,9 +211,9 @@ Download progress/logs appear **inline below the right-hand model information** 
 
 The reply-only `o` picker browses `.txt` files in the directory of the manifest default role. Qwen resolves `models/manifest.toml`'s `../roles/incident-reporting.txt` to the checked-in [`roles/incident-reporting.txt`](roles/incident-reporting.txt); this file is selected by default. Use arrows/`j`/`k` to browse, **Space** to toggle in selection order, **a** to add an arbitrary trusted local `.txt` path, **Enter** to validate/save, and **Esc** to cancel. Empty/invalid selections do not replace saved settings. `p` on Models previews the saved/default combination and hash.
 
-Each source must be a regular, non-empty UTF-8 text file. Sources retain their exact text, including whitespace, and are concatenated in selected order with exact `\n\n` separators. The combined prompt is limited to **32 files** and **`MAX_PROMPT_CHARS` = 16,384 Unicode scalar values**, including separators. Its SHA-256 covers the exact combined UTF-8 bytes. The existing default **12,000-character aggregate system role + selected history + approved question** budget still applies. The TUI refuses to save a combination consuming that whole budget, and startup independently checks it against the configured server budget.
+Each source must be a regular, non-empty UTF-8 text file. Sources retain their exact text, including whitespace, and are concatenated in selected order with exact `\n\n` separators. The combined prompt is limited to **32 files** and **`MAX_PROMPT_CHARS` = 16,384 Unicode scalar values**, including separators. Its SHA-256 covers the exact combined UTF-8 bytes. The existing default **12,000-character aggregate system role + selected history + approved question** budget still applies. The TUI refuses to save a combination consuming that whole budget, and each runtime checks it against its configured input budget.
 
-TUI config stores `reply_role_files` as model-ID → ordered absolute path lists. Saving Roles changes only the next server start, not active web/test instructions; `s` chooses the reply model for that start. Older configs without this map keep the manifest default. Dedicated `StartupChoices` keeps `stt_model`/`reply_model` and adds optional `reply_prompt_files` (empty by default). For example, a choices file placed directly in `pheme-va/` can contain:
+TUI config stores `reply_role_files` as model-ID → ordered absolute path lists. Saving Roles changes the next TUI/server start; active prompts remain loaded. `s` chooses the reply model for that start. The TUI loads the legacy `server_reply_model` key and the selected model’s saved role paths. Older configs without this map keep the manifest default. Dedicated `StartupChoices` keeps `stt_model`/`reply_model` and adds optional `reply_prompt_files` (empty by default). For example, a choices file placed directly in `pheme-va/` can contain:
 
 ```toml
 stt_model = "whisper-large-v3-turbo"

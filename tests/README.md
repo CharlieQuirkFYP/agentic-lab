@@ -25,8 +25,9 @@ processes/temp files. It verifies:
 
 - web input waits for review; TUI-style inspection and approval return corrected
   Unicode wording/deltas to that web's original response;
-- TUI tests while web reviews do not appear in web streams/history/inspection;
-- successful history reaches web follow-ups, while each test has fresh context;
+- HTTP isolated tests while web reviews do not appear in web streams/history/inspection;
+- successful history reaches web/console follow-ups, while each test has fresh context;
+- console conversation approval, separate reasoning runs, non-destructive metric cursors, full run snapshots and finish titles work through Go without modifying Web state;
 - ordered local role files combine once at startup and reach every reply as the system prompt;
 - one worker initialization serves repeated operations;
 - test disconnect and web cancellation reach the worker; reset settles work;
@@ -41,9 +42,16 @@ audible playback. For native link checks build the combined server and worker:
 
 ```bash
 # pheme-va/; needs a C/C++ compiler, CMake and libclang
-cargo build -p server -p reply-native --features server/whisper
+cargo build -p cli -p server -p reply-native --features cli/whisper,server/whisper
 ```
 
 Real-model tests remain ignored/opt-in and take model/audio/prompt paths from
 environment variables; see the [model setup](../pheme-va/models/README.md) and
 [Pheme README](../pheme-va/README.md). Do not commit weights or recordings.
+
+Local TUI Chat and Tests do not use these HTTP routes. `cargo test --workspace`
+also exercises direct `va_runtime` operations, atomic typed sends, voice review,
+conversation context/titles/metrics, bounded recovery, native cancellation and
+shutdown. TUI bridge/UI tests run with fake adapters and no services, including
+reply-only typed follow-ups with a Web inspection URL present. Backend cache
+tests require the bundled reply worker and reject missing/corrupted copies.

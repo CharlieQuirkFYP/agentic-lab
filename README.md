@@ -82,8 +82,9 @@ The workspace contains:
 - `crates/models/transcription/whispercpp`: in-process whisper.cpp model adapter
 - `crates/models/transcription/zipformer`: optional LiteRT Zipformer CTC model adapter
 - `crates/models/reasoning`: persistent stdio reply client plus the `reply-native` llama.cpp worker
-- `crates/cli`: standalone STT bench and server-connected Web/Tests/Models/Telemetry TUI
-- `crates/server`: development HTTP host around the same core
+- `crates/runtime`: shared conversation orchestration, inference gate, events and model construction
+- `crates/cli`: local voice/typed Chat and Tests, optional Web inspector, Models and Telemetry
+- `crates/server`: development HTTP adapter around the shared Rust runtime
 - `crates/ffi`: C ABI for native iOS/Android hosts
 
 The core does not own a frontend hotkey, clipboard, microphone permission, or mobile UI. Hosts provide audio and control their own lifecycle.
@@ -155,20 +156,22 @@ From `pheme-va/`, build server and reply worker (requires CMake, a C/C++ compile
 cargo build --release -p server -p reply-native --features server/whisper
 ./target/release/server \
   --stt-model whisper-large-v3-turbo \
-  --reply-model qwen2.5-1.5b-instruct-q4-k-m
+  --reply-model qwen2.5-1.5b-instruct-q4-k-m \
+  --metrics-enabled
 ```
 
 Explicit IDs directly download missing pinned artifacts at startup: approximately 1.62 GB for Whisper and 1.12 GB for Qwen. You can instead use the TUI's local Models downloader first. Weights load once; the server owns a stdio reply child to isolate incompatible Whisper/llama.cpp native libraries—not an extra HTTP service or reply feature flag.
 
-With Go running on port 8080, attach the TUI:
+For local voice/typed Chat, build and run the CLI with its reply worker:
 
 ```bash
-cargo run --release -p cli -- tui --server-url http://127.0.0.1:8080
+cargo build --release -p cli -p reply-native --features cli/whisper
+./target/release/cli tui
 ```
 
-Use **w Web** to inspect/edit pending web transcripts, **b Tests** for isolated tests, **m Models** for the unified local catalog/downloads and next-start model/role choices, and **t Telemetry** for existing panels. Only Telemetry uses **1–4** for sub-tabs; **Esc** returns to the previous workspace. Web or TUI explicitly approves text; only the separate reply model answers. The web receives the answer through its own request and owns speech playback. TUI inspection is silent unless you explicitly replay.
+On **m Models**, download Qwen and use **s** to verify/save the reply choice, then restart. Chat and isolated Tests use Rust calls to the shared runtime; Go is unnecessary. **i** focuses the typed composer and **Enter** sends. After transcription, **Enter** confirms/sends the draft and **e** edits it. **c** starts a new conversation and **d** finishes. **t Telemetry**, then **3**, opens grouped conversations, aggregate stats and individual stage runs. See [chat controls and screen examples](docs/tui-chat.md).
 
-Omit `--server-url` to retain standalone STT tests. See [Pheme setup and limits](pheme-va/README.md#shared-webtui-voice-loop) and [voice API](docs/api/voice.md). Model/prompt changes require restart; in-memory web context does not survive it. This loop does not save/finalize incident reports.
+Add `--server-url http://127.0.0.1:8080` only to enable **w Web** inspection and approval through Go. Chat stays local. Separate TUI/server processes load separate models and retain separate sessions. See [Pheme setup and limits](pheme-va/README.md#shared-webtui-voice-loop) and [voice API](docs/api/voice.md). Models/roles load at startup; read-only local archives survive restart. Incident report storage/finalization remains planned.
 
 ### Web
 
