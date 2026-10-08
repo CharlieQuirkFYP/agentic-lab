@@ -7,6 +7,7 @@ use va_core::registry::{ModelEntry, ModelManifest, ModelPurpose, StartupChoices}
 use va_core::{ConversationConfig, ConversationModel, Engine, LoadedPrompt, Transcriber};
 
 use crate::Args;
+use va_runtime::loader::{load_stt, load_whisper};
 
 pub struct Runtimes {
     pub engine: Option<Engine>,
@@ -100,7 +101,7 @@ pub fn load(args: &Args) -> Result<Runtimes> {
         );
         ensure_artifacts(&model, &args.model_manifest)?;
         println!("selected reply: {id}");
-        let reply = reply_model::ReplyModel::load(
+        let reply = va_runtime::loader::load_reply(
             &model.resolve_artifact(&args.model_manifest),
             &conversation,
             args.threads,
@@ -115,7 +116,7 @@ pub fn load(args: &Args) -> Result<Runtimes> {
         Some(Box::new(reply) as Box<dyn ConversationModel>)
     } else if let Some(path) = &args.reply_path {
         let reply =
-            reply_model::ReplyModel::load(path, &conversation, args.threads, args.gpu_layers)?;
+            va_runtime::loader::load_reply(path, &conversation, args.threads, args.gpu_layers)?;
         reply_load_ms = Some(reply.load_time_ms() as f64);
         println!(
             "selected reply path: {}; load/warmup: {} ms; native worker PID {}",
@@ -356,76 +357,6 @@ fn supported_stt(family: &str) -> Result<()> {
         "whisper" | "zipformer" => bail!("selected STT adapter `{family}` is not compiled; rebuild server with --features {family}"),
         _ => bail!("unsupported STT family `{family}`"),
     }
-}
-
-fn load_stt(entry: ModelEntry, manifest: &Path, threads: i32) -> Result<Box<dyn Transcriber>> {
-    match entry.family.as_str() {
-        "whisper" => load_whisper(&entry.resolve_artifact(manifest), Some(&entry), threads),
-        "zipformer" => load_zipformer(entry, manifest),
-        family => bail!("unsupported STT family `{family}`"),
-    }
-}
-
-#[cfg(feature = "whisper")]
-fn load_whisper(
-    path: &Path,
-    entry: Option<&ModelEntry>,
-    threads: i32,
-) -> Result<Box<dyn Transcriber>> {
-    let config = whispercpp::WhisperConfig {
-        threads,
-        use_gpu: cfg!(feature = "whisper-metal"),
-        flash_attention: false,
-    };
-    Ok(Box::new(match entry {
-        Some(entry) => whispercpp::WhisperTranscriber::from_file_with_metadata(
-            path,
-            config,
-            entry.id.clone(),
-            entry.revision.clone(),
-        )?,
-        None => whispercpp::WhisperTranscriber::from_file(path, config)?,
-    }))
-}
-
-#[cfg(not(feature = "whisper"))]
-fn load_whisper(
-    _path: &Path,
-    _entry: Option<&ModelEntry>,
-    _threads: i32,
-) -> Result<Box<dyn Transcriber>> {
-    bail!("this binary was built without Whisper support; rebuild with --features whisper")
-}
-
-#[cfg(feature = "zipformer")]
-fn load_zipformer(entry: ModelEntry, manifest: &Path) -> Result<Box<dyn Transcriber>> {
-    use va_core::resolve_artifact;
-    Ok(Box::new(zipformer::ZipformerTranscriber::from_files(
-        entry.resolve_artifact(manifest),
-        resolve_artifact(
-            manifest,
-            entry
-                .tokenizer
-                .as_deref()
-                .context("missing Zipformer tokenizer")?,
-        ),
-        resolve_artifact(
-            manifest,
-            entry
-                .tokens
-                .as_deref()
-                .context("missing Zipformer tokens")?,
-        ),
-        zipformer::ZipformerConfig {
-            model_id: entry.id,
-            model_revision: entry.revision,
-        },
-    )?))
-}
-
-#[cfg(not(feature = "zipformer"))]
-fn load_zipformer(_entry: ModelEntry, _manifest: &Path) -> Result<Box<dyn Transcriber>> {
-    bail!("this binary was built without Zipformer support; rebuild with --features zipformer")
 }
 
 #[cfg(test)]

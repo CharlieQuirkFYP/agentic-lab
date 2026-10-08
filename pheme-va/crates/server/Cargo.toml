@@ -8,10 +8,10 @@ description = "HTTP development wrapper around the portable Pheme VA core"
 
 [features]
 default = []
-whisper = ["dep:whispercpp"]
-whisper-metal = ["whisper", "whispercpp/metal"]
-whisper-coreml = ["whisper", "whispercpp/coreml"]
-zipformer = ["dep:zipformer", "zipformer/litert", "dep:litert-sys"]
+whisper = ["va_runtime/whisper"]
+whisper-metal = ["whisper", "va_runtime/whisper-metal"]
+whisper-coreml = ["whisper", "va_runtime/whisper-coreml"]
+zipformer = ["va_runtime/zipformer", "dep:litert-sys"]
 
 [dependencies]
 anyhow = "1.0"
@@ -29,8 +29,7 @@ serde.workspace = true
 serde_json.workspace = true
 tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync", "time", "signal"] }
 va_core = { package = "core", path = "../core" }
-whispercpp = { path = "../models/transcription/whispercpp", optional = true }
-zipformer = { path = "../models/transcription/zipformer", optional = true }
+va_runtime = { path = "../runtime" }
 
 [dev-dependencies]
 http-body-util = "0.1"

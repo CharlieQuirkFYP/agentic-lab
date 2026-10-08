@@ -2,11 +2,9 @@ mod startup;
 mod voice;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{SystemTime, UNIX_EPOCH};
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result};
 use axum::body::Bytes;
 use axum::extract::{DefaultBodyLimit, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -19,7 +17,7 @@ use metrics::{
     Stage, SysinfoResourceSampler,
 };
 use serde::{Deserialize, Serialize};
-use va_core::{analyze_with_metrics, Engine, RuleBasedIncidentAnalyzer};
+use va_core::{analyze_with_metrics, RuleBasedIncidentAnalyzer};
 
 #[derive(Debug, Parser)]
 #[command(name = "server", about = "HTTP wrapper around the Pheme VA core")]
@@ -82,13 +80,20 @@ struct Args {
 
 #[derive(Clone)]
 struct AppState {
-    engine: Option<Arc<Mutex<Engine>>>,
-    voice: Arc<voice::Voice>,
-    metrics_hub: Arc<MetricsHub>,
+    runtime: va_runtime::AgentRuntime,
     metrics_batcher: Arc<MetricsBatcher>,
     _metrics_subscription: Arc<MetricsSubscription>,
-    metrics_config: MetricsConfig,
-    resource_sampler: Arc<Mutex<SysinfoResourceSampler>>,
+}
+impl std::ops::Deref for AppState {
+    type Target = va_runtime::AgentRuntime;
+    fn deref(&self) -> &Self::Target {
+        &self.runtime
+    }
+}
+impl std::ops::DerefMut for AppState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.runtime
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -118,8 +123,11 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let started = std::time::Instant::now();
     let runtimes = startup::load(&args)?;
-    let voice = voice::Voice::new(
-        runtimes.engine.as_ref(),
+    let metrics_hub = Arc::new(MetricsHub::new());
+    let metrics_batcher = Arc::new(MetricsBatcher::new());
+    let metrics_subscription = Arc::new(metrics_hub.subscribe(Arc::clone(&metrics_batcher)));
+    let runtime = va_runtime::AgentRuntime::new(
+        runtimes.engine,
         runtimes.reply,
         runtimes.prompt,
         voice::Limits {
@@ -129,22 +137,17 @@ async fn main() -> Result<()> {
             transcription_timeout: std::time::Duration::from_secs(args.max_transcription_seconds),
             ..Default::default()
         },
-    );
-    let metrics_hub = Arc::new(MetricsHub::new());
-    let metrics_batcher = Arc::new(MetricsBatcher::new());
-    let metrics_subscription = Arc::new(metrics_hub.subscribe(Arc::clone(&metrics_batcher)));
-    let state = AppState {
-        engine: runtimes.engine.map(|engine| Arc::new(Mutex::new(engine))),
-        voice,
-        metrics_hub,
-        metrics_batcher,
-        _metrics_subscription: metrics_subscription,
-        metrics_config: MetricsConfig {
+        MetricsConfig {
             enabled: args.metrics_enabled,
             incident_active: args.incident_metrics,
             resource_sampling: args.resource_sampling,
         },
-        resource_sampler: Arc::new(Mutex::new(SysinfoResourceSampler::new())),
+        metrics_hub,
+    );
+    let state = AppState {
+        runtime,
+        metrics_batcher,
+        _metrics_subscription: metrics_subscription,
     };
     let startup_metrics = request_metrics(&state, &HeaderMap::new(), false);
     startup_metrics.record_model_timing(
@@ -214,7 +217,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn ready(State(state): State<AppState>) -> Response {
-    let ready = state.voice.stt.ready;
+    let ready = state.voice.stt_status().ready;
     if ready {
         Json(HealthResponse { status: "ready" }).into_response()
     } else {
@@ -251,59 +254,14 @@ async fn transcribe(State(state): State<AppState>, headers: HeaderMap, body: Byt
         );
     }
 
-    let lease = match state.voice.begin_inference() {
-        Ok(lease) => lease,
-        Err(error) => return error.into_response(),
+    let audio = match va_core::AudioBuffer::from_wav(&body) {
+        Ok(audio) => audio,
+        Err(error) => return map_engine_error(&error.to_string()),
     };
-    let Some(engine) = state.engine.clone() else {
-        return api_error(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "runtime_unavailable",
-            "Transcription runtime is unavailable.",
-        );
-    };
-    let metrics = request_metrics(&state, &headers, false);
-    let metrics_for_sampling = metrics.clone();
-    let resource_sampler = Arc::clone(&state.resource_sampler);
-    let mut task = tokio::task::spawn_blocking(move || {
-        let _lease = lease;
-        sample_resources(&resource_sampler, &metrics_for_sampling);
-        let result = (|| {
-            let mut engine = engine
-                .lock()
-                .map_err(|_| anyhow!("engine lock was poisoned"))?;
-            let audio = va_core::AudioBuffer::from_wav(&body)
-                .map_err(|error| anyhow!(error.to_string()))?;
-            engine
-                .transcribe_with_metrics(audio, metrics)
-                .map_err(|error| anyhow!(error.to_string()))
-        })();
-        sample_resources(&resource_sampler, &metrics_for_sampling);
-        result
-    });
-    let result =
-        match tokio::time::timeout(state.voice.limits.transcription_timeout, &mut task).await {
-            Ok(result) => result,
-            Err(_) => {
-                return api_error(
-                    StatusCode::GATEWAY_TIMEOUT,
-                    "transcription_timeout",
-                    "Transcription timed out; runtime remains busy until native work settles.",
-                )
-            }
-        };
-
-    match result {
-        Ok(Ok(transcription)) => Json(transcription).into_response(),
-        Ok(Err(error)) => map_engine_error(&error.to_string()),
-        Err(error) => {
-            eprintln!("transcription task failed: {error}");
-            api_error(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "transcription_failed",
-                "Transcription failed.",
-            )
-        }
+    let context = request_metrics(&state, &headers, false);
+    match state.runtime.transcribe(audio, context).await {
+        Ok(result) => Json(result).into_response(),
+        Err(error) => voice::HttpError::from(error).into_response(),
     }
 }
 
@@ -388,15 +346,7 @@ fn header_bool(headers: &HeaderMap, name: &str) -> Option<bool> {
 }
 
 fn new_run_id() -> String {
-    static NEXT_RUN_ID: AtomicU64 = AtomicU64::new(0);
-    let timestamp_ms = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_millis())
-        .unwrap_or_default();
-    format!(
-        "run_{timestamp_ms}_{}",
-        NEXT_RUN_ID.fetch_add(1, Ordering::Relaxed)
-    )
+    va_runtime::new_run_id()
 }
 
 fn map_engine_error(message: &str) -> Response {

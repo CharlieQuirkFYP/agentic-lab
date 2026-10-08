@@ -4,6 +4,7 @@
 //! dependencies. Hosts provide audio and choose concrete STT/LLM adapters.
 
 mod audio;
+pub mod chat;
 pub mod conversation;
 mod dictionary;
 mod engine;

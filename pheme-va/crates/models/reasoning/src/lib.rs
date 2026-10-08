@@ -77,7 +77,7 @@ impl ReplyModel {
             bail!("reply model path is not UTF-8");
         }
         let worker = worker.canonicalize().with_context(|| format!(
-            "reply worker {} is missing; build/ship pheme-reply-worker with the server (cargo build --workspace), or set PHEME_VA_REPLY_WORKER", worker.display()
+            "reply worker {} is missing; build/ship pheme-reply-worker with the host (cargo build --workspace), or set PHEME_VA_REPLY_WORKER", worker.display()
         ))?;
         let mut command = ProcessCommand::new(&worker);
         #[cfg(test)]
@@ -388,10 +388,10 @@ pub fn worker_path() -> Result<PathBuf> {
         }
         return Ok(PathBuf::from(path));
     }
-    let executable = std::env::current_exe().context("could not locate server executable")?;
+    let executable = std::env::current_exe().context("could not locate host executable")?;
     let mut directory = executable
         .parent()
-        .ok_or_else(|| anyhow!("server executable has no parent directory"))?;
+        .ok_or_else(|| anyhow!("host executable has no parent directory"))?;
     // Cargo's unit-test executables live one level below the normal binaries.
     if directory.file_name().is_some_and(|name| name == "deps") {
         directory = directory

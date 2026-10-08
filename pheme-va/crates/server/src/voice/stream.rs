@@ -1,53 +1,69 @@
-use std::convert::Infallible;
-use std::pin::Pin;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::task::{Context, Poll};
-use std::time::Duration;
-
 use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Response};
 use futures_core::Stream;
 use serde_json::{json, Value};
+use std::convert::Infallible;
+use std::pin::Pin;
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use std::task::{Context, Poll};
+use std::time::Duration;
 use tokio::sync::mpsc;
-
-use super::{Status, Turn, EVENT_CAPACITY};
-
-pub struct Frame {
-    pub name: &'static str,
-    pub data: Value,
-}
+use va_runtime::events::{EventKind, RuntimeEvent, TurnStream};
 struct Events {
-    receiver: mpsc::Receiver<Frame>,
+    receiver: mpsc::Receiver<RuntimeEvent>,
     cancel_on_drop: Option<Arc<AtomicBool>>,
+    status: va_core::chat::ChatPhase,
 }
 impl Drop for Events {
     fn drop(&mut self) {
-        if let Some(cancelled) = &self.cancel_on_drop {
-            cancelled.store(true, Ordering::Release);
+        if let Some(flag) = &self.cancel_on_drop {
+            flag.store(true, Ordering::Release);
         }
     }
 }
 impl Stream for Events {
     type Item = Result<Event, Infallible>;
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        self.receiver.poll_recv(cx).map(|frame| {
-            frame.map(|frame| {
-                Ok(Event::default()
-                    .event(frame.name)
-                    .data(frame.data.to_string()))
+        let status = self.status;
+        self.receiver.poll_recv(cx).map(|event| {
+            event.map(|event| {
+                let (name, mut data): (&str, Value) = match event.kind {
+                    EventKind::TurnCreated { recovered } => (
+                        "turn.created",
+                        if recovered {
+                            json!({"status":status,"recovered":true})
+                        } else {
+                            json!({})
+                        },
+                    ),
+                    EventKind::TranscriptReady { text } => {
+                        ("transcript.ready", json!({"text":text}))
+                    }
+                    EventKind::QuestionApproved { text } => {
+                        ("question.approved", json!({"text":text}))
+                    }
+                    EventKind::ReplyStarted => ("reply.started", json!({})),
+                    EventKind::ReplyDelta { text } => ("reply.delta", json!({"text":text})),
+                    EventKind::ReplyCompleted { text } => ("reply.completed", json!({"text":text})),
+                    EventKind::TurnFailed { error } => ("turn.failed", json!({"error":error})),
+                    EventKind::TurnCancelled => ("turn.cancelled", json!({})),
+                };
+                if let Some(id) = event.turn_id {
+                    data["turn_id"] = json!(id);
+                }
+                Ok(Event::default().event(name).data(data.to_string()))
             })
         })
     }
 }
-
-pub fn response(
-    receiver: mpsc::Receiver<Frame>,
-    cancel_on_drop: Option<Arc<AtomicBool>>,
-) -> Response {
+pub fn response(stream: TurnStream) -> Response {
     Sse::new(Events {
-        receiver,
-        cancel_on_drop,
+        receiver: stream.receiver,
+        cancel_on_drop: stream.cancel_on_drop,
+        status: stream.turn.status,
     })
     .keep_alive(
         KeepAlive::new()
@@ -55,34 +71,4 @@ pub fn response(
             .text("heartbeat"),
     )
     .into_response()
-}
-
-/// Identical POST retries acknowledge retained state without attaching a second
-/// subscriber or starting inference. Ongoing work is recovered with GET.
-pub fn snapshot(turn: &Turn) -> Response {
-    let (sender, receiver) = mpsc::channel(EVENT_CAPACITY);
-    let event = |name, mut data: Value| {
-        data["turn_id"] = json!(turn.turn_id);
-        let _ = sender.try_send(Frame { name, data });
-    };
-    event(
-        "turn.created",
-        json!({"status": turn.status, "recovered": true}),
-    );
-    if turn.status != Status::Transcribing {
-        event("transcript.ready", json!({"text": turn.transcript}));
-    }
-    if let Some(text) = &turn.approved_text {
-        event("question.approved", json!({"text": text}));
-        event("reply.started", json!({}));
-    }
-    match turn.status {
-        Status::Completed => event("reply.completed", json!({"text": turn.reply})),
-        Status::Failed => event("turn.failed", json!({"error": turn.error})),
-        Status::Cancelled => event("turn.cancelled", json!({})),
-        // A snapshot is not a live stream. Never fake deltas for a saved buffer.
-        _ => {}
-    }
-    drop(sender);
-    response(receiver, None)
 }

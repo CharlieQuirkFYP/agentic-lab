@@ -3,8 +3,19 @@ use axum::body::{to_bytes, Body};
 use axum::http::Request;
 use http_body_util::BodyExt;
 use metrics::{MetricsBatcher, MetricsConfig, MetricsHub, SysinfoResourceSampler};
+use serde_json::Value;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tower::ServiceExt;
+use va_core::chat::ChatPhase as Status;
+use va_core::ConversationRole;
+use va_core::{
+    ConversationConfig, ConversationError, ConversationMessage, ConversationModel, Engine,
+    LoadedPrompt,
+};
 use va_core::{EngineError, NormalizedAudio, RawTranscription, Transcriber, TranscriptionOptions};
+use va_runtime::voice::Voice;
 
 #[derive(Default)]
 struct Control {
@@ -105,13 +116,15 @@ fn setup(limits: Limits) -> (AppState, Arc<Control>) {
     );
     (
         AppState {
-            engine: Some(Arc::new(Mutex::new(engine))),
-            voice,
-            metrics_hub: hub,
+            runtime: va_runtime::AgentRuntime {
+                engine: Arc::new(Mutex::new(Some(engine))),
+                voice,
+                metrics_hub: hub,
+                metrics_config: MetricsConfig::enabled(),
+                resource_sampler: Arc::new(Mutex::new(SysinfoResourceSampler::new())),
+            },
             metrics_batcher: batcher,
             _metrics_subscription: subscription,
-            metrics_config: MetricsConfig::enabled(),
-            resource_sampler: Arc::new(Mutex::new(SysinfoResourceSampler::new())),
         },
         control,
     )
@@ -154,7 +167,7 @@ async fn snapshot(state: &AppState) -> Value {
     value(request(state, "GET", "/v1/voice/inspect", "", Body::empty(), None).await).await
 }
 fn current_id(state: &AppState) -> String {
-    state.voice.lock().current.clone().unwrap()
+    state.voice.current_id().unwrap()
 }
 async fn stream_text(response: Response) -> String {
     let bytes = tokio::time::timeout(
@@ -176,7 +189,7 @@ async fn wait_until(mut predicate: impl FnMut() -> bool) {
     .expect("operation failed to settle");
 }
 async fn wait_idle(state: &AppState) {
-    wait_until(|| state.voice.lock().operations.is_empty()).await;
+    wait_until(|| state.voice.idle()).await;
 }
 fn wav(silent: bool) -> Vec<u8> {
     let data_len = 32_000u32;
@@ -293,7 +306,7 @@ async fn isolated_reply_uses_role_but_no_web_history_and_review_releases_compute
     let test_stream = stream_text(test).await;
     assert!(!test_stream.contains("turn_id"));
     assert!(test_stream.contains("reply.completed"));
-    wait_until(|| state.voice.inference.available_permits() == 1).await;
+    wait_until(|| !agent::inspect(&state).busy).await;
     assert_eq!(snapshot(&state).await, before);
     {
         let calls = control.calls.lock().unwrap();
@@ -350,7 +363,7 @@ async fn busy_submit_stays_reviewable_and_competing_submits_freeze_first_questio
     );
     drop(test);
     wait_until(|| control.cancelled.load(Ordering::Acquire)).await;
-    wait_until(|| state.voice.inference.available_permits() == 1).await;
+    wait_until(|| !agent::inspect(&state).busy).await;
     control.hold.store(false, Ordering::Release);
     let path = format!("/v1/voice/turns/{id}/submit");
     let (first, second) = tokio::join!(
@@ -458,8 +471,6 @@ async fn creation_idempotency_retries_are_bounded_and_never_regenerate() {
         .status(),
         StatusCode::NOT_FOUND
     );
-    assert_eq!(state.voice.lock().records.len(), 2);
-    assert_eq!(state.voice.lock().retries.len(), 1);
     let expired = request(
         &state,
         "POST",
@@ -716,11 +727,7 @@ async fn wav_json_silence_and_body_limits_are_handled_without_auto_answering() {
     .await;
     let id = current_id(&state);
     wait_until(|| {
-        state
-            .voice
-            .lock()
-            .record(&id)
-            .is_some_and(|record| record.turn.status == Status::AwaitingReview)
+        agent::recover(&state, &id).is_ok_and(|turn| turn.status == Status::AwaitingReview)
     })
     .await;
     assert!(control.calls.lock().unwrap().is_empty());
@@ -785,7 +792,10 @@ async fn cancel_before_worker_starts_releases_reserved_inference_permit() {
     let web = command(&state, "/v1/voice/turns", "question").await;
     let id = current_id(&state);
     command(&state, &format!("/v1/voice/turns/{id}/submit"), "question").await;
-    assert!(state.voice.lock().record(&id).unwrap().job.is_some());
+    assert_eq!(
+        agent::recover(&state, &id).unwrap().status,
+        Status::Generating
+    );
     request(
         &state,
         "POST",
@@ -795,7 +805,7 @@ async fn cancel_before_worker_starts_releases_reserved_inference_permit() {
         None,
     )
     .await;
-    assert_eq!(state.voice.inference.available_permits(), 1);
+    assert!(!agent::inspect(&state).busy);
     assert!(stream_text(web).await.contains("turn.cancelled"));
     wait_idle(&state).await;
     assert!(control.calls.lock().unwrap().is_empty());
@@ -839,7 +849,6 @@ async fn reset_preserves_expired_key_tombstones_and_retry_ledger_is_bounded() {
     )
     .await;
     assert_eq!(saturated.status(), StatusCode::TOO_MANY_REQUESTS);
-    assert_eq!(state.voice.lock().retries.len(), 1);
 }
 
 #[tokio::test]
@@ -895,7 +904,7 @@ async fn stateless_stt_is_isolated_and_reset_waits_for_uncancellable_web_stt() {
         )
         .await
     });
-    wait_until(|| state.voice.lock().resetting).await;
+    wait_until(|| agent::inspect(&state).busy).await;
     assert!(!reset.is_finished());
     control.stt_hold.store(false, Ordering::Release);
     assert_eq!(reset.await.unwrap().status(), StatusCode::OK);
@@ -952,4 +961,337 @@ async fn shutdown_cancels_all_active_operations_and_readiness_does_not_lock_mode
             .status(),
         StatusCode::CONFLICT
     );
+}
+
+struct Console {
+    runtime: va_runtime::AgentRuntime,
+    id: String,
+}
+impl Console {
+    fn snapshot(&self) -> va_core::chat::ChatSnapshot {
+        conversations::snapshot(&self.runtime, &self.id, false).unwrap()
+    }
+    fn current_id(&self) -> Option<String> {
+        self.snapshot().turns.last().map(|t| t.turn_id.clone())
+    }
+    fn idle(&self) -> bool {
+        !self.snapshot().busy
+    }
+}
+async fn console(state: &AppState) -> (String, Console) {
+    let response = request(
+        state,
+        "POST",
+        "/v1/voice/conversations",
+        "",
+        Body::empty(),
+        None,
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let id = value(response).await["conversation_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let child = Console {
+        runtime: state.runtime.clone(),
+        id: id.clone(),
+    };
+    (id, child)
+}
+async fn console_snapshot(state: &AppState, id: &str) -> Value {
+    value(
+        request(
+            state,
+            "GET",
+            &format!("/v1/voice/conversations/{id}"),
+            "",
+            Body::empty(),
+            None,
+        )
+        .await,
+    )
+    .await
+}
+
+#[tokio::test]
+async fn console_audio_requires_approval_and_retains_separate_stage_runs_and_samples() {
+    let (state, control) = setup(Limits::default());
+    let (id, child) = console(&state).await;
+    let response = request(
+        &state,
+        "POST",
+        &format!("/v1/voice/conversations/{id}/turns"),
+        "audio/wav",
+        wav(false),
+        Some("audio-1"),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    wait_until(|| {
+        child
+            .snapshot()
+            .turns
+            .last()
+            .is_some_and(|t| t.status == Status::AwaitingReview)
+    })
+    .await;
+    assert!(control.calls.lock().unwrap().is_empty());
+    let review = console_snapshot(&state, &id).await;
+    assert_eq!(review["runs"].as_array().unwrap().len(), 1);
+    assert_eq!(review["runs"][0]["stage"], "transcription");
+    let turn = review["turns"][0]["turn_id"].as_str().unwrap();
+    let approved = "  corrected — café.\n你好 ";
+    let ack = command(
+        &state,
+        &format!("/v1/voice/conversations/{id}/turns/{turn}/submit"),
+        approved,
+    )
+    .await;
+    assert_eq!(ack.status(), StatusCode::OK);
+    let stream = stream_text(response).await;
+    assert!(stream.contains("reply.completed"));
+    wait_until(|| child.idle()).await;
+    let done = console_snapshot(&state, &id).await;
+    assert_eq!(done["turns"][0]["approved_text"], approved);
+    assert_eq!(done["runs"].as_array().unwrap().len(), 2);
+    assert_eq!(done["runs"][1]["stage"], "reasoning");
+    assert_ne!(done["runs"][0]["run_id"], done["runs"][1]["run_id"]);
+    assert_eq!(done["runs"][0]["turn_id"], done["runs"][1]["turn_id"]);
+    assert_eq!(done["runs"][1]["input"], approved);
+    assert!(done["runs"][0]["finished_at_ms"].is_u64());
+    assert!(done["runs"][1]["finished_at_ms"].is_u64());
+    assert!(snapshot(&state).await["history"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let path = format!("/v1/voice/conversations/{id}/metrics?after=0");
+    let page1 = value(request(&state, "GET", &path, "", Body::empty(), None).await).await;
+    let page2 = value(request(&state, "GET", &path, "", Body::empty(), None).await).await;
+    assert_eq!(page1, page2, "metrics inspection must be non-destructive");
+    assert!(!page1["events"].as_array().unwrap().is_empty());
+    let run_id = done["runs"][0]["run_id"].as_str().unwrap();
+    let detail = value(
+        request(
+            &state,
+            "GET",
+            &format!("/v1/voice/conversations/{id}/runs/{run_id}"),
+            "",
+            Body::empty(),
+            None,
+        )
+        .await,
+    )
+    .await;
+    assert!(!detail["events"].as_array().unwrap().is_empty());
+    assert_eq!(detail["raw_transcript"], "original transcript");
+}
+
+#[tokio::test]
+async fn console_context_is_independent_and_finish_generates_a_separate_title_run() {
+    let (state, control) = setup(Limits::default());
+    let (id, child) = console(&state).await;
+    let route = format!("/v1/voice/conversations/{id}/turns");
+    for (index, text) in ["first question", "follow-up correction"]
+        .iter()
+        .enumerate()
+    {
+        let response = request(
+            &state,
+            "POST",
+            &route,
+            "application/json",
+            json!({"text":text}).to_string(),
+            Some(&format!("typed-{index}")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let turn = child.current_id().unwrap();
+        assert_eq!(
+            command(&state, &format!("{route}/{turn}/submit"), text)
+                .await
+                .status(),
+            StatusCode::OK
+        );
+        assert!(stream_text(response).await.contains("reply.completed"));
+        wait_until(|| child.idle()).await;
+    }
+    let calls = control.calls.lock().unwrap().clone();
+    assert_eq!(calls.len(), 2);
+    assert_eq!(
+        calls[1]
+            .iter()
+            .map(|m| m.content.as_str())
+            .collect::<Vec<_>>(),
+        vec![
+            "incident role",
+            "first question",
+            "你好 — café.",
+            "follow-up correction"
+        ]
+    );
+    let before = console_snapshot(&state, &id).await;
+    assert!(before["runs"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .all(|r| r["stage"] == "reasoning"));
+    let (other, other_child) = console(&state).await;
+    assert!(console_snapshot(&state, &other).await["turns"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    assert!(
+        conversations::inspect(&other_child.runtime, &other_child.id)
+            .unwrap()
+            .history
+            .is_empty()
+    );
+    let finish = request(
+        &state,
+        "POST",
+        &format!("/v1/voice/conversations/{id}/finish"),
+        "",
+        Body::empty(),
+        None,
+    )
+    .await;
+    assert_eq!(finish.status(), StatusCode::OK);
+    tokio::time::timeout(Duration::from_secs(3), async {
+        loop {
+            if console_snapshot(&state, &id).await["status"] == "finished" {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    })
+    .await
+    .unwrap();
+    let after = console_snapshot(&state, &id).await;
+    assert_eq!(after["title"], "你好 — café.");
+    assert_eq!(after["title_status"], "completed");
+    assert_eq!(after["runs"].as_array().unwrap().len(), 3);
+    assert_eq!(after["runs"][2]["stage"], "title");
+    {
+        let calls = control.calls.lock().unwrap();
+        assert_eq!(calls[2][0].content, va_core::chat::TITLE_INSTRUCTION);
+        assert!(calls[2][1].content.contains("follow-up correction"));
+    }
+    assert_eq!(
+        command(&state, &route, "cannot reopen").await.status(),
+        StatusCode::CONFLICT
+    );
+    assert!(snapshot(&state).await["history"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn console_cancelled_stt_retains_settlement_and_cannot_overlap_compute() {
+    let (state, control) = setup(Limits::default());
+    let (id, child) = console(&state).await;
+    control.stt_hold.store(true, Ordering::Release);
+    let route = format!("/v1/voice/conversations/{id}/turns");
+    let response = request(
+        &state,
+        "POST",
+        &route,
+        "audio/wav",
+        wav(false),
+        Some("cancel-audio"),
+    )
+    .await;
+    wait_until(|| control.stt_entered.load(Ordering::Acquire)).await;
+    let turn = child.current_id().unwrap();
+    assert_eq!(
+        request(
+            &state,
+            "POST",
+            &format!("{route}/{turn}/cancel"),
+            "",
+            Body::empty(),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::OK
+    );
+    assert_eq!(
+        request(
+            &state,
+            "POST",
+            &format!("/v1/voice/conversations/{id}/finish"),
+            "",
+            Body::empty(),
+            None
+        )
+        .await
+        .status(),
+        StatusCode::CONFLICT
+    );
+    control.stt_hold.store(false, Ordering::Release);
+    assert!(stream_text(response).await.contains("turn.cancelled"));
+    wait_until(|| child.idle()).await;
+    let result = console_snapshot(&state, &id).await;
+    assert_eq!(result["runs"][0]["status"], "cancelled");
+    assert!(result["runs"][0]["finished_at_ms"].is_u64());
+    assert!(control.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn console_turn_cap_preserves_all_turns_and_known_retries_do_not_regenerate() {
+    let limits = Limits {
+        retained_turns: 2,
+        ..Limits::default()
+    };
+    let (state, control) = setup(limits);
+    let (id, child) = console(&state).await;
+    let route = format!("/v1/voice/conversations/{id}/turns");
+    for index in 0..va_core::chat::MAX_CHAT_TURNS {
+        let response = request(
+            &state,
+            "POST",
+            &route,
+            "application/json",
+            json!({"text":"draft"}).to_string(),
+            Some(&format!("key-{index}")),
+        )
+        .await;
+        assert_eq!(response.status(), StatusCode::OK);
+        let turn = child.current_id().unwrap();
+        assert_eq!(
+            request(
+                &state,
+                "POST",
+                &format!("{route}/{turn}/cancel"),
+                "",
+                Body::empty(),
+                None
+            )
+            .await
+            .status(),
+            StatusCode::OK
+        );
+        assert!(stream_text(response).await.contains("turn.cancelled"));
+        wait_until(|| child.idle()).await;
+    }
+    assert_eq!(child.snapshot().turns.len(), va_core::chat::MAX_CHAT_TURNS);
+    assert_eq!(
+        command(&state, &route, "new draft").await.status(),
+        StatusCode::CONFLICT
+    );
+    let retry = request(
+        &state,
+        "POST",
+        &route,
+        "application/json",
+        json!({"text":"draft"}).to_string(),
+        Some("key-0"),
+    )
+    .await;
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert!(stream_text(retry).await.contains("turn.cancelled"));
+    assert!(control.calls.lock().unwrap().is_empty());
+    assert_eq!(child.snapshot().turns.len(), va_core::chat::MAX_CHAT_TURNS);
 }
