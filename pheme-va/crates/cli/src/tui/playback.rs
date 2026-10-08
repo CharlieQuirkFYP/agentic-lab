@@ -14,10 +14,23 @@ pub struct Playback {
 
 impl Playback {
     pub fn start(text: &str) -> Result<Self> {
-        Self::start_program(Path::new("espeak"), text)
+        Self::start_with_fallback(Path::new("espeak-ng"), Path::new("espeak"), text)
     }
 
-    fn start_program(program: &Path, text: &str) -> Result<Self> {
+    fn start_with_fallback(primary: &Path, fallback: &Path, text: &str) -> Result<Self> {
+        match Self::start_program(primary, text) {
+            Err(error)
+                if error
+                    .downcast_ref::<std::io::Error>()
+                    .is_some_and(|error| error.kind() == std::io::ErrorKind::NotFound) =>
+            {
+                Self::start_program(fallback, text)
+            }
+            result => result,
+        }
+    }
+
+    pub(super) fn start_program(program: &Path, text: &str) -> Result<Self> {
         ensure!(
             !text.trim().is_empty() && text.len() <= MAX_REPLY_BYTES,
             "no completed answer to speak"
@@ -35,7 +48,7 @@ impl Playback {
         }
         let mut child = command
             .spawn()
-            .context("local TTS unavailable: install espeak or leave voice playback off")?;
+            .context("local speech unavailable: install espeak-ng or espeak")?;
         let mut stdin = child.stdin.take().context("espeak stdin unavailable")?;
         let text = text.to_owned();
         std::thread::spawn(move || {
@@ -101,7 +114,8 @@ mod tests {
         .unwrap();
         std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
         let answer = "Unicode 界🙂 and $(do-not-execute)";
-        let mut task = Playback::start_program(&program, answer).unwrap();
+        let mut task =
+            Playback::start_with_fallback(&root.join("missing-ng"), &program, answer).unwrap();
         let deadline = Instant::now() + Duration::from_secs(3);
         loop {
             match task.poll() {

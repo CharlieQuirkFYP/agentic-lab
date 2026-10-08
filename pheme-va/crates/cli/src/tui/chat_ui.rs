@@ -1,7 +1,7 @@
 //! Conversation rendering uses the same retained snapshots as the detail views.
 use super::{App, Detail};
 use crate::tui::app::epoch_millis;
-use crate::tui::workspace_ui::{draw_shortcut_footer, footer_height, header};
+use crate::tui::workspace_ui::{compact_name, draw_shortcut_footer, footer_height, header};
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -131,10 +131,16 @@ impl App {
         }
         let lines = wrap_chat_lines(lines, chat[0].width.saturating_sub(2) as usize);
         let line_count = lines.len();
+        let voice = self.voice_reply_indicator();
+        let title = compact_name(
+            &format!("CHAT / {title}"),
+            (chat[0].width as usize).saturating_sub(voice.width() + 3),
+        );
         let paragraph = Paragraph::new(lines).block(
             Block::default()
                 .borders(Borders::ALL)
-                .title(format!("CHAT / {title}")),
+                .title(title)
+                .title(voice.right_aligned()),
         );
         let scroll = if self.chat.follow_bottom {
             line_count
@@ -257,6 +263,30 @@ impl App {
             rows[4],
         );
         draw_shortcut_footer(frame, rows[5], &footer);
+    }
+
+    fn voice_reply_indicator(&self) -> Line<'static> {
+        let mode = if self.config.voice_reply_enabled {
+            "ON"
+        } else {
+            "OFF"
+        };
+        let (label, color) = if self.playback.is_some() {
+            (format!("Voice reply {mode} · Speaking"), Color::Cyan)
+        } else if !self.config.voice_reply_enabled {
+            ("Voice reply OFF".into(), Color::DarkGray)
+        } else if self.playback_error.is_some() {
+            ("Voice reply ON · Unavailable".into(), Color::Yellow)
+        } else {
+            ("Voice reply ON".into(), Color::Green)
+        };
+        Line::from(vec![
+            Span::styled(
+                "● ",
+                Style::default().fg(color).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(label, Style::default().fg(color)),
+        ])
     }
 
     pub fn draw_conversations(&self, frame: &mut Frame<'_>, area: Rect) {

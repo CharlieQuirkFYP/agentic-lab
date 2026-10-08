@@ -27,6 +27,8 @@ pub struct TuiConfig {
     pub metrics_enabled: bool,
     #[serde(default = "default_true")]
     pub resource_sampling_enabled: bool,
+    #[serde(default)]
+    pub voice_reply_enabled: bool,
 }
 
 impl Default for TuiConfig {
@@ -43,6 +45,7 @@ impl Default for TuiConfig {
             max_seconds: default_max_seconds(),
             metrics_enabled: true,
             resource_sampling_enabled: true,
+            voice_reply_enabled: false,
         }
     }
 }
@@ -180,6 +183,7 @@ mod tests {
         ).unwrap();
         assert!(config.reply_role_files.is_empty());
         assert!(config.server_reply_model.is_none());
+        assert!(!config.voice_reply_enabled);
     }
 
     #[test]

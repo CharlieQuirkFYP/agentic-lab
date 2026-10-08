@@ -1393,11 +1393,15 @@ fn draw_help(frame: &mut Frame<'_>, app: &App) {
         Line::from("[w] Web | [m] Models | [t] Telemetry | [b] Chat"),
         Line::from(""),
         Line::from(Span::styled("Chat", Style::default().fg(ACCENT))),
-        Line::from("[l] record microphone    [f] select WAV    [n] next WAV"),
+        Line::from("[l] record microphone    [f] select WAV"),
         Line::from("[Enter] confirm & send  [e] edit  [i] type  [Alt+Enter] new line"),
-        Line::from("[c] new conversation  [d] finish  [x] discard/cancel  [s] isolated tests"),
-        Line::from("[p] replay  [v] auto voice  [z] stop voice  [r] retry source"),
-        Line::from("[j/k] scroll transcript/details   [?] help   [q] quit"),
+        Line::from("[c] new conversation  [d] finish  [x] discard/cancel"),
+        Line::from("[v] voice ON/OFF  [p] replay  [z] stop current speech"),
+        Line::from("[Arrows/Home/End] move cursor  [Backspace/Delete] edit text"),
+        Line::from(""),
+        Line::from(Span::styled("Additional Chat shortcuts", Style::default().fg(ACCENT))),
+        Line::from("[s] isolated tests  [r] retry source  [n] next WAV"),
+        Line::from("[j/k] scroll chat  [End] latest message  [?] help  [q] quit"),
         Line::from(""),
         Line::from(Span::styled(
             "Telemetry (1–4 switch telemetry views; Esc returns)",
@@ -2088,23 +2092,50 @@ mod tests {
             }
             let rows = super::super::workspace_ui::footer_height(&app.chat_footer(), width);
             let footer = rect_text(&buffer, Rect::new(0, height - rows, width, rows));
+            assert_eq!(
+                rows, 2,
+                "navigation and current actions occupy separate rows"
+            );
             for key in [
-                "[b] Chat",
-                "[w] Web",
                 "[m] Models",
                 "[t] Telemetry",
                 "[c] New",
                 "[d] Finish",
                 "[l] Mic",
                 "[f] WAV",
-                "[n] Next file",
+                "[i] Type",
+                "[v] Voice OFF",
+                "[?] Help",
                 "[q] Quit",
             ] {
                 assert!(footer.contains(key), "missing {key}: {footer}");
             }
+            for hidden in [
+                "[b] Chat",
+                "[w] Web",
+                "[n] Next file",
+                "[r] Retry",
+                "[s] Tests",
+                "[j/k] Scroll",
+                "[End] Latest",
+                "[p] Replay",
+                "[z] Stop voice",
+            ] {
+                assert!(!footer.contains(hidden), "unexpected {hidden}: {footer}");
+            }
+            let footer_rows = footer.lines().collect::<Vec<_>>();
+            assert!(footer_rows[0].contains("[m] Models") && !footer_rows[0].contains("[i] Type"));
+            assert!(footer_rows[1].contains("[f] WAV") && !footer_rows[1].contains("[m] Models"));
             for row in footer.lines().filter(|s| !s.is_empty()) {
                 assert!(row.starts_with('['), "{row}");
-                assert!(!row.trim_end().contains("   "), "stretched spacing: {row}");
+                assert!(
+                    row.trim_end().contains("    ["),
+                    "missing breathing room: {row}"
+                );
+                assert!(
+                    !row.trim_end().contains("     "),
+                    "stretched spacing: {row}"
+                );
             }
         }
     }
@@ -2147,6 +2178,16 @@ mod tests {
                 assert!(!text.contains(label), "{text}");
             }
             assert!(text.contains("Workspace (outside Telemetry)"));
+            for label in [
+                "Additional Chat shortcuts",
+                "[s] isolated tests",
+                "[r] retry source",
+                "[n] next WAV",
+                "[j/k] scroll chat",
+                "[End] latest message",
+            ] {
+                assert!(text.contains(label), "missing {label}: {text}");
+            }
             assert!(text.contains("Telemetry (1–4 switch telemetry views; Esc returns)"));
             assert!(
                 text.contains("[1] overview  [2] live metrics  [3] conversations/runs  [4] logs")

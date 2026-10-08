@@ -140,7 +140,7 @@ pub fn header(frame: &mut Frame<'_>, app: &App, area: Rect, title: &str) {
     );
 }
 
-fn compact_name(text: &str, width: usize) -> String {
+pub(super) fn compact_name(text: &str, width: usize) -> String {
     if text.width() <= width {
         return text.into();
     }
@@ -180,7 +180,8 @@ pub(super) fn workspace_guide(app: &App) -> String {
     items.join("  ")
 }
 
-// Consecutive command lines are one shortcut group; prose keeps its own rows.
+// Consecutive command lines are one group; blank lines separate groups without
+// adding empty rows. Prose keeps its own rows.
 fn footer_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let width = usize::from(width);
     if width == 0 {
@@ -190,6 +191,10 @@ fn footer_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     let mut items = Vec::new();
     for line in text.lines() {
         let line = line.trim();
+        if line.is_empty() {
+            pack_shortcuts(&mut lines, &mut items, width);
+            continue;
+        }
         if line.starts_with('[') && line.contains(']') {
             let starts = line
                 .match_indices('[')
@@ -208,12 +213,14 @@ fn footer_lines(text: &str, width: u16) -> Vec<Line<'static>> {
     lines
 }
 
+const SHORTCUT_SPACING: &str = "    ";
+
 fn pack_shortcuts(lines: &mut Vec<Line<'static>>, items: &mut Vec<&str>, width: usize) {
     let mut row = Vec::new();
     let mut used = 0;
     for item in items.drain(..) {
         let cells = item.width();
-        if !row.is_empty() && used + 2 + cells > width {
+        if !row.is_empty() && used + SHORTCUT_SPACING.len() + cells > width {
             lines.push(spread_shortcuts(&row, width));
             row.clear();
             used = 0;
@@ -221,7 +228,12 @@ fn pack_shortcuts(lines: &mut Vec<Line<'static>>, items: &mut Vec<&str>, width: 
         if cells > width {
             lines.extend(wrap_footer_line(item, width));
         } else {
-            used += cells + if row.is_empty() { 0 } else { 2 };
+            used += cells
+                + if row.is_empty() {
+                    0
+                } else {
+                    SHORTCUT_SPACING.len()
+                };
             row.push(item);
         }
     }
@@ -231,7 +243,7 @@ fn pack_shortcuts(lines: &mut Vec<Line<'static>>, items: &mut Vec<&str>, width: 
 }
 
 fn spread_shortcuts(items: &[&str], _width: usize) -> Line<'static> {
-    Line::from(items.join("  "))
+    Line::from(items.join(SHORTCUT_SPACING))
 }
 
 fn wrap_footer_line(text: &str, width: usize) -> Vec<Line<'static>> {
@@ -1170,7 +1182,10 @@ mod tests {
         let lines = footer_lines("[界] 开启  [e\u{301}] Café\n[🙂] Replay  [Esc] Back", 60);
         assert_eq!(lines.len(), 1);
         let row = lines[0].to_string();
-        assert_eq!(row, "[界] 开启  [e\u{301}] Café  [🙂] Replay  [Esc] Back");
+        assert_eq!(
+            row,
+            "[界] 开启    [e\u{301}] Café    [🙂] Replay    [Esc] Back"
+        );
         assert!(row.starts_with("[界] 开启"), "{row}");
         assert!(row.ends_with("[Esc] Back"), "{row}");
         assert!(row.contains("[e\u{301}] Café"), "{row}");
@@ -1178,10 +1193,10 @@ mod tests {
         assert_eq!(footer_height(&row, 60), 1);
 
         let narrow = footer_lines("[界] 开启  [e\u{301}] Café\n[🙂] Replay  [Esc] Back", 24);
-        assert_eq!(narrow.len(), 2);
+        assert_eq!(narrow.len(), 3);
         for line in narrow {
             assert!(line.width() <= 24, "{line}");
-            assert!(!line.to_string().contains("   "));
+            assert!(!line.to_string().contains("     "));
         }
     }
 

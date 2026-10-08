@@ -58,6 +58,14 @@ pub struct ChatState {
 }
 
 impl ChatState {
+    fn completed_voice_reply<'a>(&mut self, turn: &'a ChatTurn, enabled: bool) -> Option<&'a str> {
+        if turn.status != ChatPhase::Completed || self.spoken.as_deref() == Some(&turn.turn_id) {
+            return None;
+        }
+        self.spoken = Some(turn.turn_id.clone());
+        enabled.then_some(turn.reply.as_str())
+    }
+
     pub fn snapshot(&self) -> Option<&ChatSnapshot> {
         self.current
             .as_ref()
@@ -280,12 +288,11 @@ impl App {
                                     self.chat.editing = false;
                                 }
                             }
-                            if turn.status == ChatPhase::Completed
-                                && self.voice.tests.auto_voice
-                                && self.chat.spoken.as_deref() != Some(&turn.turn_id)
+                            if let Some(text) = self
+                                .chat
+                                .completed_voice_reply(&turn, self.config.voice_reply_enabled)
                             {
-                                self.chat.spoken = Some(turn.turn_id.clone());
-                                self.speak(&turn.reply);
+                                self.speak(text);
                             }
                         }
                         if finished && self.chat.new_after_finish && !self.chat.starting {
@@ -754,7 +761,7 @@ impl App {
                     self.speak(&text);
                 }
             }
-            KeyCode::Char('v') => self.voice.tests.auto_voice = !self.voice.tests.auto_voice,
+            KeyCode::Char('v') => self.toggle_voice_replies(),
             KeyCode::Char('j') | KeyCode::Down | KeyCode::PageDown => {
                 self.chat.follow_bottom = false;
                 self.chat.scroll = self.chat.scroll.saturating_add(3);
@@ -882,12 +889,12 @@ impl App {
 
     pub fn chat_footer(&self) -> String {
         if self.chat.editing {
-            return "[Enter] Confirm & send  [Alt+Enter] New line  [Esc] Review  [Arrows] Move cursor  [Backspace/Delete] Delete".into();
+            return "[Enter] Send  [Alt+Enter] New line  [Esc] Review".into();
         }
         let mut footer =
-            "[b] Chat  [m] Models  [t] Telemetry  [w] Web  [c] New  [d] Finish".to_owned();
+            "[m] Models  [t] Telemetry  [c] New  [d] Finish  [?] Help  [q] Quit\n\n".to_owned();
         if self.recording.is_some() {
-            footer.push_str("  [Enter] Stop recording  [x] Discard");
+            footer.push_str("[Enter] Stop recording  [x] Discard");
         } else if self.chat.starting
             || self.chat.submitting
             || self
@@ -895,21 +902,48 @@ impl App {
                 .snapshot()
                 .is_some_and(|s| s.busy && !self.chat.reviewing())
         {
-            footer.push_str("  [x] Cancel  [i] Type next");
+            footer.push_str("[x] Cancel  [i] Type next");
         } else if !self.chat.editor.text.is_empty() {
-            footer.push_str(if self.chat.draft_turn.is_some() {
-                "  [Enter] Confirm & send  [e] Edit  [x] Discard"
-            } else {
-                "  [Enter] Send  [e] Edit  [x] Discard"
-            });
+            footer.push_str("[Enter] Send  [e] Edit  [x] Discard");
         } else {
-            footer.push_str("  [i] Type  [l] Mic  [f] WAV  [n] Next file  [r] Retry");
+            footer.push_str("[i] Type  [l] Mic  [f] WAV");
         }
-        if self.chat.connection.is_some() {
-            footer.push_str("  [s] Tests");
+        footer.push_str(if self.config.voice_reply_enabled {
+            "  [v] Voice ON"
+        } else {
+            "  [v] Voice OFF"
+        });
+        if self.playback.is_some() {
+            footer.push_str("  [z] Stop voice");
+        } else if self.recording.is_none()
+            && self
+                .chat
+                .snapshot()
+                .and_then(|s| s.turns.last())
+                .is_some_and(|t| t.status == ChatPhase::Completed && !t.reply.trim().is_empty())
+        {
+            footer.push_str("  [p] Replay");
         }
-        footer.push_str("  [p] Replay  [v] Auto voice  [z] Stop voice  [j/k] Scroll  [End] Latest  [?] Help  [q] Quit");
         footer
+    }
+
+    pub(super) fn toggle_voice_replies(&mut self) {
+        self.config.voice_reply_enabled = !self.config.voice_reply_enabled;
+        self.clear_playback_error();
+        if !self.config.voice_reply_enabled {
+            self.playback.take();
+        }
+        let mode = if self.config.voice_reply_enabled {
+            "ON"
+        } else {
+            "OFF"
+        };
+        self.status_message = format!("Voice replies {mode}");
+        if let Err(error) = crate::tui::config::save_to(&self.config, &self.config_path) {
+            self.error_message = Some(format!(
+                "Voice replies {mode}, but could not remember the setting: {error:#}"
+            ));
+        }
     }
 }
 
@@ -1005,6 +1039,178 @@ mod tests {
     }
 
     #[test]
+    fn voice_reply_mode_is_remembered_and_independent_from_test_playback() {
+        let mut app = super::super::tests::test_app();
+        app.screen = Screen::Bench;
+        app.voice.tests.auto_voice = true;
+        app.playback_error = Some("old speech failure".into());
+        app.error_message = app.playback_error.clone();
+        assert!(app.chat_footer().contains("[v] Voice OFF"));
+        key(&mut app, KeyCode::Char('v'));
+        assert!(app.config.voice_reply_enabled);
+        assert!(app.voice.tests.auto_voice);
+        assert!(app.playback_error.is_none());
+        assert!(app.error_message.is_none());
+        let saved: crate::tui::config::TuiConfig =
+            toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+        assert!(saved.voice_reply_enabled);
+        assert!(app.chat_footer().contains("[v] Voice ON"));
+        app.chat.connection = Some(Connection::fixture().0);
+        app.screen = Screen::Recording;
+        key(&mut app, KeyCode::Char('v'));
+        assert!(
+            !app.config.voice_reply_enabled,
+            "recording still permits voice-mode changes"
+        );
+        key(&mut app, KeyCode::Char('v'));
+        app.screen = Screen::Bench;
+        key(&mut app, KeyCode::Char('i'));
+        key(&mut app, KeyCode::Char('v'));
+        assert_eq!(app.chat.editor.text, "v");
+        assert!(
+            app.config.voice_reply_enabled,
+            "editing owns the toggle key"
+        );
+        key(&mut app, KeyCode::Esc);
+        key(&mut app, KeyCode::Char('v'));
+        assert!(!app.config.voice_reply_enabled);
+        assert!(app.voice.tests.auto_voice);
+        let saved: crate::tui::config::TuiConfig =
+            toml::from_str(&std::fs::read_to_string(&app.config_path).unwrap()).unwrap();
+        assert!(!saved.voice_reply_enabled);
+        std::fs::remove_file(&app.config_path).unwrap();
+    }
+
+    #[test]
+    fn automatic_voice_speaks_only_new_completed_replies_once() {
+        let mut state = ChatState::default();
+        let mut turn = ChatTurn {
+            turn_id: "first".into(),
+            status: ChatPhase::Generating,
+            transcript: String::new(),
+            approved_text: Some("question".into()),
+            reply: "Answer — 你好".into(),
+            error: None,
+            timings: Default::default(),
+            source: "typed".into(),
+            transcription_run: None,
+            reasoning_run: None,
+        };
+        assert!(state.completed_voice_reply(&turn, true).is_none());
+        turn.status = ChatPhase::Completed;
+        assert!(state.completed_voice_reply(&turn, false).is_none());
+        assert!(
+            state.completed_voice_reply(&turn, true).is_none(),
+            "enabling voice must not replay an old reply"
+        );
+        turn.turn_id = "second".into();
+        assert_eq!(
+            state.completed_voice_reply(&turn, true),
+            Some("Answer — 你好")
+        );
+        assert!(
+            state.completed_voice_reply(&turn, true).is_none(),
+            "repeated snapshots must not repeat speech"
+        );
+        turn.turn_id = "third".into();
+        turn.status = ChatPhase::Cancelled;
+        assert!(state.completed_voice_reply(&turn, true).is_none());
+    }
+
+    #[test]
+    fn voice_reply_indicator_stays_at_top_right_without_overlapping_long_titles() {
+        use ratatui::{backend::TestBackend, style::Color, Terminal};
+        let mut app = super::super::tests::test_app();
+        app.screen = Screen::Bench;
+        app.ensure_local_chat();
+        app.chat.archives[0].title = "Long conversation title 界🙂 ".repeat(20);
+        for (enabled, error, label, color) in [
+            (false, None, "Voice reply OFF", Color::DarkGray),
+            (true, None, "Voice reply ON", Color::Green),
+            (
+                true,
+                Some("missing speech engine"),
+                "Voice reply ON · Unavailable",
+                Color::Yellow,
+            ),
+        ] {
+            app.config.voice_reply_enabled = enabled;
+            app.playback_error = error.map(str::to_owned);
+            for (width, height) in [(80, 24), (120, 36)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                terminal.draw(|frame| app.draw_chat(frame)).unwrap();
+                let buffer = terminal.backend().buffer();
+                let row = if width < 100 { 6 } else { 3 };
+                let text = (0..width)
+                    .map(|x| buffer[(x, row)].symbol())
+                    .collect::<String>();
+                assert!(text.contains(label), "{text}");
+                assert!(text.contains("CHAT / Long"), "{text}");
+                let x = (0..width)
+                    .find(|x| buffer[(*x, row)].symbol() == "●")
+                    .unwrap();
+                assert!(x > width / 2, "indicator must stay on the right: {text}");
+                assert_eq!(buffer[(x, row)].fg, color);
+            }
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn disabling_voice_mode_stops_current_speech() {
+        use std::os::unix::fs::PermissionsExt;
+        let mut app = super::super::tests::test_app();
+        app.screen = Screen::Bench;
+        app.config.voice_reply_enabled = true;
+        app.ensure_local_chat();
+        app.chat.archives[0].turns.push(ChatTurn {
+            turn_id: "spoken-reply".into(),
+            status: ChatPhase::Completed,
+            transcript: String::new(),
+            approved_text: Some("question".into()),
+            reply: "answer".into(),
+            error: None,
+            timings: Default::default(),
+            source: "typed".into(),
+            transcription_run: None,
+            reasoning_run: None,
+        });
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(80, 24)).unwrap();
+        let rendered = |terminal: &mut ratatui::Terminal<ratatui::backend::TestBackend>,
+                        app: &App| {
+            terminal.draw(|frame| app.draw_chat(frame)).unwrap();
+            terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>()
+        };
+        let text = rendered(&mut terminal, &app);
+        assert!(text.contains("[p] Replay"));
+        assert!(!text.contains("[z] Stop voice"));
+        let program = app.config_path.with_extension("fake-tts");
+        std::fs::write(&program, "#!/bin/sh\nexec sleep 30\n").unwrap();
+        std::fs::set_permissions(&program, std::fs::Permissions::from_mode(0o700)).unwrap();
+        app.playback =
+            Some(crate::tui::playback::Playback::start_program(&program, "answer").unwrap());
+        let text = rendered(&mut terminal, &app);
+        assert!(text.contains("Voice reply ON · Speaking"));
+        assert!(text.contains("[z] Stop voice"));
+        assert!(!text.contains("[p] Replay"));
+        key(&mut app, KeyCode::Char('v'));
+        assert!(!app.config.voice_reply_enabled);
+        assert!(app.playback.is_none());
+        let text = rendered(&mut terminal, &app);
+        assert!(text.contains("[p] Replay"));
+        assert!(!text.contains("[z] Stop voice"));
+        std::fs::remove_file(program).unwrap();
+        std::fs::remove_file(&app.config_path).unwrap();
+    }
+
+    #[test]
     fn audio_review_enter_generates_reply_and_preserves_edits_without_duplicate_turns() {
         struct Speech;
         impl va_core::Transcriber for Speech {
@@ -1051,8 +1257,10 @@ mod tests {
                 "review keeps the workflow alive"
             );
             assert!(!app.chat.editing);
-            assert!(app.chat_footer().contains("[Enter] Confirm & send"));
+            assert!(app.chat_footer().contains("[Enter] Send"));
             assert!(app.chat_footer().contains("[e] Edit"));
+            assert!(!app.chat_footer().contains("[x] Cancel"));
+            assert!(!app.chat_footer().contains("[p] Replay"));
             if edited {
                 key(&mut app, KeyCode::Char('e'));
                 app.chat.editor = Editor::new("  Correction: fire at AMK — 你好\n".into());
@@ -1069,6 +1277,10 @@ mod tests {
                             .is_some_and(|t| t.status == ChatPhase::Generating)
                     })
             });
+            assert!(app.chat_footer().contains("[x] Cancel"));
+            assert!(app.chat_footer().contains("[i] Type next"));
+            assert!(!app.chat_footer().contains("[Enter] Send"));
+            assert!(!app.chat_footer().contains("[p] Replay"));
             control
                 .hold
                 .store(false, std::sync::atomic::Ordering::Release);
@@ -1253,7 +1465,7 @@ mod tests {
                 .map(|c| c.symbol())
                 .collect::<String>();
             assert!(text.contains("MESSAGE / EDITING / NOT SENT"));
-            assert!(text.contains("[Enter] Confirm & send"));
+            assert!(text.contains("[Enter] Send"));
             assert!(text.contains("[Alt+Enter] New line"));
             let cursor = terminal.backend_mut().get_cursor_position().unwrap();
             assert!(cursor.y < height - footer_height(&app.chat_footer(), width));
@@ -1496,10 +1708,10 @@ mod tests {
                 "CHAT /",
                 "EDIT YOUR MESSAGE",
                 "Everyone has left the building.",
-                "[Enter] Confirm & send",
+                "[Enter] Send",
                 "[e] Edit",
                 "[x] Discard",
-                "[b] Chat",
+                "[m] Models",
                 "[q] Quit",
                 "RAM",
                 "Power",

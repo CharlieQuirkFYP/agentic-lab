@@ -41,14 +41,21 @@ The Source panel keeps microphone and WAV selection. While a complete clip is be
 | --- | --- |
 | Draft review | Enter confirm/send; e edit; x discard |
 | Editing | Enter confirm/send; Alt+Enter newline; Esc review with edits retained; arrows/Home/End/Backspace/Delete edit |
-| Idle chat | l microphone; f WAV picker; n next file; r retry source; i type |
+| Idle chat | i type; l microphone; f WAV picker |
 | Recording | Enter stop/transcribe; x discard |
-| Processing | x cancel; native work must settle before another inference |
+| Processing | x cancel; i draft next message; native work must settle before another inference |
 | Conversation | c finish/new; d finish; b return to Chat |
 | Other pages | m Models; t Telemetry; w Web; s isolated local tests from Chat |
-| Playback | p replay; v toggle automatic speech; z stop speech |
+| Playback | v voice replies ON/OFF (remembered); p replay last reply; z stop current speech |
+| Additional shortcuts in Help | n next WAV; r retry source; s isolated tests; w Web; j/k scroll; End latest message |
 
-Bracketed actions appear in the footer. Transcript review keeps its workflow active, but still offers **Enter** to confirm/send and **e** to edit; native compute availability is checked by the runtime at submission. Letters and digits are literal text while editing. Shortcuts have two spaces between items, start at the left, and wrap whole items; there are no function-key actions. Multiline paste preserves newlines. New/Finish cannot discard an unsent draft or bypass unsettled inference.
+Voice replies start off and are remembered across launches. With **v** set to **ON**, each newly completed Chat reply is spoken automatically. The top-right Chat border shows a bright green **● Voice reply ON** or a dim **● Voice reply OFF**. While speech is running it shows **Speaking** in cyan; a failed speech engine shows **Unavailable** in yellow and reports the cause in status. Turning the mode off stops current speech. **z** stops just the current playback; **p** remains an optional replay. Enabling the mode does not replay old replies, and snapshot updates cannot repeat speech. Chat's mode is separate from isolated Tests playback.
+
+Desktop speech needs a locally installed `espeak-ng` or `espeak`; the TUI prefers `espeak-ng` and falls back to `espeak`. Text replies remain available if synthesis fails.
+
+The Chat footer has two groups: Models/Telemetry/New/Finish/Help/Quit, then actions for the current state. Idle shows Type/Mic/WAV and the voice mode; review shows Send/Edit/Discard, and processing shows Cancel/Type next. **Replay** appears when the latest turn has a completed reply; while speech is playing, **Stop voice** takes its place. Next WAV, retry, Tests, Web and scrolling remain available through their existing keys, documented in **? Help**.
+
+Bracketed actions appear below the panels. Transcript review keeps its workflow active, but still offers **Enter** to confirm/send and **e** to edit; native compute availability is checked by the runtime at submission. Editing shows only Send/New line/Review; letters and digits are literal text. Shortcuts have four spaces between items, start at the left, and wrap whole items; there are no function-key actions. Multiline paste preserves newlines. New/Finish cannot discard an unsent draft or bypass unsettled inference.
 
 A wide screen during review looks like this (example content, measurements illustrative):
 
@@ -56,7 +63,7 @@ A wide screen during review looks like this (example content, measurements illus
 PHEME VA / CHAT
 Active STT: whisper-large-v3-turbo | Reply: qwen2.5-1.5b-instruct-q4-k-m
 LOCAL CHAT / shared Rust runtime
-┌ SOURCE ───────────────────┐ ┌ CHAT / Conversation 2026-10-08 09:30 UTC ─────────┐
+┌ SOURCE ───────────────────┐ ┌ CHAT / Conversation 2026-10… ── ● Voice reply ON ─┐
 │ INPUT SOURCE              │ │                                  You             │
 │ [l] Live microphone       │ │                 ┌──────────────────────────────┐ │
 │ [f] Select WAV file       │ │                 │ There is smoke downstairs.   │ │
@@ -76,9 +83,8 @@ LOCAL CHAT / shared Rust runtime
 │ Elapsed 1.4s · First text unavailable · STT 1.40s · Reply unavailable            │
 │ Process CPU 42% · Process RAM 1900000000 bytes · Power unavailable              │
 └───────────────────────────────────────────────────────────────────────────────┘
-[b] Chat  [m] Models  [t] Telemetry  [w] Web  [c] New  [d] Finish
-[Enter] Confirm & send  [e] Edit  [x] Discard  [s] Tests  [p] Replay
-[v] Auto voice  [z] Stop voice  [j/k] Scroll  [End] Latest  [?] Help  [q] Quit
+[m] Models    [t] Telemetry    [c] New    [d] Finish    [?] Help    [q] Quit
+[Enter] Send    [e] Edit    [x] Discard    [v] Voice ON
 ```
 
 The **MESSAGE** composer is always visible. **i** focuses it; Enter sends the exact typed text in one admission, with no transcription or human-review stage. During generation, **i** lets you draft the next message; sending waits until native work settles. The model indicator appears in the chat history:

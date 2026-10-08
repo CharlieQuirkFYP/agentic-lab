@@ -46,11 +46,13 @@ impl App {
             match playback.poll() {
                 Ok(true) => {
                     self.playback.take();
+                    self.playback_error = None;
                     self.status_message = "local speech completed".into();
                 }
                 Ok(false) => {}
                 Err(error) => {
                     self.error_message = Some(error.to_string());
+                    self.playback_error = Some(error.to_string());
                     self.logs.warn("local-tts", error.to_string());
                     self.playback.take();
                 }
@@ -433,6 +435,7 @@ impl App {
             }
             Screen::Recording if self.chat.connection.is_some() => {
                 match code {
+                    KeyCode::Char('v') if !self.chat.isolated => self.toggle_voice_replies(),
                     KeyCode::Enter | KeyCode::Char('l') | KeyCode::Char(' ') => {
                         self.stop_recording()
                     }
@@ -590,10 +593,21 @@ impl App {
         }
         match Playback::start(text) {
             Ok(playback) => {
+                self.clear_playback_error();
                 self.playback = Some(playback);
                 self.status_message = "local espeak playback (z Stop)".into();
             }
-            Err(error) => self.error_message = Some(error.to_string()),
+            Err(error) => {
+                self.playback_error = Some(error.to_string());
+                self.error_message = Some(error.to_string());
+            }
+        }
+    }
+
+    pub(super) fn clear_playback_error(&mut self) {
+        let previous = self.playback_error.take();
+        if previous.is_some() && previous == self.error_message {
+            self.error_message = None;
         }
     }
 

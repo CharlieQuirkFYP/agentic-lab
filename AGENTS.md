@@ -241,7 +241,7 @@ Currently implemented:
 - reply-only local Roles picker, ordered bounded `.txt` composition from `roles/incident-reporting.txt` by default, per-model saved role paths, and startup-only repeated `--prompt-file` overrides with combined prompt hashes
 - shared `va_runtime` conversation orchestration, typed events/snapshots, model constructors and inference gate reused by local TUI and thin HTTP host
 - reviewed local TUI voice/WAV/typed conversations with Pheme-owned bounded context, separate transcription/reasoning runs, streamed model replies, and finish-time model titles
-- conversation stats and per-run metric drill-down, retained resource samples, version 2 read-only local conversation archives with version 1 migration, and left-aligned alphabetic/Enter shortcut footers
+- conversation stats and per-run metric drill-down, retained resource samples, version 2 read-only local conversation archives with version 1 migration, left-aligned alphabetic/Enter shortcut footers, and remembered Chat voice-reply mode with visible on/off/speaking/failure status
 - deterministic core/runtime/client tests and fake-worker Go-to-Pheme voice integration
 
 * historical Python scaffold removed from the active worktree
