@@ -222,6 +222,24 @@ function DashboardPage() {
               </article>
             </section>
             <section className="mt-6 rounded-xl border bg-card p-5 shadow-sm">
+              <div>
+                <h2 className="font-semibold">Scenario 1 · Identifier recognition</h2>
+                <p className="mt-1 text-sm text-muted-foreground">Timing for alphanumeric and code recognition in noisy environments</p>
+              </div>
+              <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                {dashboard.scenarioMetrics.map((metric) => (
+                  <div key={metric.label} className="rounded-lg border bg-muted/20 p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <p className="text-sm font-medium">{metric.label}</p>
+                      <span className={`rounded-full px-2 py-1 text-xs font-medium ${metric.tone === "good" ? "bg-emerald-50 text-emerald-700" : "bg-muted text-muted-foreground"}`}>{metric.target}</span>
+                    </div>
+                    <p className="mt-3 text-2xl font-semibold">{metric.value}</p>
+                    <p className="mt-1 text-xs text-muted-foreground">{metric.detail}</p>
+                  </div>
+                ))}
+              </div>
+            </section>
+            <section className="mt-6 rounded-xl border bg-card p-5 shadow-sm">
               <div className="flex flex-wrap items-start justify-between gap-3">
                 <div>
                   <h2 className="font-semibold">Datasets</h2>
