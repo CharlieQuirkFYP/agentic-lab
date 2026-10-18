@@ -13,5 +13,5 @@ litert = ["dep:litert"]
 [dependencies]
 rustfft = "6.4"
 thiserror.workspace = true
-va_core = { package = "core", path = "../../core" }
+va_core = { package = "core", path = "../../../core" }
 litert = { version = "0.2.1", optional = true }

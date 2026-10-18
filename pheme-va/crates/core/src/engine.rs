@@ -12,7 +12,7 @@ use crate::transcript::{
     guard_transcript, normalize_transcript, RawTranscription, TranscriptGuardDecision,
     TranscriptionOptions,
 };
-use metrics::{MetricsContext, Stage};
+use metrics::{MetricSample, MetricScope, MetricUnit, MetricsContext, Stage};
 
 /// Swappable speech-recognition backend boundary.
 ///
@@ -319,6 +319,13 @@ impl Engine {
         let started = Instant::now();
         let request_timer = metrics.start_stage(Stage::EndToEndRequest);
         let normalized = {
+            metrics.record(MetricSample::text(
+                "processing_stage",
+                "normalization",
+                MetricUnit::Status,
+                MetricScope::Run,
+                "core.audio",
+            ));
             let timer = metrics.start_stage(Stage::AudioNormalization);
             let result = audio.normalize(self.config.max_audio_seconds);
             timer.finish();
@@ -357,6 +364,13 @@ impl Engine {
         // thresholds without changing the shared audio normalizer. This stage
         // timing covers the configured decision used by the engine.
         let gate = {
+            metrics.record(MetricSample::text(
+                "processing_stage",
+                "speech_gate",
+                MetricUnit::Status,
+                MetricScope::Run,
+                "core.audio",
+            ));
             let timer = metrics.start_stage(Stage::SpeechGate);
             let gate = self.config.gate.analyze(&audio.samples, audio.sample_rate);
             timer.finish();
@@ -415,6 +429,13 @@ impl Engine {
             decoder: self.config.decoder.clone().into(),
         };
         let mut raw = {
+            metrics.record(MetricSample::text(
+                "processing_stage",
+                "transcription",
+                MetricUnit::Status,
+                MetricScope::Run,
+                "core.audio",
+            ));
             let timer = metrics.start_stage(Stage::Transcription);
             let result = self.transcriber.transcribe(&audio, &options);
             timer.finish();
@@ -447,6 +468,13 @@ impl Engine {
             // A recovery failure preserves the original guarded result rather
             // than turning a successful transcription into a transport error.
             let retry_result = {
+                metrics.record(MetricSample::text(
+                    "processing_stage",
+                    "transcription",
+                    MetricUnit::Status,
+                    MetricScope::Run,
+                    "core.audio",
+                ));
                 let timer = metrics.start_stage(Stage::Transcription);
                 let result = self.transcriber.transcribe(&audio, &retry_options);
                 timer.finish();

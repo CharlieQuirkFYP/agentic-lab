@@ -116,7 +116,7 @@ impl Transcriber for WhisperTranscriber {
             .map_err(|error| EngineError::Backend {
                 message: format!("could not create Whisper state: {error}"),
             })?;
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 5 });
+        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 2 });
         params.set_n_threads(
             options
                 .decoder

@@ -1,29 +1,36 @@
 mod app;
+mod chat_client;
 mod config;
+mod connected;
 mod download;
+mod editor;
 mod events;
 mod folder;
 mod history;
 mod logs;
+mod model_actions;
 mod model_catalog;
 mod native_logs;
+mod playback;
 mod rebuild;
 mod telemetry;
 mod ui;
+mod voice;
 mod worker;
+mod workspace_ui;
 
 use std::io;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::AtomicU64;
 use std::sync::mpsc;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use metrics::MetricsHub;
 use ratatui::backend::CrosstermBackend;
 use ratatui::crossterm::cursor::Show;
-use ratatui::crossterm::event;
+use ratatui::crossterm::event::{self, DisableBracketedPaste, EnableBracketedPaste};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
 use ratatui::Terminal;
@@ -36,6 +43,7 @@ use self::telemetry::{MetricForwarder, METRIC_QUEUE_CAPACITY};
 use self::worker::WorkerConfig;
 
 pub struct TuiOptions {
+    pub server_url: Option<String>,
     pub model_id: Option<String>,
     pub model_manifest: Option<PathBuf>,
     pub audio_directory: Option<PathBuf>,
@@ -66,11 +74,6 @@ pub fn run(options: TuiOptions) -> Result<()> {
 
     let (worker_sender, worker_command_receiver) = mpsc::channel::<WorkerCommand>();
     let (worker_event_sender, worker_receiver) = mpsc::channel();
-    let resource_context = Arc::new(Mutex::new(None));
-    let resource_stop = Arc::new(AtomicBool::new(false));
-    let resource_join = config.resource_sampling_enabled.then(|| {
-        worker::spawn_resource_sampler(Arc::clone(&resource_context), Arc::clone(&resource_stop))
-    });
     let worker_join = worker::spawn(
         worker_command_receiver,
         worker_event_sender,
@@ -78,7 +81,7 @@ pub fn run(options: TuiOptions) -> Result<()> {
         WorkerConfig {
             metrics_enabled: config.metrics_enabled,
             resource_sampling_enabled: config.resource_sampling_enabled,
-            resource_context,
+            settings: config.clone(),
         },
     );
     let terminal_shutdown_sender = worker_sender.clone();
@@ -101,10 +104,6 @@ pub fn run(options: TuiOptions) -> Result<()> {
         Err(error) => {
             let _ = terminal_shutdown_sender.send(WorkerCommand::Shutdown);
             let _ = worker_join.join();
-            resource_stop.store(true, Ordering::Relaxed);
-            if let Some(resource_join) = resource_join {
-                let _ = resource_join.join();
-            }
             return Err(error);
         }
     };
@@ -112,13 +111,10 @@ pub fn run(options: TuiOptions) -> Result<()> {
     app.start_initial_load();
     let loop_result = run_event_loop(&mut terminal.terminal, &mut app, &native_logs);
     app.build.take();
+    app.shutdown_workspace();
     let _ = terminal.terminal.show_cursor();
     app.shutdown_worker();
     let _ = worker_join.join();
-    resource_stop.store(true, Ordering::Relaxed);
-    if let Some(resource_join) = resource_join {
-        let _ = resource_join.join();
-    }
     let history_result = app.flush_history();
     drop(terminal);
     let capture_result = native_logs
@@ -179,7 +175,7 @@ impl TerminalSession {
         terminal::enable_raw_mode().context("could not enable terminal input")?;
         let cleanup = TerminalCleanup;
         let mut stdout = io::stdout();
-        if let Err(error) = execute!(stdout, EnterAlternateScreen) {
+        if let Err(error) = execute!(stdout, EnterAlternateScreen, EnableBracketedPaste) {
             drop(cleanup);
             return Err(error).context("could not enter the alternate screen");
         }
@@ -200,7 +196,12 @@ struct TerminalCleanup;
 
 impl Drop for TerminalCleanup {
     fn drop(&mut self) {
-        let _ = execute!(io::stdout(), Show, LeaveAlternateScreen);
+        let _ = execute!(
+            io::stdout(),
+            Show,
+            DisableBracketedPaste,
+            LeaveAlternateScreen
+        );
         let _ = terminal::disable_raw_mode();
     }
 }

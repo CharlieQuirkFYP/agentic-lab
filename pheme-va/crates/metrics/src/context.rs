@@ -5,7 +5,6 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use crate::event::{MetricSample, Stage};
 use crate::hub::MetricsHub;
 use crate::resources::{Measurement, ResourceSampler, ResourceSnapshot};
-
 use crate::{MetricEvent, MetricScope, MetricUnit, METRICS_SCHEMA_VERSION};
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -358,12 +357,12 @@ impl Drop for MetricsTimer {
     }
 }
 
-#[allow(deprecated)]
 fn stage_source(stage: Stage) -> &'static str {
     match stage {
         Stage::AudioNormalization => "core.audio",
         Stage::SpeechGate => "core.audio",
-        Stage::Transcription | Stage::WhisperTranscription => "core.transcription",
+        Stage::Transcription => "core.transcription",
+        Stage::WhisperTranscription => "core.transcription",
         Stage::IncidentAnalysis => "core.incident",
         Stage::EndToEndRequest => "core.workflow",
     }

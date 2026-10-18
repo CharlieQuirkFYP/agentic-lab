@@ -20,7 +20,7 @@ The relevant code is under `pheme-va/`:
 - `crates/cli/src/model.rs` loads `models/manifest.toml`, resolves a model ID, and constructs an `Engine` using the model's `family`.
 - `crates/core/` owns audio normalization, speech gating, transcription, transcript guards, and the shared `Transcriber` boundary.
 - `crates/metrics/` provides typed `MetricEvent`, `MetricSample`, `MetricsContext`, `MetricsHub`, `ResourceCollector`, and the desktop `SysinfoResourceSampler`.
-- `crates/models/whispercpp/` and `crates/models/zipformer/` are separate optional model adapters.
+- `crates/models/transcription/whispercpp/` and `crates/models/transcription/zipformer/` are separate optional model adapters.
 - The current TUI starts a Ratatui event loop, owns a worker for model loading and transcription, supports multiple WAV/microphone runs, exposes telemetry and logs, and stays open until the user exits. Completed and failed run reports are also persisted in bounded local JSON history.
 
 The current model manifest contains:
@@ -124,14 +124,17 @@ The UI event loop must start before model loading so the terminal remains respon
 
 ## First launch and onboarding
 
-The `tui` command should open onboarding automatically when:
+At startup, the `tui` command shows the Welcome screen only for first-run or explicit reconfiguration:
 
-- no TUI configuration exists;
-- the saved manifest cannot be loaded;
-- the saved model ID is not present in the manifest;
-- required artifacts are missing;
-- the adapter feature is not compiled into the binary; or
-- the saved model failed its last load attempt and no usable active model exists.
+- no saved TUI configuration exists and no explicit model override was supplied; or
+- `--reconfigure` was supplied.
+
+A saved configuration that names an unavailable model is handled by the picker rather than treated as onboarding. In particular:
+
+- a manifest that cannot be loaded uses the Error screen;
+- an unknown saved model, missing artifacts, or an unavailable adapter goes to the picker;
+- a missing adapter may be prepared automatically from the picker; and
+- model-load failures are recoverable and are not persisted as a startup condition.
 
 On a later launch with a valid saved configuration, show a short entry menu instead of forcing setup again:
 
@@ -505,7 +508,7 @@ The overview selects the current run by default and provides a clear empty state
 
 ### Granular metrics table
 
-`MetricEvent` already contains the fields needed by the table:
+`MetricEvent` retains the fields used by the telemetry store and detail views:
 
 - schema version;
 - optional experiment ID;
@@ -516,35 +519,12 @@ The overview selects the current run by default and provides a clear empty state
 - optional value;
 - unit;
 - scope;
-- source;
+- source; and
 - optional unavailable reason.
 
-The TUI should retain events in memory grouped by run or host operation and render every event for the selected run:
+The primary `Metrics` tab is intentionally not a raw event dump. It groups events by metric name, category, scope, source, and unit and displays `Now`, `Min`, `Max`, `Avg`, and `N` for each series. Categories include Timing, Resources, Power / Energy, Counts, and Status. Unavailable values remain explicit and are not converted to zero.
 
-```text
-┌─ PHEME VA / METRICS / EVENTS ───────────────────────────────────────────────┐
-│ Run: run-004     Model: zipformer-small     Events: 14                      │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Seq  Time         Name                              Value       Unit         │
-│ 01   12:04:15.120 model_id                         zipformer... status       │
-│ 02   12:04:15.120 model_family                     zipformer    status       │
-│ 03   12:04:15.121 audio_normalization_duration_ms  3.2         ms           │
-│ 04   12:04:15.124 speech_gate_duration_ms          0.8         ms           │
-│ 05   12:04:15.125 transcription_duration_ms        398.4       ms           │
-│ 06   12:04:15.125 model_feature_extraction...      17.5        ms           │
-│ 07   12:04:15.125 model_inference_duration_ms      351.8       ms           │
-│ 08   12:04:15.125 model_decoding_duration_ms       29.1        ms           │
-│ 09   12:04:15.125 end_to_end_request_duration_ms   412.8       ms           │
-│ 10   12:04:15.125 process_cpu_percent              74.1        %            │
-│ 11   12:04:15.125 ram_usage_bytes                  195 MB      bytes        │
-│ 12   12:04:15.375 gpu_usage_percent                unavailable  —            │
-├──────────────────────────────────────────────────────────────────────────────┤
-│ Scope/source/reason: select an event for full details                       │
-│ [↑/↓] select  [Enter] inspect  [j/k] scroll  [1-4] tab  [Esc] back           │
-└──────────────────────────────────────────────────────────────────────────────┘
-```
-
-The table must use `scope` to distinguish process and system `ram_usage_bytes` events, even though the current metric name is shared. A selected event should reveal the full name, run ID, source, raw value, unit, timestamp, and unavailable reason.
+Selecting a metric and pressing `Enter` opens live metric detail. It shows the series identity and scope/source/unit, current value, aggregate statistics, and numeric history when enough samples exist. The `Runs` report provides a per-run aggregate snapshot and historical detail. A full sequence/timestamp event inspector is not currently implemented.
 
 The event names to support include:
 
@@ -816,12 +796,12 @@ Responsibilities:
 - `main.rs`: parse CLI arguments, retain the existing one-shot command, and enter the TUI with resolved startup options.
 - `model.rs`: remain the model-construction boundary; expose shared manifest/catalog helpers rather than duplicating resolution in the TUI.
 - `recorder.rs`: own `cpal` setup, sample collection, callback errors, elapsed timing, maximum duration, and `AudioBuffer` creation.
-- `tui/app.rs`: own screen state, selected source, active model metadata, current result, scroll positions, and reducer transitions.
+- `tui/app.rs`: own screen state, selected source, active model metadata, current result, scroll positions, reducer transitions, and onboarding decisions.
 - `tui/events.rs`: define keyboard events, `WorkerCommand`, and `WorkerEvent`.
 - `tui/ui.rs`: contain ratatui layout and widgets only; do not perform I/O or inference.
 - `tui/worker.rs`: own `Option<Engine>`, active model metadata, model loading/switching, WAV parsing, transcription, and shutdown.
 - `tui/model_catalog.rs`: load manifest entries and calculate displayable compiled/artifact/load statuses.
-- `tui/app.rs`: welcome, selection, verification, and first-run transitions are currently reduced into the app state/reducer; keep that logic here unless a separate module becomes necessary.
+
 - `tui/config.rs`: read, validate, and atomically write local preferences.
 - `tui/folder.rs`: navigate directories, sort/filter WAV files, and track the next-file index.
 - `tui/telemetry.rs`: subscribe to metric events, retain bounded per-run history, aggregate chart data, and expose current/historical series.
@@ -883,7 +863,7 @@ WorkerStopped
 
 ### Fresh run metrics
 
-`Engine::transcribe_with_metrics(...)` should be used for every WAV or microphone request with a newly-created `MetricsContext`. Calling `Engine::transcribe(...)` would reuse the engine's configured metrics context and would make run separation less clear.
+`Engine::transcribe_with_metrics(...)` is used for every WAV or microphone request with a newly-created `MetricsContext`. Calling `Engine::transcribe(...)` would reuse the engine's configured metrics context and would make run separation less clear.
 
 The worker should:
 
@@ -898,7 +878,7 @@ The metric subscriber must do only a non-blocking `try_send` into a bounded queu
 
 ## Configuration and command-line surface
 
-Persist only local non-secret preferences:
+The TUI persists only local non-secret preferences:
 
 ```toml
 selected_stt_model = "whisper-large-v3-turbo"
@@ -945,21 +925,18 @@ If the manifest path or model ID supplied by the CLI is invalid, show the error 
 
 ## Dependencies and terminal behaviour
 
-Add:
+The implemented TUI uses:
 
-- `ratatui`, using the crossterm backend;
-- a direct CLI dependency on the existing `metrics` crate, with the `desktop` feature when desktop resource graphs are enabled.
-
-Keep:
-
+- `ratatui` with the crossterm backend;
+- the existing `metrics` crate with its `desktop` feature for host resource samples;
 - `crossterm` for keyboard and terminal control;
 - `cpal` for microphone capture;
-- existing `serde` and `toml` for manifest/config data;
-- standard-library threads and bounded channels for the first worker implementation.
+- `serde`, `serde_json`, and `toml` for manifest, configuration, and run-history data; and
+- standard-library threads and bounded channels for the worker, telemetry, history, and sampling paths.
 
 Tokio, a new server, Redis, a remote model service, and a logging framework are not necessary for this TUI. `tracing` can be introduced later if model-crate logs need to be collected.
 
-The workspace declares Rust `1.78`. Before pinning `ratatui`, verify its MSRV and its crossterm compatibility against the existing `crossterm = 0.29`. Choose a ratatui release compatible with Rust `1.78`, or make an explicit workspace toolchain decision; do not silently raise the project MSRV just to add the UI.
+The workspace declares Rust `1.78` and pins Ratatui `0.29.0`, which is used with the existing `crossterm = 0.29`. Revisit the MSRV explicitly if either dependency is upgraded; do not silently raise it just to extend the UI.
 
 Entering the TUI should:
 
@@ -972,9 +949,7 @@ Terminal resize events should trigger a redraw. Long transcript, diagnostics, me
 
 ## Testing and validation
 
-Tests should be kept beside the package/module they cover. The TUI should have a reducer-oriented design so most behaviour is testable without a real terminal, microphone, or model weight.
-
-Add tests for:
+Tests are kept beside the package/module they cover. The reducer-oriented TUI design makes most behavior testable without a real terminal, microphone, or model weight. Maintain and extend the existing tests for:
 
 - first-run versus valid-config startup decisions;
 - configuration serialization, precedence, and atomic-write failure handling;
@@ -994,7 +969,7 @@ Add tests for:
 - log ring-buffer eviction, filtering, and clearing;
 - telemetry updates while the active screen is not the telemetry screen.
 
-Run the project checks from `pheme-va/` after implementation:
+Run the project checks from `pheme-va/` after TUI or Rust changes:
 
 ```bash
 cargo fmt --all -- --check
@@ -1004,34 +979,25 @@ cargo test --workspace
 
 Manual checks should also cover terminal restoration after `q`, `Esc`, a microphone error, a failed model load, and an interrupted process. Model-backed tests should use local fakes or fixtures by default and should not require committed weights.
 
-## Completion criteria
+## Baseline status and remaining work
 
-The implementation is complete when:
+The following baseline criteria are implemented:
 
-1. `pheme-va tui` opens onboarding if there is no usable saved model.
-2. The user selects a model by manifest ID, not by an arbitrary model path.
-3. The picker distinguishes manifest presence, compiled adapter, required artifacts, and actual load readiness.
-4. `whisper`, `zipformer`, or both families can be selected when their corresponding CLI features are compiled.
-5. A failed model switch leaves the old active engine and saved selection intact.
-6. The TUI defaults to the configurable `pheme-va/samples/` directory.
-7. A single WAV file can be selected, processed, retried, and advanced with `[n]`.
-8. A microphone recording can be started, stopped, discarded, and processed.
-9. Both input paths use the same final transcript component.
-10. The final cleaned transcript is prominent and raw/segment diagnostics are scrollable.
-11. Recording, loading, processing, result, no-speech, and error states are explicit.
-12. Model loading and transcription do not block terminal redraw.
-13. `[t]` opens Overview, Metrics, Graphs, and Logs without losing the current result.
-14. The Metrics tab exposes individual metric events with sequence, time, value, unit, scope, source, run ID, and unavailable reason.
-15. The Graphs tab shows per-run stages and bounded multi-run/resource history where numeric data exists.
-16. Logs are structured, bounded, filterable, and separate from metrics.
-17. Resource values unavailable from the desktop sampler are shown as unavailable, never zero.
-18. Live partial words are not claimed because the current manifest and transcriber contract are non-streaming.
-19. The existing one-shot `transcribe` command continues to work.
-20. The terminal is restored on every exit path.
-21. No model weights, recordings, transcripts, or generated benchmark artifacts are added to Git.
+1. A first run without an explicit model override or an explicit reconfigure opens the Welcome screen; unusable saved selections go to picker or error handling.
+2. Models are selected by manifest ID, with compiled-adapter, artifact, cache, and load-readiness states.
+3. Whisper and Zipformer can be selected when available; missing adapters can be prepared automatically and the TUI restarts into the validated cache.
+4. A failed model load preserves the active model and saved selection.
+5. WAV and microphone input use the same worker and final-transcript path, with retry, next-file, no-speech, and recoverable-error states.
+6. `[t]` opens `Overview`, `Metrics`, `Runs`, and `Logs`; `Runs` provides persistent bounded developer history and report detail.
+7. Metrics are grouped by metric identity, expose numeric history where available, and preserve explicit unavailable reasons rather than plotting zeroes.
+8. Logs are structured, bounded, filterable, and separate from metrics; Unix native diagnostics are captured during the TUI lifecycle.
+9. The one-shot `transcribe` command remains available, live partial words are not claimed, and model weights/recordings/generated artifacts are not added to Git.
+10. Terminal cleanup is performed on the normal TUI shutdown path and worker/build failure paths.
+
+Remaining enhancements include richer multi-panel historical reports, additional rendering/reducer coverage, and broader native diagnostic capture on non-Unix platforms. True streaming transcription, production incident workflow, and verified whole-device power measurement remain outside this TUI implementation.
 
 ## Work estimate and boundaries
 
-The TUI shell and extraction of the current recorder are moderate work. The worker/model-switch path and telemetry retention/rendering are the most important engineering work because they introduce concurrency, stale-event handling, and bounded data flow. The folder browser and shared result screen are comparatively contained once the state machine exists. True streaming is deliberately outside this implementation and should only be planned after a streaming backend contract and measurable device requirements exist.
+The worker, model-switch, telemetry, persistence, and rendering paths are now implemented. Future TUI work should focus on richer historical visualizations, test coverage, and platform-specific diagnostics rather than moving workflow state into the UI. True streaming is deliberately outside this implementation and should only be planned after a streaming backend contract and measurable device requirements exist.
 
-The implementation should not change the Go API, server model-loading contract, FFI direct-path contract, or Pheme core workflow merely to make the developer TUI work. The TUI should reuse the existing manifest model factory and core transcription/metrics contracts, adding host-side orchestration where those contracts currently stop.
+The TUI should not change the Go API, server model-loading contract, FFI direct-path contract, or Pheme core workflow merely to add developer-console features. It should continue reusing the manifest model factory and core transcription/metrics contracts, with host-side orchestration only where those contracts stop.

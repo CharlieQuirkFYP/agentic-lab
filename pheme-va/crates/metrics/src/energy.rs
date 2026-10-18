@@ -45,9 +45,9 @@ impl EnergyAccumulator {
             Measurement::Available(watts) => watts,
             Measurement::Unavailable { reason } => {
                 self.previous = None;
-                return Measurement::unavailable(format!(
-                    "energy integration requires whole-device power: {reason}"
-                ));
+                return Measurement::Unavailable {
+                    reason: format!("{reason}; energy integration requires whole-device power"),
+                };
             }
         };
         if !watts.is_finite() || *watts < 0.0 {

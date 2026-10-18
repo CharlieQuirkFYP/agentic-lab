@@ -181,15 +181,12 @@ pub enum Stage {
     AudioNormalization,
     SpeechGate,
     Transcription,
-    /// Legacy Whisper-specific stage retained for callers using the old metric.
-    #[deprecated(note = "use Stage::Transcription for model-agnostic timings")]
     WhisperTranscription,
     IncidentAnalysis,
     EndToEndRequest,
 }
 
 impl Stage {
-    #[allow(deprecated)]
     pub(crate) fn sample_details(self) -> (&'static str, MetricScope, bool) {
         match self {
             Self::AudioNormalization => {

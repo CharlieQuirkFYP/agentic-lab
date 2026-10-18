@@ -301,17 +301,17 @@ Cancellation must be idempotent and must never create a report. A cancelled sess
 
 The following routes are additive to the current server API:
 
-| Method | Route | Purpose |
-| --- | --- | --- |
-| `POST` | `/v1/sessions` | Create a session |
-| `GET` | `/v1/sessions/{id}` | Read current session state and draft |
-| `POST` | `/v1/sessions/{id}/turns` | Submit text or raw WAV input |
-| `POST` | `/v1/sessions/{id}/confirm` | Confirm the current draft revision |
-| `POST` | `/v1/sessions/{id}/cancel` | Cancel a session |
-| `GET` | `/v1/sessions/{id}/turns` | Retrieve persisted turn history, subject to retention policy |
-| `GET` | `/v1/incidents` | Query finalized reports with bounded filters |
-| `GET` | `/v1/incidents/{id}` | Retrieve one finalized report |
-| `GET` | `/v1/incidents/{id}/events` | Retrieve persisted workflow/audit events if enabled |
+| Method | Route                       | Purpose                                                      |
+| ------ | --------------------------- | ------------------------------------------------------------ |
+| `POST` | `/v1/sessions`              | Create a session                                             |
+| `GET`  | `/v1/sessions/{id}`         | Read current session state and draft                         |
+| `POST` | `/v1/sessions/{id}/turns`   | Submit text or raw WAV input                                 |
+| `POST` | `/v1/sessions/{id}/confirm` | Confirm the current draft revision                           |
+| `POST` | `/v1/sessions/{id}/cancel`  | Cancel a session                                             |
+| `GET`  | `/v1/sessions/{id}/turns`   | Retrieve persisted turn history, subject to retention policy |
+| `GET`  | `/v1/incidents`             | Query finalized reports with bounded filters                 |
+| `GET`  | `/v1/incidents/{id}`        | Retrieve one finalized report                                |
+| `GET`  | `/v1/incidents/{id}/events` | Retrieve persisted workflow/audit events if enabled          |
 
 The existing routes remain:
 
@@ -640,7 +640,7 @@ Exit criteria:
 
 ### Phase 7: Benchmark and harden
 
-- Add stage metrics to the workflow.
+- Extend the existing stage and resource metrics into the stateful workflow.
 - Measure end-to-end latency, memory, CPU, and model behavior.
 - Test cancellation, concurrent sessions, database locks, and restart behavior.
 - Review retention and privacy of transcript/report data.

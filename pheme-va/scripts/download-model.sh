@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
+SCRIPT_DIR=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
 MODEL_DIR="${PHEME_VA_MODEL_DIR:-$SCRIPT_DIR/../models}"
 
 WHISPER_REPO="ggerganov/whisper.cpp"
@@ -17,6 +17,13 @@ TOKENS_SHA256="49e3c2646595fd907228b3c6787069658f67b17377c60aeb8619c4551b2316fb"
 ZIPFORMER_SMALL_SHA256="ff6d70c7e8cfdfcf994be625456ca6543e0dbcc76fd4fd428e2138642d0852ba"
 ZIPFORMER_MEDIUM_SHA256="9515d94c04306798fecfe695eb8f79cc8ac98ed3d8eab81c28ac464b7dbddf48"
 ZIPFORMER_LARGE_SHA256="183c928cd1b109ad0b94d9540dbf4c2660393428d2104494b6047af4aa4eb1da"
+
+QWEN_REPO="Qwen/Qwen2.5-1.5B-Instruct-GGUF"
+QWEN_REVISION="91cad51170dc346986eccefdc2dd33a9da36ead9"
+QWEN_FILE="qwen2.5-1.5b-instruct-q4_k_m.gguf"
+QWEN_URL="https://huggingface.co/$QWEN_REPO/resolve/$QWEN_REVISION/$QWEN_FILE"
+QWEN_SHA256="6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
+QWEN_SIZE_BYTES=1117320736
 
 SEALLMS_REPO="SeaLLMs/SeaLLMs-Audio-7B"
 SEALLMS_REVISION="c5c3152b373350653ec6dd981d041f8285ab26c9"
@@ -35,12 +42,15 @@ Usage:
   ./scripts/download-model.sh zipformer-small        Download the LiteRT Zipformer small model
   ./scripts/download-model.sh zipformer-medium       Download the LiteRT Zipformer medium model
   ./scripts/download-model.sh zipformer-large        Download the LiteRT Zipformer large model
+  ./scripts/download-model.sh qwen2.5-1.5b-instruct-q4-k-m  Download Qwen reply GGUF
   ./scripts/download-model.sh seallms-audio-7b --yes  Download the experimental SeaLLMs files
   ./scripts/download-model.sh --list                 List available model artifacts
   ./scripts/download-model.sh --help                 Show this help
 
 Downloads are opt-in per model. They never enable Cargo features or change the
-runtime selected by the CLI/server.
+runtime selected by the CLI/server. PHEME_VA_MODEL_DIR overrides the artifact
+root. STT files go under transcript/ and reply GGUF files under reply/.
+Existing legacy weights are never moved, deleted, or overwritten automatically.
 
 SeaLLMs-Audio is a download-only experiment at present. It is approximately
 16.6 GB, has an `other/seallms` licence, and has no native Pheme VA adapter.
@@ -55,6 +65,7 @@ Available model artifacts:
   zipformer-small    LiteRT Zipformer small FP16 CTC model; optional Rust adapter
   zipformer-medium   LiteRT Zipformer medium FP16 CTC model; optional Rust adapter
   zipformer-large    LiteRT Zipformer large FP16 CTC model; optional Rust adapter
+  qwen2.5-1.5b-instruct-q4-k-m  Qwen instruction GGUF Q4_K_M; native reply adapter
   seallms-audio-7b   SeaLLMs-Audio 7B safetensors; download-only, requires --yes
 EOF
 }
@@ -120,7 +131,14 @@ download_artifact() {
     printf 'Progress is shown below; the partial file is kept until verification succeeds.\n'
     curl --fail --show-error --location --retry 3 --retry-all-errors \
         --continue-at - --progress-bar \
-        --output "$part_path" "$url"
+        --output "$part_path" "$url" &
+    download_pid=$!
+    local status=0
+    wait "$download_pid" || status=$?
+    download_pid=""
+    if [[ "$status" != 0 ]]; then
+        return "$status"
+    fi
     printf '\n'
 
     verify "$part_path" "$expected" "$label"
@@ -133,7 +151,7 @@ download_whisper() {
         "Whisper large-v3-turbo model" \
         "$WHISPER_URL" \
         "$WHISPER_SHA256" \
-        "$MODEL_DIR/whisper/ggml-large-v3-turbo.bin"
+        "$MODEL_DIR/transcript/whisper/ggml-large-v3-turbo.bin"
 }
 
 download_zipformer() {
@@ -164,21 +182,29 @@ download_zipformer() {
         "LiteRT Zipformer ${variant} BPE model" \
         "$LITERT_BASE_URL/bpe.model" \
         "$BPE_SHA256" \
-        "$MODEL_DIR/zipformer/bpe.model"
+        "$MODEL_DIR/transcript/zipformer/bpe.model"
     download_artifact \
         "LiteRT Zipformer ${variant} token list" \
         "$LITERT_BASE_URL/tokens.txt" \
         "$TOKENS_SHA256" \
-        "$MODEL_DIR/zipformer/tokens.txt"
+        "$MODEL_DIR/transcript/zipformer/tokens.txt"
     download_artifact \
         "LiteRT Zipformer ${variant} model" \
         "$LITERT_BASE_URL/$source_file" \
         "$model_sha256" \
-        "$MODEL_DIR/zipformer/$variant/model.tflite"
+        "$MODEL_DIR/transcript/zipformer/$variant/model.tflite"
 
-    printf 'LiteRT Zipformer %s artifacts are ready under %s/zipformer/%s\n' \
+    printf 'LiteRT Zipformer %s artifacts are ready under %s/transcript/zipformer/%s\n' \
         "$variant" "$MODEL_DIR" "$variant"
     printf 'Note: downloading files does not select a model or activate a Cargo feature.\n'
+}
+
+download_qwen() {
+    printf 'Qwen2.5-1.5B-Instruct Q4_K_M: %s bytes; Apache-2.0\n' "$QWEN_SIZE_BYTES"
+    printf 'Source: %s at %s\nDestination: %s/reply/%s\n' \
+        "$QWEN_REPO" "$QWEN_REVISION" "$MODEL_DIR" "$QWEN_FILE"
+    download_artifact "Qwen2.5-1.5B-Instruct Q4_K_M" \
+        "$QWEN_URL" "$QWEN_SHA256" "$MODEL_DIR/reply/$QWEN_FILE"
 }
 
 download_seallms() {
@@ -230,7 +256,7 @@ for argument in "$@"; do
         --yes)
             allow_seallms=true
             ;;
-        whisper|zipformer-small|zipformer-medium|zipformer-large|seallms-audio-7b)
+        whisper|zipformer-small|zipformer-medium|zipformer-large|qwen2.5-1.5b-instruct-q4-k-m|seallms-audio-7b)
             if [[ -n "$selected_model" ]]; then
                 printf 'download-model: choose one model at a time\n' >&2
                 usage >&2
@@ -250,6 +276,41 @@ if [[ -z "$selected_model" ]]; then
     selected_model=whisper
 fi
 
+if [[ "$selected_model" == seallms-audio-7b && "$allow_seallms" != true ]]; then
+    printf 'download-model: SeaLLMs requires the explicit --yes flag\n' >&2
+    usage >&2
+    exit 2
+fi
+
+# One writer per canonical model root, including shared Zipformer artifacts.
+# mkdir is atomic and portable. Do not steal a stale lock after SIGKILL: the
+# operator must first verify no download process still owns the partial files.
+mkdir -p "$MODEL_DIR"
+MODEL_DIR=$(CDPATH='' cd -- "$MODEL_DIR" && pwd -P)
+lock_dir="$MODEL_DIR/.download.lock"
+if ! mkdir "$lock_dir" 2>/dev/null; then
+    printf 'download-model: another writer (or stale lock) owns %s\n' "$lock_dir" >&2
+    printf 'If stale, verify no downloader/curl is running before removing it.\n' >&2
+    exit 1
+fi
+download_pid=""
+cleanup() {
+    local status=$?
+    trap - EXIT INT TERM HUP
+    if [[ -n "$download_pid" ]]; then
+        kill "$download_pid" 2>/dev/null || true
+        wait "$download_pid" 2>/dev/null || true
+    fi
+    rm -f "$lock_dir/pid"
+    rmdir "$lock_dir" 2>/dev/null || true
+    exit "$status"
+}
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 129' HUP
+printf '%s\n' "$$" > "$lock_dir/pid"
+
 case "$selected_model" in
     whisper)
         download_whisper
@@ -263,12 +324,10 @@ case "$selected_model" in
     zipformer-large)
         download_zipformer large
         ;;
+    qwen2.5-1.5b-instruct-q4-k-m)
+        download_qwen
+        ;;
     seallms-audio-7b)
-        if [[ "$allow_seallms" != true ]]; then
-            printf 'download-model: SeaLLMs requires the explicit --yes flag\n' >&2
-            usage >&2
-            exit 2
-        fi
         download_seallms
         ;;
 esac

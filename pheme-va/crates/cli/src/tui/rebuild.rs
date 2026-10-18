@@ -430,6 +430,8 @@ fn build_command(workspace: &Path, target: &Path, features: &[&str], host: &str)
             "--locked",
             "-p",
             "cli",
+            "-p",
+            "reply-native",
             "--color",
             "never",
         ])
@@ -618,7 +620,7 @@ mod tests {
     }
 
     #[test]
-    fn cache_hit_flows_through_poll_without_starting_cargo() {
+    fn compatible_cache_hit_flows_through_poll_without_starting_cargo() {
         use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
         let workspace = std::env::temp_dir().join(format!(
             "pheme-rebuild-hit-{}-{}",
@@ -634,7 +636,11 @@ mod tests {
         let target = workspace.join("target/tui-adapters");
         let output = "host: x86_64-unknown-linux-gnu\n";
         let selected = features("whisper").unwrap();
-        let cache = cache::Cache::prepare(&workspace, &target, &selected, output).unwrap();
+        let mut cached_features = selected.clone();
+        if !cached_features.contains(&"zipformer") {
+            cached_features.push("zipformer");
+        }
+        let cache = cache::Cache::prepare(&workspace, &target, &cached_features, output).unwrap();
         let release = cache
             .target
             .join(native_host(output).unwrap())
@@ -642,10 +648,17 @@ mod tests {
         std::fs::create_dir_all(&release).unwrap();
         let executable = release.join(format!("cli{}", std::env::consts::EXE_SUFFIX));
         std::fs::copy(std::env::current_exe().unwrap(), &executable).unwrap();
-        if selected.contains(&"zipformer") {
-            // Feature-enabled launchers preserve Zipformer, so publication must
-            // validate its runtime too. Keep this fixture independent of actual
-            // downloads and the test executable's deps/ directory layout.
+        std::fs::copy(
+            &executable,
+            release.join(format!(
+                "pheme-reply-worker{}",
+                std::env::consts::EXE_SUFFIX
+            )),
+        )
+        .unwrap();
+        if cached_features.contains(&"zipformer") {
+            // Publication validates the combined build's native runtime even
+            // when the requesting launcher only needs Whisper.
             let runtime = cache.target.join("fixture-runtime");
             let build_output = release.join("build/cli-fixture");
             std::fs::create_dir_all(&runtime).unwrap();
@@ -771,6 +784,8 @@ mod tests {
                 "--locked",
                 "-p",
                 "cli",
+                "-p",
+                "reply-native",
                 "--color",
                 "never",
                 "--manifest-path",
