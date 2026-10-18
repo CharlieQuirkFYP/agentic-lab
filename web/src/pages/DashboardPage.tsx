@@ -1,19 +1,22 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import {
   Activity,
+  Download,
+  FileText,
   BarChart3,
-  Database,
   FlaskConical,
   Gauge,
   Plus,
-  Settings2,
+  Upload,
 } from "lucide-react";
 
 import { ExperimentTable } from "@/components/dashboard/ExperimentTable";
 import { LatencyChart } from "@/components/dashboard/LatencyChart";
 import { MetricCard } from "@/components/dashboard/MetricCard";
 import { QualityBreakdown } from "@/components/dashboard/QualityBreakdown";
+import { saveDownload } from "@/data/downloadStore";
 import { Button } from "@/components/ui/button";
+import { Link } from "react-router-dom";
 import {
   dashboardDataSource,
   initialDashboardSnapshot,
@@ -23,11 +26,24 @@ import {
 } from "@/data/dashboardMockData";
 
 const navigation = [
-  { label: "Dashboard", icon: BarChart3, current: true },
-  { label: "Experiments", icon: FlaskConical, current: false },
-  { label: "Datasets", icon: Database, current: false },
-  { label: "Settings", icon: Settings2, current: false },
+  { label: "Dashboard", icon: BarChart3, path: "/" },
+  { label: "Benchmark Testing", icon: FlaskConical, path: "/benchmark-testing" },
+  { label: "Download Manager", icon: Download, path: "/downloads" },
 ];
+
+
+function dashboardToCsv(snapshot: DashboardSnapshot): string {
+  const header = ["experiment_id", "model", "quantization", "dataset", "device", "status", "latency", "quality", "timestamp"];
+  const rows = snapshot.experiments.map((experiment) => [
+    experiment.id, experiment.model, experiment.quantization, experiment.dataset,
+    experiment.device, experiment.status, experiment.latency, experiment.quality, experiment.timestamp,
+  ]);
+  return [header, ...rows].map((row) => row.map(csvCell).join(",")).join("\n");
+}
+
+function csvCell(value: string): string {
+  return '"' + value.replaceAll('"', '""') + '"';
+}
 
 function DashboardPage() {
   const [profiles] = useState<ReferenceProfile[]>(staticDashboardProfiles);
@@ -38,6 +54,10 @@ function DashboardPage() {
   const [showDatasetForm, setShowDatasetForm] = useState(false);
   const [datasetName, setDatasetName] = useState("");
   const [datasetSamples, setDatasetSamples] = useState("");
+  const [uploadNotice, setUploadNotice] = useState("");
+  const [reportPreview, setReportPreview] = useState("");
+  const [downloadFormat, setDownloadFormat] = useState<"json" | "csv">("json");
+  const resultInput = useRef<HTMLInputElement>(null);
 
   const loadDashboard = async (nextProfileId: string) =>
     setDashboard(await dashboardDataSource.getDashboard(nextProfileId));
@@ -60,6 +80,43 @@ function DashboardPage() {
     setShowDatasetForm(false);
   };
 
+  const handleResultUpload = async (event: React.ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as { experiments?: unknown[] };
+      const count = Array.isArray(parsed.experiments) ? parsed.experiments.length : 0;
+      setUploadNotice("Loaded " + file.name + (count ? " with " + count + " experiment records." : ". The JSON is ready for backend import."));
+    } catch {
+      setUploadNotice("Upload failed: choose a valid benchmark JSON file.");
+    }
+  };
+
+  const generateReport = () => {
+    setReportPreview(
+      "Profile: " + dashboard.profile.name + "\n" +
+      "Experiments completed: " + dashboard.overview[0].value + "\n" +
+      "Median response: " + dashboard.overview[1].value + "\n" +
+      "Task success: " + dashboard.overview[2].value + "\n" +
+      "Dataset: " + dashboard.datasets.find((dataset) => dataset.id === dashboard.selectedDatasetId)?.name,
+    );
+  };
+
+  const downloadResults = (format: "json" | "csv") => {
+    const isCsv = format === "csv";
+    const body = isCsv ? dashboardToCsv(dashboard) : JSON.stringify(dashboard, null, 2);
+    const fileName = isCsv ? "agentic-lab-results.csv" : "agentic-lab-results.json";
+    const blob = new Blob([body], { type: isCsv ? "text/csv" : "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = fileName;
+    anchor.click();
+    URL.revokeObjectURL(url);
+    saveDownload({ fileName, format, content: body });
+  };
+
   return (
     <main className="min-h-screen bg-[#f8fafc] text-foreground">
       <div className="mx-auto grid min-h-screen max-w-360 lg:grid-cols-[232px_1fr]">
@@ -77,13 +134,14 @@ function DashboardPage() {
           </div>
           <nav className="mt-8 flex gap-1 overflow-x-auto lg:block lg:space-y-1">
             {navigation.map((item) => (
-              <button
+              <Link
                 key={item.label}
-                className={`flex shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium lg:w-full ${item.current ? "bg-slate-900 text-white" : "text-muted-foreground hover:bg-muted hover:text-foreground"}`}
+                to={item.path}
+                className={item.path === "/" ? "flex shrink-0 items-center gap-3 rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white lg:w-full" : "flex shrink-0 items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted hover:text-foreground lg:w-full"}
               >
                 <item.icon className="size-4" />
                 {item.label}
-              </button>
+              </Link>
             ))}
           </nav>
           <div className="mt-8 hidden rounded-lg border bg-muted/50 p-3 lg:block">
@@ -105,9 +163,7 @@ function DashboardPage() {
                 Incident reporting baseline
               </h1>
             </div>
-            <Button size="lg">
-              <Plus /> New experiment
-            </Button>
+            <Link to="/benchmark-testing"><Button size="lg"><Plus /> New experiment</Button></Link>
           </header>
           <div className="px-5 py-7 sm:px-8">
             <div className="mb-5 flex flex-wrap items-end justify-between gap-4">
@@ -147,6 +203,19 @@ function DashboardPage() {
                 </label>
               </div>
             </div>
+            <section className="mb-6 rounded-xl border bg-card p-5 shadow-sm">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div><h2 className="font-semibold">Results workspace</h2><p className="mt-1 text-sm text-muted-foreground">Upload, summarize, or export benchmark results while the backend is being connected.</p></div><Link to="/downloads" className="text-sm font-medium text-blue-700 hover:text-blue-800">Open Download Manager</Link>
+                <div className="flex flex-wrap gap-2">
+                  <Button variant="outline" onClick={() => resultInput.current?.click()}><Upload /> Upload result</Button>
+                  <input ref={resultInput} className="hidden" type="file" accept=".json,application/json" onChange={(event) => void handleResultUpload(event)} />
+                  <Button variant="outline" onClick={generateReport}><FileText /> Generate report</Button>
+                  <select value={downloadFormat} onChange={(event) => setDownloadFormat(event.target.value as "json" | "csv")} className="h-9 rounded-lg border bg-card px-2 text-sm"><option value="json">JSON</option><option value="csv">CSV</option></select><Button variant="outline" onClick={() => downloadResults(downloadFormat)}><Download /> Download</Button>
+                </div>
+              </div>
+              {uploadNotice && <p className="mt-3 rounded-lg bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{uploadNotice}</p>}
+              {reportPreview && <pre className="mt-3 whitespace-pre-wrap rounded-lg bg-slate-950 p-4 text-sm leading-6 text-slate-100">{reportPreview}</pre>}
+            </section>
             <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
               {dashboard.overview.map((metric) => (
                 <MetricCard key={metric.label} metric={metric} />
