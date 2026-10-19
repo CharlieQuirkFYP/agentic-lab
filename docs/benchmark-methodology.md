@@ -51,6 +51,6 @@ Define a duty cycle: reports and queries per hour, typical turn/audio lengths, i
 
 ## Implementation and Presentation
 
-Extend the existing benchmark result contract incrementally, retaining current fields where possible. Store per-stage traces and complete configuration metadata alongside aggregate results. Add persistent results and dashboard filtering/comparison/export. Mark incompatible datasets or measurement scopes rather than ranking unlike runs without explanation.
+Extend the existing benchmark result contract incrementally, retaining current fields where possible. The Go backend now persists experiments and uploaded metric batches, exposes history/filtering and observation summaries, and exports JSON/CSV; see the [dashboard contract](api/benchmark-ui.md). Execution still uses explicitly labelled mock results, not measured evaluations. Add actual per-stage collection/scoring and verified runtime metadata with the real runner. Mark incompatible datasets or measurement scopes rather than ranking unlike runs without explanation.
 
 Start with a bounded baseline comparison. Evaluate model size, quantization, context/output limits, and runtime settings before expanding the search. Investigate local vocabulary/prompt changes, alternative speech models, MERaLiON, or fine-tuning only when error analysis motivates them. See [roadmap](roadmap.md) for dependencies.

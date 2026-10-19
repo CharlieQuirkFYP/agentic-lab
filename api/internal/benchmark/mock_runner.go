@@ -9,6 +9,8 @@ type MockRunner struct {
 	workDuration time.Duration
 }
 
+func (r *MockRunner) ResultSource() string { return "mock" }
+
 func NewMockRunner() *MockRunner {
 	return &MockRunner{
 		workDuration: 50 * time.Millisecond,

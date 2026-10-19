@@ -44,6 +44,7 @@ type EnvironmentProfile struct {
 }
 
 type Experiment struct {
+	ResultSource       string             `json:"result_source"`
 	ID                 string             `json:"id"`
 	UseCase            UseCase            `json:"use_case"`
 	Dataset            string             `json:"dataset,omitempty"`

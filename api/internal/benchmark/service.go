@@ -38,6 +38,7 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 	}
 
 	experiment := Experiment{
+		ResultSource:       "unavailable",
 		ID:                 newExperimentID(),
 		UseCase:            req.UseCase,
 		Dataset:            req.Dataset,
@@ -45,6 +46,9 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 		EnvironmentProfile: req.EnvironmentProfile,
 		Status:             ExperimentStatusQueued,
 		CreatedAt:          time.Now().UTC(),
+	}
+	if source, ok := s.runner.(interface{ ResultSource() string }); ok {
+		experiment.ResultSource = source.ResultSource()
 	}
 
 	if err := s.repository.Create(ctx, experiment); err != nil {
