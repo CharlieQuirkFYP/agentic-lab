@@ -2,27 +2,25 @@
 
 ## Goal
 
-Agentic Lab is a university final year project in collaboration with KLASS. The team is building its own agentic voice-based incident reporting solution, with spoken clarification, human confirmation, and retrieval of previous reports.
+Agentic Lab is a university final year project in collaboration with KLASS. The project is building a local, speech-first incident-reporting system with clarification, human confirmation, and retrieval of previous reports.
 
-The working AI baseline is Whisper speech recognition and local language-model inference through llama.cpp, with speech synthesis completing the spoken interaction. The research evaluates quality, latency, resource usage, power consumption, energy, and thermal/endurance trade-offs on resource-constrained hardware. A mobile phone, potentially iOS, is the preferred eventual target; NVIDIA Jetson is an alternative pending device specifications.
+The canonical voice-agent implementation is [`pheme-va/`](pheme-va/), a portable Rust workspace. It provides the audio pipeline, Whisper/whisper.cpp integration, host adapters, and the foundation for incident analysis and workflow execution. The project evaluates quality, latency, memory, CPU/GPU usage, power, energy, and thermal/endurance trade-offs on resource-constrained hardware.
 
-The planned `voice-agent/` Python service owns the complete incident workflow and its runtime adapters. Go exposes the public API and coordinates benchmarks.
-
-The web app will provide a development voice console and a benchmark dashboard. Existing KLASS solutions will not be integrated. Vision/licence-plate monitoring is out of scope; interview development is deferred.
+The Go API remains the application-facing backend and benchmark coordinator. The repository includes a development voice console and a separate research dashboard. The former Python implementation has been removed; the historical Python contract documentation is retained separately for reference only. Existing KLASS solutions are not being integrated. Vision/licence-plate monitoring is out of scope and interview development is deferred.
 
 ## Project Documentation
 
-* [Requirements and scope](docs/requirements.md)
-* [Planned system architecture](docs/architecture.md)
-* [Benchmark methodology](docs/benchmark-methodology.md)
-* [Implementation roadmap and ticket breakdown](docs/roadmap.md)
-* [Planned Voice Agent API contract](docs/api/voice-agent.md)
-* [Current experiment API](docs/api/experiments.md)
-* [Contributor/agent instructions](AGENTS.md)
+- [Requirements and scope](docs/requirements.md)
+- [Planned system architecture](docs/architecture.md)
+- [Benchmark methodology](docs/benchmark-methodology.md)
+- [Implementation roadmap](docs/roadmap.md)
+- [Current experiment API](docs/api/experiments.md)
+- [Pheme VA README](pheme-va/README.md)
+- [Contributor/agent instructions](AGENTS.md)
 
 ## Local Development
 
-The following instructions cover Go, Voice Agent, and the web scaffold. Model/runtime setup will be added when inference is implemented.
+The active components are the Go API, the Pheme VA Rust workspace, and the web voice console. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
 
 ### Go API
 
@@ -38,45 +36,17 @@ From the repository root, navigate to the API service:
 
 ```bash
 cd api
-```
-
-Synchronize and install dependencies:
-
-```bash
 go mod tidy
+API_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 go run ./cmd/server
 ```
 
-Start the API:
-
-```bash
-go run ./cmd/server
-```
-
-The server runs at:
-
-```text
-http://localhost:8080
-```
+The server runs at `http://localhost:8080`.
 
 #### Verify the API
 
-Check the health endpoint:
-
 ```bash
 curl http://localhost:8080/health
-```
 
-Expected response:
-
-```json
-{
-  "status": "ok"
-}
-```
-
-Check the incident analysis endpoint:
-
-```bash
 curl -X POST \
   http://localhost:8080/api/v1/incidents/analyze \
   -H "Content-Type: application/json" \
@@ -85,87 +55,197 @@ curl -X POST \
   }'
 ```
 
-Expected response:
+The public incident endpoint still uses Go's `MockIncidentAnalyzer`; do not interpret it as model-backed structured analysis. Dedicated voice routes now delegate to Pheme through `PHEME_VA_URL` (default `http://127.0.0.1:8000`). `API_ADDR` defaults to `127.0.0.1:8080`; `API_CORS_ORIGINS` must explicitly allow the browser origin, including when Vite/reverse-proxy forwards its `Origin` header. The command above allows the two local Vite origins; without it, TUI/non-browser calls still work but browser mutations are denied.
 
-```json
-{
-  "incident_type": "unknown",
-  "location": "unknown",
-  "severity": "unknown",
-  "summary": "A vehicle collided with a barrier near the west entrance.",
-  "recommended_action": "Pending AI analysis"
-}
-```
-
-The incident analysis response is currently a placeholder; AI integration has not yet been implemented.
-
-#### Testing
-
-Run the test suite:
+Run the Go checks from `api/`:
 
 ```bash
+gofmt -l .
+go vet ./...
 go test ./...
 ```
 
-Run static checks:
+### Pheme VA
+
+Pheme VA requires the stable Rust toolchain. From the repository root:
 
 ```bash
-go vet ./...
+cd pheme-va
+cargo fmt --all -- --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-### Voice Agent
+The workspace contains:
 
-Requires Python 3.12+. From the repository root:
+- `crates/core`: portable audio normalization, mono 16 kHz conversion, speech gating, dictionary prompts, transcript guards, replaceable adapter traits, and conservative incident extraction
+- `crates/models/transcription/whispercpp`: in-process whisper.cpp model adapter
+- `crates/models/transcription/zipformer`: optional LiteRT Zipformer CTC model adapter
+- `crates/models/reasoning`: persistent stdio reply client plus the `reply-native` llama.cpp worker
+- `crates/runtime`: shared conversation orchestration, inference gate, events and model construction
+- `crates/cli`: local voice/typed Chat and Tests, optional Web inspector, Models and Telemetry
+- `crates/server`: development HTTP adapter around the shared Rust runtime
+- `crates/ffi`: C ABI for native iOS/Android hosts
+
+The core does not own a frontend hotkey, clipboard, microphone permission, or mobile UI. Hosts provide audio and control their own lifecycle.
+
+#### Download the Whisper model
+
+Model weights are ignored by Git and must not be committed. The initial CPU baseline is Whisper `large-v3-turbo`, stored by new downloads at `pheme-va/models/transcript/whisper/ggml-large-v3-turbo.bin`:
 
 ```bash
-cd voice-agent
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r requirements-dev.lock
-python -m pip install --no-deps --no-build-isolation -e .
-python -m uvicorn app.main:create_app --factory --host 127.0.0.1 --port 8000
+cd pheme-va
+./scripts/download-model.sh
 ```
 
-`GET /health` returns 200. With the default unavailable backend, readiness and analysis return 503. Follow [local inference setup](voice-agent/docs/local-analysis.md) to enable llama.cpp-backed analysis. The Go API still uses its mock. See [Voice Agent setup and checks](voice-agent/README.md) for configuration and verification.
+The script downloads the model from the whisper.cpp model repository and verifies SHA-256 before installing it. Run `./scripts/download-model.sh --list` for the selectable STT artifacts, pinned Qwen reply GGUF, and experimental SeaLLMs download. Existing legacy weights are not moved automatically; see the model README for migration before downloading again. Downloading an artifact does not activate a runtime or Cargo feature. See [`pheme-va/models/README.md`](pheme-va/models/README.md) for sources, checksums, status, and licensing reminders.
+
+This model is used by the separate `whispercpp` crate, which is built on whisper.cpp. It is an initial baseline, not a validated mobile configuration. Smaller models, Zipformer variants, accelerator support, and device-specific settings still need to be evaluated.
+
+#### Transcribe a WAV file
+
+```bash
+cargo run --release -p cli --features whisper -- \
+  --stt-model whisper-large-v3-turbo \
+  transcribe recording.wav \
+  --language en \
+  --dictionary KLASS,whisper.cpp,"west entrance"
+```
+
+The input may use a supported sample rate, channel count, or WAV sample format; Pheme normalizes it before the selected speech model receives it.
+
+#### Run the development HTTP host
+
+```bash
+cargo run --release -p server --features whisper -- \
+  --model models/transcript/whisper/ggml-large-v3-turbo.bin \
+  --bind 127.0.0.1:8000
+```
+
+The host exposes:
+
+```text
+GET  /health
+GET  /ready
+POST /v1/transcribe   Content-Type: audio/wav
+POST /v1/analyze      Content-Type: application/json
+```
+
+`/v1/transcribe` returns raw and processed transcript text, speech-gate status, segments, backend information, and processing time. `/v1/analyze` currently uses the conservative deterministic incident extractor; model-backed structured extraction is a separate adapter task.
+
+#### Run the model-backed test
+
+The real-model test is ignored by default because it requires local model weights and a speech recording:
+
+```bash
+PHEME_VA_WHISPER_MODEL="$PWD/models/transcript/whisper/ggml-large-v3-turbo.bin" \
+PHEME_VA_TEST_AUDIO=/absolute/path/to/speech.wav \
+PHEME_VA_TEST_LANGUAGE=en \
+cargo test -p whispercpp --test audio -- --ignored --nocapture
+```
+
+A successful run confirms that the selected Whisper model loads through the separate whisper.cpp-backed model crate and produces non-empty transcript text. It does not by itself validate incident-report quality or target-device performance.
+
+#### Shared voice conversation and TUI
+
+On Linux, install the system audio development package required by `cpal` if necessary, for example `libasound2-dev` on Debian/Ubuntu:
+
+From `pheme-va/`, build server and reply worker (requires CMake, a C/C++ compiler and libclang) and start the pair:
+
+```bash
+cargo build --release -p server -p reply-native --features server/whisper
+./target/release/server \
+  --stt-model whisper-large-v3-turbo \
+  --reply-model qwen2.5-1.5b-instruct-q4-k-m \
+  --metrics-enabled
+```
+
+Explicit IDs directly download missing pinned artifacts at startup: approximately 1.62 GB for Whisper and 1.12 GB for Qwen. You can instead use the TUI's local Models downloader first. Weights load once; the server owns a stdio reply child to isolate incompatible Whisper/llama.cpp native libraries—not an extra HTTP service or reply feature flag.
+
+For local voice/typed Chat, build and run the CLI with its reply worker:
+
+```bash
+cargo build --release -p cli -p reply-native --features cli/whisper
+./target/release/cli tui
+```
+
+On **m Models**, download Qwen and use **s** to verify/save the reply choice, then restart. Chat and isolated Tests use Rust calls to the shared runtime; Go is unnecessary. **i** focuses the typed composer and **Enter** sends. After transcription, **Enter** confirms/sends the draft and **e** edits it. **c** starts a new conversation and **d** finishes. **t Telemetry**, then **3**, opens grouped conversations, aggregate stats and individual stage runs. See [chat controls and screen examples](docs/tui-chat.md).
+
+Add `--server-url http://127.0.0.1:8080` only to enable **w Web** inspection and approval through Go. Chat stays local. Separate TUI/server processes load separate models and retain separate sessions. See [Pheme setup and limits](pheme-va/README.md#shared-webtui-voice-loop) and [voice API](docs/api/voice.md). Models/roles load at startup; read-only local archives survive restart. Incident report storage/finalization remains planned.
 
 ### Web
 
 #### Prerequisites
 
-- Node.js 20.19+ or 22.12+
+- Node.js 22.18+ (tests use built-in TypeScript stripping)
 - npm
 
-#### Setup
-
-From the repository root:
+#### Setup and verification
 
 ```bash
 cd web
 npm install
-```
-
-Start the frontend:
-
-```bash
 npm run dev
-```
-
-The Vite dev server runs at:
-
-```text
-http://localhost:5173
-```
-
-#### Verification
-
-Build the frontend:
-
-```bash
+npm test
+npm run lint
 npm run build
 ```
 
-Run the configured lint command:
+The Vite development server runs at `http://localhost:5173`. Open `/voice` for microphone → review → streamed reply → client-side speech. Its `/api/v1` proxy calls Go, not Rust directly. Browser speech uses local-service voices only; availability/offline behavior depends on the OS/browser. The benchmark view marks real measurements/dashboard features as not implemented. See [web setup](web/README.md).
+
+### Voice Agent Web Frontend
+
+`voice-agent-web/` is the standalone, phone-friendly development frontend for the Pheme VA HTTP host. It is separate from the benchmark dashboard under `web/`.
+
+Start the Pheme VA server first from `pheme-va/`, then start the frontend:
 
 ```bash
-npm run lint
+cd voice-agent-web
+npm install
+npm run dev
 ```
+
+Run the frontend tests and production build with `npm test` and `npm run build`.
+
+Open the Vite URL shown in the terminal, normally `http://localhost:5173`. The frontend proxies `/pheme/*` to the Pheme server at `http://127.0.0.1:8000`, so it expects the Pheme HTTP host to be running. To use another host, set `VITE_PHEME_API_URL` before starting Vite.
+
+The frontend supports:
+
+- microphone recording and WAV playback/download;
+- WAV file selection or drag-and-drop;
+- a 2 MiB upload limit and the Pheme 120-second audio limit;
+- transcription through `/v1/transcribe`, followed by incident analysis through `/v1/analyze`;
+- cancellation while transcription or analysis is processing.
+
+Microphone access requires browser permission and, on a physical device, an HTTPS secure context. If microphone permission is blocked, the WAV upload option remains available. See [`voice-agent-web/README.md`](voice-agent-web/README.md) for the shorter frontend-specific setup notes.
+
+## Model and deployment notes
+
+Whisper/whisper.cpp is the current speech-recognition baseline. Pheme keeps transcription and language-model inference behind replaceable boundaries so alternative local models can be evaluated. A concrete llama.cpp-compatible language-model adapter for structured incident extraction is still planned; the current rule-based extractor is deliberately conservative and does not invent facts.
+
+The eventual target may be an iOS phone or NVIDIA Jetson, but Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
+
+## Tech Stack and Frameworks Utilised
+
+<p align="center"><strong>UI Stack</strong></p>
+<p align="center">
+<a href="https://vitejs.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/f/f1/Vitejs-logo.svg" alt="Vite" width="40"/></a>&nbsp;&nbsp;
+<a href="https://developer.mozilla.org/en-US/docs/Web/JavaScript"><img src="https://upload.wikimedia.org/wikipedia/commons/6/6a/JavaScript-logo.png" alt="JavaScript" width="40"/></a>&nbsp;&nbsp;
+<a href="https://www.typescriptlang.org/"><img alt="TypeScript" src="https://github.com/user-attachments/assets/7caf280c-bd03-414e-bc1d-961b707e44fe" width="40" /></a>&nbsp;&nbsp;
+<a href="https://react.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/a/a7/React-icon.svg" alt="React" width="40"/></a>&nbsp;&nbsp;
+<a href="https://tailwindcss.com/"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Tailwind_CSS_Logo.svg" alt="Tailwind" width="50"/></a>&nbsp;&nbsp;
+<br>
+<i>Vite · JavaScript · TypeScript · React · Tailwind CSS</i>
+</p>
+<br>
+
+<p align="center"><strong>Core Backend</strong></p>
+<p align="center">
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/0/05/Go_Logo_Blue.svg" alt="Golang" width="80"/></a>&nbsp;&nbsp;
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/d/d5/Rust_programming_language_black_logo.svg?utm_source=commons.wikimedia.org&utm_campaign=index&utm_content=original" alt="Rust" width="45"/></a>&nbsp;&nbsp;
+<a href="https://go.dev/"><img src="https://upload.wikimedia.org/wikipedia/commons/a/ad/Logo_PostgreSQL.png?utm_source=commons.wikimedia.org&utm_campaign=imageinfo&utm_content=original" alt="Postgres" width="50"/></a>&nbsp;&nbsp;
+<br>
+<i>Golang · Rust</i>
+</p>
+<br>
+

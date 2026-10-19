@@ -1,0 +1,36 @@
+[package]
+name = "server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "HTTP development wrapper around the portable Pheme VA core"
+
+[features]
+default = []
+whisper = ["va_runtime/whisper"]
+whisper-metal = ["whisper", "va_runtime/whisper-metal"]
+whisper-coreml = ["whisper", "va_runtime/whisper-coreml"]
+zipformer = ["va_runtime/zipformer", "dep:litert-sys"]
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+bytes = "1.0"
+clap = { version = "4.6", features = ["derive", "env"] }
+futures-core = "0.3"
+# Exposes the verified LiteRT runtime directory to this host's rpath build script.
+litert-sys = { version = "0.2.1", optional = true }
+reply-model = { path = "../models/reasoning" }
+sha2 = "0.10"
+toml = "0.8"
+metrics = { path = "../metrics", features = ["desktop"] }
+serde.workspace = true
+serde_json.workspace = true
+tokio = { version = "1.0", features = ["macros", "net", "rt-multi-thread", "sync", "time", "signal"] }
+va_core = { package = "core", path = "../core" }
+va_runtime = { path = "../runtime" }
+
+[dev-dependencies]
+http-body-util = "0.1"
+tower = { version = "0.5", features = ["util"] }

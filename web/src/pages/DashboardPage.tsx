@@ -26,7 +26,7 @@ import {
 } from "@/data/dashboardMockData";
 
 const navigation = [
-  { label: "Dashboard", icon: BarChart3, path: "/" },
+  { label: "Dashboard", icon: BarChart3, path: "/dashboard" },
   { label: "Benchmark Testing", icon: FlaskConical, path: "/benchmark-testing" },
   { label: "Download Manager", icon: Download, path: "/downloads" },
 ];

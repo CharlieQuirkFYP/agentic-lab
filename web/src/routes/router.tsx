@@ -1,20 +1,33 @@
-import { createBrowserRouter } from 'react-router-dom'
+import { createBrowserRouter, Navigate } from "react-router-dom";
 
-import DashboardPage from '@/pages/DashboardPage'
-import BenchmarkTestingPage from '@/pages/BenchmarkTestingPage'
-import DownloadsPage from '@/pages/DownloadsPage'
+import ConsoleLayout from "@/components/ConsoleLayout";
+import BenchmarkPage from "@/pages/BenchmarkPage";
+import HomePage from "@/pages/HomePage";
+import DashboardPage from "@/pages/DashboardPage";
+import BenchmarkTestingPage from "@/pages/BenchmarkTestingPage";
+import DownloadsPage from "@/pages/DownloadsPage";
 
 export const router = createBrowserRouter([
   {
-    path: '/',
+    path: "/",
+    element: <ConsoleLayout />,
+    children: [
+      { index: true, element: <Navigate to="/voice" replace /> },
+      { path: "voice", element: <HomePage /> },
+      { path: "benchmarks", element: <BenchmarkPage /> },
+      { path: "*", element: <Navigate to="/voice" replace /> },
+    ],
+  },
+  {
+    path: "/dashboard",
     element: <DashboardPage />,
   },
   {
-    path: '/benchmark-testing',
+    path: "/benchmark-testing",
     element: <BenchmarkTestingPage />,
   },
   {
-    path: '/downloads',
+    path: "/downloads",
     element: <DownloadsPage />,
   },
-])
+]);

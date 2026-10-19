@@ -1,0 +1,9 @@
+/target/
+*.gguf
+*.bin
+*.part
+*.tflite
+*.safetensors
+*.model
+tokens.txt
+.env
