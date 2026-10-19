@@ -19,7 +19,7 @@ The canonical implementation is the Rust workspace in `pheme-va/`, not the forme
 
 The target Pheme workflow will own conversation/session state, clarification, corrections, confirmation, incident storage/retrieval, response generation, and validated action proposals. Those stateful capabilities are not implemented yet. The current Rust host is stateless and exposes `/v1/transcribe` and `/v1/analyze`; the current TUI has local developer run history, but that is not the planned incident/session database.
 
-Go exposes the public API and owns benchmark orchestration and experiment results. At present it is wired to `MockIncidentAnalyzer` and `MockRunner`, with in-memory repositories. A future Pheme-backed Go analyzer/client should preserve the existing public endpoint and delegate stateful operations rather than duplicate workflow rules. The web app owns the future interaction/playback client and research dashboard. Each service accesses only its own repositories.
+Go exposes the public API and owns benchmark orchestration and experiment results. It is wired to `MockIncidentAnalyzer` and `MockRunner`, with Go-owned SQLite experiment/metric repositories and an in-memory queue. Dashboard history/filtering, observation summaries, run views and export are available before real benchmark execution. A future Pheme-backed Go analyzer/client should preserve the existing public endpoint and delegate stateful operations rather than duplicate workflow rules. The web app owns the interaction/playback client and research dashboard. Each service accesses only its own repositories.
 
 The [Pheme VA API contract](api/voice-agent.md) documents the current Rust host and the proposed stateful routes. It is not documentation for an active Python runtime.
 
@@ -49,11 +49,11 @@ For “give me the last five incident reports in the last hour,” the proposed 
 
 | Area               | Current state                                                                                                                                           |
 | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Go public API      | Health, mock stateless incident analysis, asynchronous mock experiments, and in-memory metrics append/read                                              |
+| Go public API      | Health, mock incident analysis/experiments, SQLite persistence, dashboard history/filtering, summaries, metric-run views and JSON/CSV export             |
 | Pheme VA core      | WAV validation, supported-format decoding, mono/16 kHz normalization, speech gate, transcript guards, cleanup seams, and rule-based incident extraction |
 | Speech adapters    | Optional in-process whisper.cpp adapter and optional LiteRT Zipformer adapter; manifest-driven selection is in the CLI                                  |
 | Pheme VA hosts     | Axum development server, Ratatui TUI, and direct-path Whisper C ABI                                                                                     |
-| Metrics            | Rust typed pub/sub/batches and desktop resource sampling; Go validates/stores batches separately in memory                                              |
+| Metrics            | Rust typed pub/sub/batches and desktop resource sampling; Go validates/persists separate batches with idempotent retries and query APIs                  |
 | Stateful reporting | Sessions, clarification, revision-bound confirmation, SQLite incident storage, retrieval, speech synthesis, and Go integration are not implemented      |
 | Web                | Toolchain scaffold and placeholder page only                                                                                                            |
 

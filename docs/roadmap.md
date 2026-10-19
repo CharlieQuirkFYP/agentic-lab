@@ -29,7 +29,7 @@ The following foundation is implemented on this branch:
 - `pheme-va/crates/server`: Axum adapter preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
 - `pheme-va/crates/models/reasoning`: normal reply adapter and host-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
 - `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
-- `api/`: Gin public API, asynchronous in-memory benchmark lifecycle, and separate in-memory metric-batch ingestion.
+- `api/`: Gin public API, asynchronous mock benchmark lifecycle with an in-memory queue, SQLite experiment/metric persistence, history/filter APIs, grouped metric/run summaries, idempotent batch ingestion and JSON/CSV export.
 - `web/`: WAV microphone capture, editable transcript review, streamed replies, local-service voice playback and GET-only recovery through Go; benchmark navigation remains a placeholder.
 
 The development voice loop includes Go-to-Pheme forwarding and client speech, but not the authoritative confirmed-report workflow, report persistence/retrieval, structured model extraction, real benchmarks or full research dashboard. Fake-backed integration is covered; real reply quality/latency and live microphone/TTS acceptance remain unverified.
@@ -114,11 +114,11 @@ Run real versioned scenarios against the Pheme VA service through the shared Go 
 
 **Acceptance:** experiments produce measured workflow results, identify unavailable metrics, and no longer accept the removed use case. **Dependencies:** T10, T11.
 
-### T13 — Persist experiments and expose dashboard query APIs (M)
+### T13 — Persist experiments and expose dashboard query APIs (M) — complete baseline
 
-Add a Go-owned SQLite experiment/result repository, paginated history and filters, and defined interrupted-run handling after restart. Keep experiment storage separate from Pheme incident/session storage and preserve existing create/get contracts.
+Implemented ahead of T12 so frontend integration can proceed: Go-owned SQLite experiments/results and separate metric batches, paginated history and filters, observation/run summaries, browser CORS and JSON/CSV exports. Pending queued/running work becomes failed with an interruption explanation on startup. In-memory test repositories and the current queue/worker remain. See the [integration guide](api/benchmark-ui.md).
 
-**Acceptance:** historical runs survive restart and can be queried; interrupted runs have a defined visible outcome. **Dependencies:** T12.
+**Acceptance:** historical experiments and metrics survive restart and can be queried; interrupted work has a defined visible outcome. Covered by SQLite/recovery and HTTP contract tests. **Dependencies:** T12 is still required for measured workflow results; query API integration uses explicitly labelled mock results until then.
 
 ### T14 — Build the benchmark dashboard (L)
 
@@ -129,6 +129,8 @@ Add experiment configuration/creation, history, progress polling, and result det
 ### T15 — Add experiment comparison and export (M)
 
 Compare selected models, quantization, runtimes, and devices. Display configuration differences and flag different datasets or measurement methods. Add useful charts and export with reproducibility metadata.
+
+The backend already exposes per-experiment configuration/summaries and JSON/CSV export for this work; frontend comparison/compatibility presentation and real evaluation results remain planned.
 
 **Acceptance:** researchers can compare compatible runs and export results with configuration and measurement context. **Dependencies:** T14.
 

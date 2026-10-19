@@ -17,22 +17,41 @@ import (
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/storage"
 	"github.com/gin-gonic/gin"
 )
 
 func main() {
+	if err := run(); err != nil {
+		log.Fatal(err)
+	}
+}
+
+func run() error {
+	if err := loadEnvFile(".env"); err != nil {
+		return err
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
 	config := loadConfig()
 	phemeClient, err := pheme.NewClient(config.phemeURL)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	voiceCORS, err := handler.NewVoiceCORS(config.corsOrigins)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
+	benchmarkCORS, err := handler.NewBenchmarkCORS(config.corsOrigins)
+	if err != nil {
+		return err
+	}
+	database, err := storage.Open(config.databasePath)
+	if err != nil {
+		return err
+	}
+	defer database.Close()
 
 	router := gin.Default()
 	voiceService := service.NewVoiceService(phemeClient)
@@ -43,27 +62,29 @@ func main() {
 	incidentService := service.NewIncidentService(incidentAnalyzer)
 	incidentHandler := handler.NewIncidentHandler(incidentService)
 
-	benchmarkRepository := benchmark.NewMemoryRepository()
-	metricsRepository := metrics.NewMemoryRepository()
+	benchmarkRepository := benchmark.NewSQLiteRepository(database)
+	recoveryCtx, cancelRecovery := context.WithTimeout(ctx, 30*time.Second)
+	err = benchmarkRepository.RecoverInterrupted(recoveryCtx)
+	cancelRecovery()
+	if err != nil {
+		return err
+	}
+	metricsRepository := metrics.NewSQLiteRepository(database)
 	metricsService := metrics.NewService(metricsRepository)
-	metricsHandler := handler.NewMetricsHandler(metricsService)
 
 	benchmarkQueue, err := benchmark.NewJobQueue(100)
 	if err != nil {
-		log.Fatal(err)
+		return err
 	}
 	benchmarkRunner := benchmark.NewMockRunner()
 	benchmarkService := benchmark.NewService(benchmarkRepository, benchmarkQueue, benchmarkRunner)
 	benchmarkWorker := benchmark.NewWorker(benchmarkService, benchmarkQueue, 1)
 	benchmarkWorker.Start(ctx)
-	experimentHandler := handler.NewExperimentHandler(benchmarkService)
+	dashboardHandler := handler.NewBenchmarkDashboardHandler(benchmarkService, metricsService)
 
 	router.GET("/health", handler.Health)
 	router.POST("/api/v1/incidents/analyze", incidentHandler.Analyze)
-	router.POST("/api/v1/experiments", experimentHandler.Create)
-	router.GET("/api/v1/experiments/:id", experimentHandler.Get)
-	router.POST("/api/v1/experiments/:id/metrics", metricsHandler.Append)
-	router.GET("/api/v1/experiments/:id/metrics", metricsHandler.Get)
+	dashboardHandler.RegisterRoutes(router.Group("/api/v1/experiments", benchmarkCORS), metricsService)
 
 	server := &http.Server{
 		Addr:              config.address,
@@ -74,7 +95,9 @@ func main() {
 		BaseContext: func(net.Listener) context.Context { return ctx },
 	}
 
+	shutdownDone := make(chan struct{})
 	go func() {
+		defer close(shutdownDone)
 		<-ctx.Done()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -85,8 +108,13 @@ func main() {
 		}
 	}()
 
-	log.Printf("API listening on %s (API_ADDR); voice browser origins use API_CORS_ORIGINS", config.address)
-	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
-		log.Fatal(err)
+	log.Printf("API listening on %s (API_ADDR); browser origins use API_CORS_ORIGINS; experiments stored in %s (API_DATABASE_PATH)", config.address, config.databasePath)
+	listenErr := server.ListenAndServe()
+	stop()
+	<-shutdownDone
+	benchmarkWorker.Wait()
+	if !errors.Is(listenErr, http.ErrServerClosed) {
+		return listenErr
 	}
+	return nil
 }

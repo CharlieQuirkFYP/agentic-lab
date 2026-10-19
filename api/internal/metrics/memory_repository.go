@@ -2,6 +2,7 @@ package metrics
 
 import (
 	"context"
+	"encoding/json"
 	"sync"
 )
 
@@ -39,6 +40,16 @@ func (r *MemoryRepository) AppendBatch(ctx context.Context, batch Batch) error {
 	defer r.mu.Unlock()
 	if err := contextError(ctx); err != nil {
 		return err
+	}
+	for _, stored := range r.batches {
+		if stored.ExperimentID == batch.ExperimentID && stored.RunID == batch.RunID && stored.SequenceNumber == batch.SequenceNumber {
+			left, _ := json.Marshal(stored)
+			right, _ := json.Marshal(batch)
+			if string(left) != string(right) {
+				return ErrBatchConflict
+			}
+			return nil
+		}
 	}
 	r.batches = append(r.batches, cloneBatch(batch))
 	return nil

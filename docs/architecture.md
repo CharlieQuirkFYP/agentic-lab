@@ -4,7 +4,7 @@ This document separates the implemented foundation from the target architecture.
 
 ## Implemented foundation
 
-- `api/`: Go Gin handlers, services, models, the `IncidentAnalyzer` boundary, asynchronous benchmark lifecycle, and separate in-memory metrics ingestion. The public incident endpoint is still wired to `MockIncidentAnalyzer`; the benchmark worker still uses `MockRunner`.
+- `api/`: Go Gin handlers, services, models, the `IncidentAnalyzer` boundary, asynchronous benchmark lifecycle, Go-owned SQLite experiment/metric persistence, paginated history/filtering, observation/run summaries and export. The public incident endpoint is still wired to `MockIncidentAnalyzer`; the benchmark worker still uses `MockRunner` with explicit result provenance.
 - `pheme-va/`: the canonical Rust implementation. `core` owns WAV/PCM validation and normalization, mono 16 kHz conversion, speech gating, transcript guards, cleanup boundaries, model-neutral transcription, and the conservative rule-based incident extractor. `metrics` owns typed events, resource sampling, batching, and energy integration. `whispercpp` and optional `zipformer` are separate model adapters.
 - `pheme-va/crates/cli/`: manifest-driven model selection, the one-shot WAV `transcribe` command, and a Ratatui TUI with onboarding, WAV browsing, microphone capture, worker-owned model switching, telemetry, structured logs, automatic allowlisted model downloads, adapter preparation, and bounded persistent run history.
 - `pheme-va/crates/runtime/`: shared Rust conversation state, bounded typed event channels, snapshots, admission/idempotency, inference serialization, cancellation/timeouts, title generation and retained metrics. CLI and HTTP hosts construct separate instances from the same library.
@@ -22,7 +22,11 @@ The Go API and Rust development host are separate processes with separate route 
 | Go   | `GET`  | `/health`                         | Liveness                                      |
 | Go   | `POST` | `/api/v1/incidents/analyze`       | Mock incident analysis                        |
 | Go   | `POST` | `/api/v1/experiments`             | Queue a mock benchmark experiment             |
-| Go   | `GET`  | `/api/v1/experiments/:id`         | Read an in-memory experiment                  |
+| Go   | `GET`  | `/api/v1/experiments`             | Paginated, filtered experiment history        |
+| Go   | `GET`  | `/api/v1/experiments/:id`         | Read a persisted experiment                   |
+| Go   | `GET`  | `/api/v1/experiments/:id/summary` | Generic result provenance and metric statistics |
+| Go   | `GET`  | `/api/v1/experiments/:id/runs`    | Paginated observed metric runs                |
+| Go   | `GET`  | `/api/v1/experiments/:id/export`  | JSON/CSV results and metric export            |
 | Go   | `POST` | `/api/v1/experiments/:id/metrics` | Append a validated metric batch               |
 | Go   | `GET`  | `/api/v1/experiments/:id/metrics` | Read stored metric batches                    |
 | Rust | `GET`  | `/health`                         | Liveness                                      |
@@ -35,7 +39,7 @@ Go now delegates dedicated `/api/v1/voice/` routes to Pheme's `/v1/voice/` endpo
 
 ## Target development architecture
 
-The web/Go/Pheme voice connection is implemented. The diagram also contains separately planned structured incident workflow, persistent storage and real benchmark-runner integration; those parts are not wired.
+The web/Go/Pheme voice connection and Go-owned experiment persistence are implemented. The diagram also contains separately planned structured incident workflow, Pheme storage and real benchmark-runner integration; those parts are not wired.
 
 ```mermaid
 flowchart TD
@@ -170,7 +174,7 @@ Upstream references for future evaluation include [whisper.cpp](https://github.c
 
 ## Benchmark dashboard and storage
 
-Retain the current asynchronous Go experiment lifecycle and in-memory queue while it remains sufficient. The current runner is mocked and its result values are hardcoded; the separate metrics repository is also process-local. Planned work adds a real incident runner, measured resource integration, Go-owned persistent experiment/result storage, history/filter APIs, and dashboard comparison/export.
+Retain the asynchronous Go experiment lifecycle and in-memory queue while sufficient. Go-owned SQLite stores experiment/results and separate metric batches; restart recovery fails interrupted queued/running work instead of replaying it. History/filter APIs, grouped observation/run summaries and JSON/CSV export support frontend integration. See the [dashboard API guide](api/benchmark-ui.md). In-memory repository implementations remain for tests. The current runner is mocked and its result values are explicitly labelled hardcoded data; uploaded metric observations remain separate from that result. Real scenario execution, automatic Pheme metric collection and quality scoring remain planned.
 
 The dashboard will create experiments, poll progress, display quality/performance/device metrics, compare compatible configurations, and export reproducibility metadata. It must display unavailable measurements explicitly and flag differing datasets or measurement scopes instead of ranking incomparable runs silently. The operational focus on speech does not remove this visual research interface.
 
