@@ -17,7 +17,7 @@ Separate Expo/React Native implementation of the web voice-console flow. The exi
 - Microphone reports captured as mono 16 kHz PCM and sent as WAV bytes without constructing a React Native `Blob`.
 - Multi-file selection with removable attachment chips.
 
-Attachments are intentionally staged but not uploaded yet because the current Go API accepts text or WAV audio, not multipart files. The next backend change should add the multipart contract described in `../ios-app-draft/README.md`.
+Attachments are intentionally staged but not uploaded yet because the current Go API accepts text or WAV audio, not multipart files. The next backend change should add the multipart contract described in `../docs/plans/ios-app-draft.md`.
 
 ## Run
 

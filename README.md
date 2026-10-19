@@ -209,7 +209,7 @@ npm install
 EXPO_PUBLIC_API_BASE_URL=http://YOUR_COMPUTER_IP:8080/api/v1 npx expo start --lan -c
 ```
 
-For a physical phone, replace `YOUR_COMPUTER_IP` with the computer's LAN IP (for example `192.168.3.83`), use the same Wi-Fi network, and bind the Go API to `0.0.0.0:8080`. The app restores a pending server turn after reload; finish it from the input bar before starting another recording. Native TTS requires an installed system voice; on iPhone, silent mode can prevent speech. Attachments are currently staged locally because the Go voice API accepts JSON text or complete WAV audio, not multipart files. See [`ios-app/README.md`](ios-app/README.md) and [`ios-app-draft/README.md`](ios-app-draft/README.md).
+For a physical phone, replace `YOUR_COMPUTER_IP` with the computer's LAN IP (for example `192.168.3.83`), use the same Wi-Fi network, and bind the Go API to `0.0.0.0:8080`. The app restores a pending server turn after reload; finish it from the input bar before starting another recording. Native TTS requires an installed system voice; on iPhone, silent mode can prevent speech. Attachments are currently staged locally because the Go voice API accepts JSON text or complete WAV audio, not multipart files. See [`ios-app/README.md`](ios-app/README.md) and [`docs/plans/ios-app-draft.md`](docs/plans/ios-app-draft.md).
 
 ### Voice Agent Web Frontend
 

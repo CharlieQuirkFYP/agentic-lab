@@ -1,6 +1,6 @@
 # iOS voice/chat app — product and technical draft
 
-This is the approved product and architecture record for the separate `../ios-app` implementation. It does not modify `../web` or describe a committed release.
+This is the approved product and architecture record for the separate `../../ios-app` implementation. It does not modify `../../web` or describe a committed release.
 
 ## Recommendation
 
@@ -72,7 +72,7 @@ agentic-lab/ios-app/
   README.md
 ```
 
-The product draft remains here as the design record; the approved initial implementation now lives in `../ios-app`.
+The product draft remains here as the design record; the approved initial implementation now lives in `../../ios-app`.
 
 ## API reuse and required backend work
 
