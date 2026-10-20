@@ -1,6 +1,6 @@
 # Experiment API
 
-The experiment API starts generic benchmark runs asynchronously. The current backend stores experiments in memory, uses an in-memory queue, and executes a mocked runner in a background Go worker.
+The experiment API starts generic benchmark runs asynchronously. The server stores experiments and separate metric batches in a Go-owned SQLite database, uses an in-memory queue, and executes a mocked runner in a background Go worker. See the [benchmark UI integration guide](benchmark-ui.md) for history/filtering, summary/run responses, export, browser configuration and frontend examples.
 
 ## Create Experiment
 
@@ -104,10 +104,19 @@ Example:
 }
 ```
 
-`GET /api/v1/experiments/:id/metrics` returns stored batches for dashboard inspection. Metrics are currently held in a separate in-memory repository and are not merged into `Experiment.Result`; persistence and listing/filtering are later work. See the [metrics contract](metrics.md) for the Rust pub/sub and host-exporter path.
+`GET /api/v1/experiments/:id/metrics` returns stored batches for dashboard inspection, with optional `run_id`, `name`, `limit` and `offset` parameters. Batches remain separate from `Experiment.Result`. Unknown experiments return 404 for all experiment detail/metrics/export routes. Identical metric-batch retries are idempotent; conflicting retries return 409. See the [metrics contract](metrics.md) for the Rust pub/sub and host-exporter path.
+
+## Dashboard queries
+
+- `GET /api/v1/experiments`: paginated history; exact status/use-case/dataset/model and inclusive creation-time filters.
+- `GET /api/v1/experiments/:id/summary`: generic result with provenance and grouped reported metric statistics.
+- `GET /api/v1/experiments/:id/runs`: paginated metric-run summaries; no synthetic sample trials.
+- `GET /api/v1/experiments/:id/export?format=json|csv`: raw observations and experiment metadata.
+
+New experiments include `result_source: "mock"` in detail/history responses. The server defaults to `data/experiments.sqlite` relative to its working directory (`API_DATABASE_PATH` overrides it). Completed results survive restarts. Previously queued/running experiments become failed with an interruption explanation; the volatile queue is not replayed. In-memory repositories remain available for isolated tests/development.
 
 ## Current Limitations and Planned Work
 
-The runner returns hardcoded values; latency, memory, and tokens per second are not actual benchmark measurements. Experiments and Go-side metric batches are lost when the process restarts. There is no experiment listing/filtering or export endpoint or persistent result storage, and no measured resource integration in `Experiment.Result` or verified whole-device power/energy telemetry.
+The runner returns hardcoded values; latency, memory, and tokens per second are not actual benchmark measurements. There is no real scenario runner, automatic Pheme metric import, measured resource integration in `Experiment.Result`, or verified whole-device power/energy telemetry. Summary metrics reflect uploaded observations and do not turn the mock generic result into a measurement.
 
-The [planned architecture](../architecture.md) adds a real incident scenario runner, persistent experiment storage, dashboard query APIs, and measured results. The separate Rust Pheme VA metrics path can currently emit application/resource telemetry (with additional GPU, component-temperature, and single-battery values on supported Linux hosts), but that telemetry is not integrated into `Experiment.Result`; verified whole-device power and energy are not currently available. These benchmark-result capabilities are not available in the current API.
+The [planned architecture](../architecture.md) adds a real incident scenario runner and measured workflow results. The separate Rust Pheme VA metrics path can emit application/resource telemetry (with additional GPU, component-temperature, and single-battery values on supported Linux hosts), but verified whole-device power and energy are not currently available.

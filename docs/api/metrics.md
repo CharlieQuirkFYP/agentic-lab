@@ -1,6 +1,6 @@
 # Metrics API
 
-Status: implemented for the Rust `pheme-va` workspace and the initial Go API. The Go repository is in memory for now; it is separate from `benchmark.Experiment.Result` and will be replaceable with SQLite later.
+Status: implemented for the Rust `pheme-va` workspace and the Go API. The Go server persists metric batches in its experiment SQLite database, separate from `benchmark.Experiment.Result`. An in-memory implementation remains for tests. See the [dashboard integration guide](benchmark-ui.md) for query and summary contracts.
 
 ## Architecture
 
@@ -131,7 +131,7 @@ A batch groups events for one run:
 }
 ```
 
-The event sequence is run-local and monotonically assigned. The batch sequence is assigned by the local batcher. A host exporter should retry a batch using its run and batch sequence as an idempotency key once persistent storage is added.
+The event sequence is run-local and monotonically assigned. The batch sequence is assigned by the local batcher. Retries use `(experiment_id, run_id, sequence_number)` as identity: identical content returns 202 without another append; different content returns 409. Do not rebatch the same event under another batch sequence; event identities across different batches are not deduplicated.
 
 ## Go API
 
@@ -153,7 +153,7 @@ A successful append returns `202 Accepted`:
 }
 ```
 
-Malformed or inconsistent batches return `400`. The current storage is process-local memory and is lost on restart.
+Malformed or inconsistent batches return `400`; unknown experiments return `404`; conflicting retries return `409`; bodies over 4 MiB return `413`. Storage survives restarts. The route does not automatically collect or verify a producer's measurements.
 
 ### Read batches
 
@@ -166,11 +166,14 @@ Returns:
 ```json
 {
   "experiment_id": "exp-123",
-  "batches": [/* stored batches */]
+  "batches": [/* stored batches */],
+  "total": 1,
+  "limit": 0,
+  "offset": 0
 }
 ```
 
-This read endpoint is for development/dashboard inspection. It does not merge metrics into the generic experiment result.
+This read endpoint supports exact `run_id`/`name` filters and optional `limit` (1–100)/`offset` pagination. Name filtering keeps matching events within batches; `total` counts matching batches. Without pagination the legacy response returns all matching batches and `limit: 0`; an offset requires an explicit limit. Ordering is run ID then batch sequence ascending. Unknown experiments return 404. It does not merge metrics into the generic experiment result; `/summary` reports separate observation statistics.
 
 ## Rust development-host drain
 

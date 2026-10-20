@@ -30,7 +30,7 @@ Pheme VA (Rust) — audio, transcription, incident analysis and workflow
 Whisper/whisper.cpp + replaceable local language-model adapters
 ```
 
-Pheme VA is the canonical Voice Agent implementation. It owns the portable audio pipeline, Whisper integration, model-adapter boundaries, incident workflow, sessions, confirmation, storage, and retrieval as those capabilities are implemented. Speech output uses a replaceable speech-synthesis adapter, initially at the client. Benchmark workers exercise the same Pheme VA host/API used by interactive requests. SQLite is planned for Pheme-owned incident/session storage and separately for Go-owned experiment storage; neither service accesses the other’s database directly.
+Pheme VA is the canonical Voice Agent implementation. It owns the portable audio pipeline, Whisper integration, model-adapter boundaries, incident workflow, sessions, confirmation, storage, and retrieval as those capabilities are implemented. Speech output uses a replaceable speech-synthesis adapter, initially at the client. Real benchmark workers will exercise the same Pheme VA host/API used by interactive requests. SQLite is implemented for Go-owned experiments/metrics and planned separately for Pheme-owned incident/session storage; neither service accesses the other’s database directly.
 
 The Go API remains the application-facing backend. Keep AI-heavy functionality behind integration interfaces; do not couple handlers to a model runtime. Pheme VA owns authoritative conversation state, validates AI-proposed actions, and enforces confirmation. Go delegates incident operations through its Pheme client and owns benchmark orchestration/results; do not duplicate incident workflow rules in Go. Start with an explicit state machine; LangGraph is not required for the initial workflow.
 
@@ -101,11 +101,11 @@ The current implementation lives inside the Go API under:
 api/internal/benchmark/
 ```
 
-Experiment creation stores a queued experiment in memory, enqueues a small job containing the experiment ID, and returns immediately. A background Go worker consumes jobs from an in-memory buffered channel, marks experiments as running, executes the configured `Runner`, stores the result, and marks the experiment as completed or failed.
+Experiment creation stores a queued experiment in Go-owned SQLite, enqueues a small job containing the experiment ID, and returns immediately. A background Go worker consumes jobs from an in-memory buffered channel, marks experiments as running, executes the configured `Runner`, stores the result, and marks the experiment as completed or failed. On startup, interrupted queued/running experiments become failed with an explanation rather than being replayed.
 
 The current runner is mocked and does not call real AI workflows, external services, or model runtimes.
 
-Repository, queue, worker, and runner implementations are intentionally replaceable. Planned work adds a real incident runner, SQLite-backed experiment storage, listing/filtering APIs, and dashboard comparisons. Retain the in-memory queue and internal worker until a concrete requirement justifies replacing them. Current benchmark values are hardcoded, not measurements.
+Repository, queue, worker, and runner implementations are intentionally replaceable. The server persists experiment/results and separate metric batches in SQLite; in-memory repositories remain for isolated tests. Paginated history/filtering, metric-run views, provenance-labelled summaries, JSON/CSV export, and browser CORS are implemented. See `docs/api/benchmark-ui.md`. Planned work adds the real runner, automatic metric collection/scoring, and the frontend dashboard/comparisons. Retain the in-memory queue and internal worker until a concrete requirement justifies replacing them. Current generic benchmark values are labelled mock data, not measurements.
 
 ## Architecture Principles
 
@@ -218,9 +218,10 @@ Currently implemented:
 - `IncidentAnalyzer` interface
 - `MockIncidentAnalyzer`
 - generic asynchronous benchmark experiment lifecycle
-- in-memory benchmark repository and job queue
+- SQLite experiment/metric repositories, retained in-memory test repositories, and an in-memory job queue
 - background Go benchmark worker
 - mocked benchmark runner
+- benchmark history/filter/pagination, metric-run summaries, raw metric filters/pagination, idempotent batch retries, JSON/CSV export, and explicit browser-origin access
 - unit tests for incident analyzer and service
 - unit tests for benchmark repository, service, worker, and experiment HTTP handler
 - web WAV capture, transcript review, request-scoped streamed replies, cancellation/reset/recovery and browser-local-service speech playback
@@ -254,7 +255,6 @@ Planned but not yet implemented:
 - Pheme-owned SQLite session/report storage and incident retrieval
 - native mobile speech synthesis/audio workflow; live browser/TUI microphone/TTS acceptance and offline behavior still require validation
 - real benchmark runner, evaluation dataset, and resource/energy measurements
-- persistent benchmark results and listing/filtering APIs
 - complete confirmation/report workflow in the voice console and real benchmark dashboard, comparisons, and export
 - target-device deployment and power/thermal/endurance evaluation
 

@@ -15,6 +15,7 @@ The Go API remains the application-facing backend and benchmark coordinator. The
 - [Benchmark methodology](docs/benchmark-methodology.md)
 - [Implementation roadmap](docs/roadmap.md)
 - [Current experiment API](docs/api/experiments.md)
+- [Benchmark dashboard integration](docs/api/benchmark-ui.md)
 - [Pheme VA README](pheme-va/README.md)
 - [Contributor/agent instructions](AGENTS.md)
 
@@ -36,11 +37,16 @@ From the repository root, navigate to the API service:
 
 ```bash
 cd api
-go mod tidy
-API_CORS_ORIGINS=http://localhost:5173,http://127.0.0.1:5173 go run ./cmd/server
+go mod download
+cp .env.example .env
+go run ./cmd/server
 ```
 
 The server runs at `http://localhost:8080`.
+
+Copy `.env.example` once, then edit your local `api/.env` as needed. The server automatically loads `.env` from its working directory; existing shell/environment variables take precedence. The example configures the local Vite browser origins. Local `.env` files are ignored by Git; `.env.example` is shared with the team. Restart the server after changing settings. A missing `.env` uses the existing defaults/environment; malformed files fail startup.
+
+Benchmark dashboard APIs work without a running Pheme host. Experiments and metrics persist in `api/data/experiments.sqlite` when started from `api/`; override the path with `API_DATABASE_PATH`. Execution still uses labelled mock results. See the [frontend integration guide](docs/api/benchmark-ui.md) for endpoints, filters, summaries, exports and fixture data.
 
 #### Verify the API
 
@@ -55,7 +61,7 @@ curl -X POST \
   }'
 ```
 
-The public incident endpoint still uses Go's `MockIncidentAnalyzer`; do not interpret it as model-backed structured analysis. Dedicated voice routes now delegate to Pheme through `PHEME_VA_URL` (default `http://127.0.0.1:8000`). `API_ADDR` defaults to `127.0.0.1:8080`; `API_CORS_ORIGINS` must explicitly allow the browser origin, including when Vite/reverse-proxy forwards its `Origin` header. The command above allows the two local Vite origins; without it, TUI/non-browser calls still work but browser mutations are denied.
+The public incident endpoint still uses Go's `MockIncidentAnalyzer`; do not interpret it as model-backed structured analysis. Dedicated voice routes delegate to Pheme through `PHEME_VA_URL` (default `http://127.0.0.1:8000`). `API_ADDR` defaults to `127.0.0.1:8080`; set `API_CORS_ORIGINS` in `.env` to explicitly allow the browser origin, including when Vite/reverse-proxy forwards its `Origin` header. The example allows the two local Vite origins; with no allowed origins, TUI/non-browser calls still work but browser requests are denied.
 
 Run the Go checks from `api/`:
 
