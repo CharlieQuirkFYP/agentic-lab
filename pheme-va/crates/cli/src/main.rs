@@ -6,6 +6,7 @@ use va_core::TranscriptionStatus;
 
 mod model;
 mod recorder;
+mod remote;
 mod tui;
 
 const DEFAULT_MODEL_ID: &str = "whisper-large-v3-turbo";
@@ -29,6 +30,15 @@ struct Cli {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Monitor/configure a paired phone without starting local inference.
+    Monitor {
+        /// Explicit listen address; use 0.0.0.0:8765 for a trusted development LAN.
+        #[arg(long, default_value = "127.0.0.1:8765")]
+        bind: std::net::SocketAddr,
+        /// Optional phone settings JSON; press f then Enter to apply after pairing.
+        #[arg(long)]
+        config: Option<PathBuf>,
+    },
     /// Open local voice/typed Chat, Models and Telemetry.
     Tui {
         /// Inspect Web activity through Go; Chat and Tests always run locally.
@@ -70,6 +80,7 @@ fn main() -> Result<()> {
         command,
     } = Cli::parse();
     match command {
+        Command::Monitor { bind, config } => remote::run(bind, config),
         Command::Tui {
             server_url,
             max_seconds,
