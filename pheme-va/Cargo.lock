@@ -748,6 +748,7 @@ version = "0.1.0"
 dependencies = [
  "core",
  "metrics",
+ "serde",
  "serde_json",
  "whispercpp",
 ]

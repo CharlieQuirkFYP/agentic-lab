@@ -18,5 +18,9 @@ whisper-coreml = ["whisper", "whispercpp/coreml"]
 [dependencies]
 metrics = { path = "../metrics", default-features = false }
 serde_json.workspace = true
+serde.workspace = true
 va_core = { package = "core", path = "../core" }
 whispercpp = { path = "../models/transcription/whispercpp", optional = true }
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(pheme_ffi_test)'] }
