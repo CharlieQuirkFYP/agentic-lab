@@ -26,6 +26,8 @@ jobs:
     name: iOS / ${{ matrix.variant }}
     runs-on: macos-15
     timeout-minutes: 45
+    env:
+      CARGO_NET_RETRY: "5"
     strategy:
       fail-fast: false
       matrix:
@@ -42,10 +44,25 @@ jobs:
         with:
           toolchain: "1.99.0"
           targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          components: llvm-tools-preview
+      - name: Cache Cargo dependency downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: ios-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pheme-va/Cargo.lock') }}
+          restore-keys: |
+            ios-cargo-${{ runner.os }}-${{ runner.arch }}-
       - name: Install native project/build tools
         run: brew install cmake xcodegen
+      - name: Test packaging script offline
+        run: bash scripts/test-build-ios.sh
       - name: Build and package both iOS slices
-        run: bash scripts/build-ios.sh "${{ matrix.variant }}"
+        shell: bash
+        run: |
+          mkdir -p "target/ios/${{ matrix.variant }}"
+          bash scripts/build-ios.sh "${{ matrix.variant }}" 2>&1 | tee "target/ios/${{ matrix.variant }}/build.log"
       - name: Optional model fixture
         if: github.event_name == 'workflow_dispatch' && inputs.model_test && matrix.variant == 'whisper'
         run: bash scripts/ios-model-fixture.sh
@@ -55,19 +72,21 @@ jobs:
         run: bash scripts/test-ios.sh "${{ matrix.variant }}"
       - name: Upload production library and build metadata
         if: success() && matrix.variant == 'whisper'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: PhemeVA-cpu-xcframework
           path: |
             pheme-va/target/ios/whisper/PhemeVA.xcframework
             pheme-va/target/ios/whisper/build-metadata.txt
           if-no-files-found: error
-      - name: Upload test results
+      - name: Upload build diagnostics and test results
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: ios-${{ matrix.variant }}-results
           path: |
             pheme-va/target/ios/${{ matrix.variant }}/*.xcresult
             pheme-va/target/ios/${{ matrix.variant }}/build-metadata.txt
+            pheme-va/target/ios/${{ matrix.variant }}/build.log
+            pheme-va/target/ios/${{ matrix.variant }}/*-symbols.txt
           if-no-files-found: warn
