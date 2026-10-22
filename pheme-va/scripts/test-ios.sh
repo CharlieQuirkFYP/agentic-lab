@@ -3,6 +3,9 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 VARIANT=${1:-whisper}
 case "$VARIANT" in whisper|disabled|test) ;; *) echo "Expected whisper, disabled, or test" >&2; exit 2 ;; esac
+[[ $# -le 2 && ( -z "${2:-}" || "${2:-}" == --generate-only ) ]] || {
+    echo "Usage: bash scripts/test-ios.sh [whisper|disabled|test] [--generate-only]" >&2; exit 2;
+}
 OUT="$ROOT/target/ios/$VARIANT"
 export PHEME_XCFRAMEWORK="$OUT/PhemeVA.xcframework"
 export PHEME_SWIFT_FLAGS=""
@@ -16,7 +19,10 @@ if [[ "${PHEME_IOS_MODEL_TEST:-0}" == 1 ]]; then
 fi
 [[ -d "$PHEME_XCFRAMEWORK" ]] || { echo "Run build-ios.sh $VARIANT first." >&2; exit 1; }
 mkdir -p "$OUT/project"
-xcodegen generate --spec "$ROOT/hosts/ios/project.yml" --project "$OUT/project"
+xcodegen generate --spec "$ROOT/hosts/ios/project.yml" \
+    --project-root "$OUT/project" --project "$OUT/project"
+ruby "$ROOT/scripts/check-ios-project.rb" "$OUT/project/PhemePhone.xcodeproj" "$PHEME_XCFRAMEWORK"
+if [[ "${2:-}" == --generate-only ]]; then exit 0; fi
 
 # Select an installed available iPhone runtime rather than relying on a runner's default device.
 SIMULATOR=$(xcrun simctl list devices available -j | ruby -rjson -e '
@@ -27,7 +33,7 @@ puts device.fetch("udid")')
 xcrun simctl boot "$SIMULATOR" || xcrun simctl list devices booted | grep -F "$SIMULATOR"
 xcrun simctl bootstatus "$SIMULATOR" -b
 xcodebuild test -project "$OUT/project/PhemePhone.xcodeproj" -scheme PhemePhone \
-    -destination "platform=iOS Simulator,id=$SIMULATOR" \
+    -destination "platform=iOS Simulator,id=$SIMULATOR,arch=arm64" \
     -derivedDataPath "$OUT/DerivedData" -resultBundlePath "$OUT/Tests-$(date +%s).xcresult" \
     CODE_SIGNING_ALLOWED=NO
 # Also link the app for the device slice. Compilation/linking require no signing identity.
