@@ -45,3 +45,6 @@ jobs:
 
       - name: Test direct model downloads offline
         run: bash scripts/test-download-model.sh
+
+      - name: Test iOS packaging orchestration offline
+        run: bash scripts/test-build-ios.sh

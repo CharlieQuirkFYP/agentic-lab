@@ -6,7 +6,6 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 VARIANT=${1:-whisper}
 case "$VARIANT" in whisper|disabled|test) ;; *) echo "Usage: bash scripts/build-ios.sh [whisper|disabled|test]" >&2; exit 2 ;; esac
 [[ $(uname -m) == arm64 ]] || { echo "An Apple Silicon Mac is required." >&2; exit 1; }
-xcodebuild -version
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 export RUSTUP_TOOLCHAIN=${PHEME_IOS_RUST_TOOLCHAIN:-1.99.0}
 export CARGO_TARGET_DIR="$ROOT/target/ios/$VARIANT/cargo"
@@ -25,7 +24,33 @@ if [[ "$VARIANT" == test ]]; then
 fi
 
 cd "$ROOT"
+{
+    printf 'variant=%s\nminimum_ios=%s\n' "$VARIANT" "$IPHONEOS_DEPLOYMENT_TARGET"
+    printf 'features=%s\nrustflags=%s\nggml_native=OFF\nggml_cpu_arm_arch=armv8-a\n' "${FEATURES[*]}" "$RUSTFLAGS"
+    git rev-parse HEAD
+    rustc --version --verbose
+    cargo --version
+    xcodebuild -version
+    xcrun swift --version
+    xcrun --sdk iphoneos --show-sdk-version
+    xcrun --sdk iphonesimulator --show-sdk-version
+    xcodegen --version
+    cmake --version
+    shasum -a 256 Cargo.lock include/pheme_va.h
+} > "$OUT/build-metadata.txt"
+
 rustup target add aarch64-apple-ios aarch64-apple-ios-sim
+rustup component add llvm-tools-preview
+# Apple nm may not understand LLVM bitcode bundled with Rust's standard library.
+# Inspect with the tools from the exact Rust toolchain that builds this archive.
+RUST_HOST=$(rustc -vV | sed -n 's/^host: //p')
+LLVM_NM="$(rustc --print sysroot)/lib/rustlib/$RUST_HOST/bin/llvm-nm"
+[[ -x "$LLVM_NM" ]] || { echo "Missing Rust llvm-nm: $LLVM_NM" >&2; exit 1; }
+"$LLVM_NM" --version >> "$OUT/build-metadata.txt"
+
+# Resolve/download once, then keep both slice builds offline and lockfile-bound.
+# Cargo's bounded network retries apply here; persistent DNS failures still fail.
+cargo fetch --locked --target aarch64-apple-ios --target aarch64-apple-ios-sim
 for TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
     SDK=iphoneos
     CLANG_TARGET=arm64-apple-ios17.0
@@ -42,8 +67,11 @@ for TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
     # whisper-rs-sys built on macOS links ggml-blas, including when targeting iOS.
     export GGML_BLAS=ON GGML_BLAS_VENDOR=Apple GGML_METAL=OFF WHISPER_COREML=OFF
     export BINDGEN_EXTRA_CLANG_ARGS="-target $CLANG_TARGET -isysroot $SDKROOT"
-    cargo build --locked -p ffi --lib --release "${FEATURES[@]}" --target "$TARGET"
-    xcrun nm -gU "$CARGO_TARGET_DIR/$TARGET/release/libffi.a" > "$OUT/$TARGET-symbols.txt"
+    cargo build --frozen -p ffi --lib --release "${FEATURES[@]}" --target "$TARGET"
+    "$LLVM_NM" --extern-only --defined-only "$CARGO_TARGET_DIR/$TARGET/release/libffi.a" > "$OUT/$TARGET-symbols.txt"
+    if ! grep -q '_pheme_va_abi_version$' "$OUT/$TARGET-symbols.txt"; then
+        echo "Stable ABI entry point missing from $TARGET." >&2; exit 1
+    fi
     if [[ "$VARIANT" != test ]] && grep -q '_pheme_va_test_' "$OUT/$TARGET-symbols.txt"; then
         echo "Test hooks leaked into a production library." >&2; exit 1
     fi
@@ -60,18 +88,5 @@ xcodebuild -create-xcframework \
     -library "$CARGO_TARGET_DIR/aarch64-apple-ios/release/libffi.a" -headers "$OUT/headers" \
     -library "$CARGO_TARGET_DIR/aarch64-apple-ios-sim/release/libffi.a" -headers "$OUT/headers" \
     -output "$OUT/PhemeVA.xcframework"
-{
-    printf 'variant=%s\nminimum_ios=%s\n' "$VARIANT" "$IPHONEOS_DEPLOYMENT_TARGET"
-    printf 'features=%s\nrustflags=%s\nggml_native=OFF\nggml_cpu_arm_arch=armv8-a\n' "${FEATURES[*]}" "$RUSTFLAGS"
-    git rev-parse HEAD
-    rustc --version --verbose
-    cargo --version
-    xcodebuild -version
-    xcrun swift --version
-    xcrun --sdk iphoneos --show-sdk-version
-    xcrun --sdk iphonesimulator --show-sdk-version
-    xcodegen --version
-    cmake --version
-    shasum -a 256 Cargo.lock include/pheme_va.h "$CARGO_TARGET_DIR"/*/release/libffi.a
-} > "$OUT/build-metadata.txt"
+shasum -a 256 "$CARGO_TARGET_DIR"/*/release/libffi.a >> "$OUT/build-metadata.txt"
 echo "Packaged $OUT/PhemeVA.xcframework"

@@ -8,6 +8,8 @@ The implementation is present, but iOS deployment is **not yet accepted**. The f
 
 Use an Apple Silicon Mac with Xcode 26.0, its iOS simulator runtime, CMake, XcodeGen, and Rust 1.99.0. The minimum app deployment target is iOS 17.0. CI selects these Rust/Xcode versions and records the actual SDK/tool versions and library checksums.
 
+The packaging script installs `llvm-tools-preview` for the selected Rust toolchain and uses its `llvm-nm` to inspect exported symbols. Xcode's older `nm` cannot reliably read the LLVM bitcode bundled into Rust 1.99 archives (`Unknown attribute kind`); this inspection failure does not establish that the native library cannot link. Keep the subsequent device link and simulator tests as the compatibility gates.
+
 From `pheme-va/`:
 
 ```sh
@@ -30,6 +32,10 @@ The [iOS workflow](../../../.github/workflows/pheme-va-ios-ci.yml) runs three in
 The test variant uses the private `pheme_ffi_test` compile configuration in a separate Cargo target directory. It adds a test constructor only to its test header. Production archives are checked for leaked test symbols, and only the production Whisper XCFramework is uploaded. Do not distribute the test artifact.
 
 The workflow builds the Swift app for the device slice without signing and runs XCTest on the simulator. This catches C header import and final native linkage errors that a Rust library build alone cannot catch.
+
+Cargo dependencies are fetched once with `--locked` before both slice builds run with `--frozen` (offline, with no lockfile changes). CI caches dependency downloads and allows five Cargo network retries. This reduces repeated downloads but cannot repair a persistent runner DNS outage; a failure resolving `index.crates.io` is still a dependency-fetch failure, not a Whisper compile failure. Rerun after connectivity recovers.
+
+Build metadata is written before fetching/compiling, and CI retains `build.log`, available symbol listings, metadata, and XCTest results even after build failures. `bash scripts/test-build-ios.sh` exercises orchestration and failure gates with offline fake tools on Linux/macOS; it does not replace native iOS checks.
 
 Relevant pushes to `feat/pheme-va-ios-ffi` and pull requests targeting `main` run the workflow automatically. A manual `workflow_dispatch` trigger is also defined, with an optional `model_test` input. GitHub requires the workflow file on the default branch before manual dispatch is available; until then, push this feature branch to run the checks. Once available, use **Actions → Pheme VA iOS CI → Run workflow**, select the branch, and optionally enable the model test.
 
@@ -159,3 +165,5 @@ Record the first successful iOS workflow run before declaring the library integr
 - Cold/warm latency, peak memory, and sustained thermal behaviour with device/OS/model checksum/build configuration recorded.
 
 CPU Whisper is the required baseline. Metal/Core ML execution, energy/endurance, continuous background operation, conversational reasoning, and the full incident-report workflow require separate implementation or acceptance.
+
+The Swift host plus embedded Rust C ABI/XCFramework is the intended on-device boundary for this transcription prototype. Go and the desktop monitor are not required for phone inference. The desktop conversation runtime's child-process reply worker is not an iOS deployment design: full phone conversations need an iOS-compatible in-process reasoning adapter, including resolution of the Whisper/llama GGML symbol collision, before that runtime can be embedded.
