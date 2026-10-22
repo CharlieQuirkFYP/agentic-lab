@@ -31,6 +31,8 @@ The test variant uses the private `pheme_ffi_test` compile configuration in a se
 
 The workflow builds the Swift app for the device slice without signing and runs XCTest on the simulator. This catches C header import and final native linkage errors that a Rust library build alone cannot catch.
 
+Relevant pushes to `feat/pheme-va-ios-ffi` and pull requests targeting `main` run the workflow automatically. A manual `workflow_dispatch` trigger is also defined, with an optional `model_test` input. GitHub requires the workflow file on the default branch before manual dispatch is available; until then, push this feature branch to run the checks. Once available, use **Actions → Pheme VA iOS CI → Run workflow**, select the branch, and optionally enable the model test.
+
 For the optional real simulator transcription job, manually dispatch the workflow with `model_test=true`. It downloads:
 
 - `ggml-tiny.en.bin`, 77,704,715 bytes, from Hugging Face `ggerganov/whisper.cpp` revision `5359861c739e955e79d9a303bcbc70fb988958b1`; SHA-256 `921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f`.

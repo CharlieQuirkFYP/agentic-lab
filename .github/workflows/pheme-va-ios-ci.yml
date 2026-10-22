@@ -1,5 +1,10 @@
 name: Pheme VA iOS CI
 on:
+  push:
+    branches: [feat/pheme-va-ios-ffi]
+    paths:
+      - "pheme-va/**"
+      - ".github/workflows/pheme-va-ios-ci.yml"
   pull_request:
     branches: [main]
     paths:
