@@ -196,9 +196,12 @@ Use `X-Run-ID` and `X-Experiment-ID` headers on Rust requests to control correla
 
 ## Mobile/FFI path
 
-When built with the `whisper` feature, the C ABI exposes:
+The versioned C ABI exposes an independent observer through `pheme_va_observer_new`, `pheme_va_observer_drain`, `pheme_va_observer_inspect`, and `pheme_va_observer_free`. It can drain while model inference runs and may outlive the engine. FFI retention is bounded to 512 events; overflow drops the oldest event and increments a cumulative dropped-event count. The event/batch wire schema remains unchanged.
 
-- `pheme_va_metrics_set_enabled` to toggle event collection for future calls
-- `pheme_va_metrics_drain` to receive JSON batches as an owned C string
+The native host owns one drain consumer and distributes each original payload to displays, remote monitoring, and any future exporter. Retry uploaded batches with the same identity/content. Existing `MetricsBatcher::new()` consumers retain their previous retention behaviour.
 
-The native Swift/Kotlin host owns HTTP transport and can forward each drained batch to the same Go endpoint. Native platform code should implement `ResourceSampler` in a future host integration rather than adding iOS/Android APIs to the portable metrics crate.
+`pheme_va_transcribe_v1` returns the same generated run ID used by its events; inspection reports the active run and admitted failures retain the run ID. An experiment ID is optional because the Go experiment route can supply it. FFI does not ingest measurements.
+
+Collection is configured for future operations. Whisper-enabled builds also retain legacy `pheme_va_metrics_set_enabled` and `pheme_va_metrics_drain`; the legacy drain competes for the same queue and must not run beside another drain owner.
+
+The [native host guide](../../pheme-va/hosts/ios/README.md) describes setup and the optional paired desktop monitor. The host does not yet upload batches to Go or collect device resource/energy measurements. Platform measurements remain host responsibilities and unavailable values must remain unavailable.
