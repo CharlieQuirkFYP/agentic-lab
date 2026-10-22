@@ -37,6 +37,8 @@ Cargo dependencies are fetched once with `--locked` before both slice builds run
 
 Build metadata is written before fetching/compiling, and CI retains `build.log`, available symbol listings, metadata, and XCTest results even after build failures. `bash scripts/test-build-ios.sh` exercises orchestration and failure gates with offline fake tools on Linux/macOS; it does not replace native iOS checks.
 
+XcodeGen uses `target/ios/<variant>/project` as both its project root and output directory. The spec's source, asset, and Info.plist paths are relative to that root. Setting only `--project` leaves some references relative to the spec directory and can produce a duplicated `target/ios/target/ios` framework path. The test script validates generated references before starting the simulator. `bash scripts/test-ios-project.sh` tests real XcodeGen output for all variants and optional assets, including rejection of that broken path; it requires XcodeGen and macOS `plutil`, but no full Xcode, models, or simulator.
+
 Relevant pushes to `feat/pheme-va-ios-ffi` and pull requests targeting `main` run the workflow automatically. A manual `workflow_dispatch` trigger is also defined, with an optional `model_test` input. GitHub requires the workflow file on the default branch before manual dispatch is available; until then, push this feature branch to run the checks. Once available, use **Actions → Pheme VA iOS CI → Run workflow**, select the branch, and optionally enable the model test.
 
 For the optional real simulator transcription job, manually dispatch the workflow with `model_test=true`. It downloads:
@@ -55,11 +57,7 @@ Local validation on 2026-10-22 passed formatting, workspace Clippy, the complete
 After packaging, generate the project from `pheme-va/`:
 
 ```sh
-export PHEME_XCFRAMEWORK="$PWD/target/ios/whisper/PhemeVA.xcframework"
-export PHEME_SWIFT_FLAGS=PHEME_WHISPER
-export PHEME_VA_TEST_MODEL=
-export PHEME_VA_TEST_AUDIO=
-xcodegen generate --spec hosts/ios/project.yml --project target/ios/whisper/project
+bash scripts/test-ios.sh whisper --generate-only
 ```
 
 Open `target/ios/whisper/project/PhemePhone.xcodeproj` in Xcode. For a physical iPhone, select a signing team and an appropriate bundle identifier, then build/run the `PhemePhone` scheme. There is no TestFlight upload or App Store distribution automation yet.

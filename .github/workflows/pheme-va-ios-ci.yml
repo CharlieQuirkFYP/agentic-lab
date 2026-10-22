@@ -58,6 +58,8 @@ jobs:
         run: brew install cmake xcodegen
       - name: Test packaging script offline
         run: bash scripts/test-build-ios.sh
+      - name: Verify generated Xcode project paths
+        run: bash scripts/test-ios-project.sh
       - name: Build and package both iOS slices
         shell: bash
         run: |
