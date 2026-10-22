@@ -1,0 +1,68 @@
+name: Pheme VA iOS CI
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "pheme-va/**"
+      - ".github/workflows/pheme-va-ios-ci.yml"
+  workflow_dispatch:
+    inputs:
+      model_test:
+        description: "Also download the pinned tiny.en model and run simulator transcription"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: pheme-ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios:
+    name: iOS / ${{ matrix.variant }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [whisper, disabled, test]
+    defaults:
+      run:
+        working-directory: pheme-va
+    steps:
+      - uses: actions/checkout@v7
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.0"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+      - name: Install native project/build tools
+        run: brew install cmake xcodegen
+      - name: Build and package both iOS slices
+        run: bash scripts/build-ios.sh "${{ matrix.variant }}"
+      - name: Optional model fixture
+        if: github.event_name == 'workflow_dispatch' && inputs.model_test && matrix.variant == 'whisper'
+        run: bash scripts/ios-model-fixture.sh
+      - name: Link app and run Swift simulator integration tests
+        env:
+          PHEME_IOS_MODEL_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.model_test && matrix.variant == 'whisper' && '1' || '0' }}
+        run: bash scripts/test-ios.sh "${{ matrix.variant }}"
+      - name: Upload production library and build metadata
+        if: success() && matrix.variant == 'whisper'
+        uses: actions/upload-artifact@v4
+        with:
+          name: PhemeVA-cpu-xcframework
+          path: |
+            pheme-va/target/ios/whisper/PhemeVA.xcframework
+            pheme-va/target/ios/whisper/build-metadata.txt
+          if-no-files-found: error
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ matrix.variant }}-results
+          path: |
+            pheme-va/target/ios/${{ matrix.variant }}/*.xcresult
+            pheme-va/target/ios/${{ matrix.variant }}/build-metadata.txt
+          if-no-files-found: warn
