@@ -281,14 +281,18 @@ iOS AVAudioEngine / Android AudioRecord
         core + selected STT adapter
 ```
 
-The mobile host owns microphone permission, audio-session lifecycle, UI, and HTTP transport. Rust receives interleaved `f32` samples and returns text. When built with Whisper, the FFI also collects per-call metric batches; the host can toggle collection with `pheme_va_metrics_set_enabled` and drain JSON with `pheme_va_metrics_drain`, then forward those batches to the Go metrics endpoint. Native iOS/Android resource providers can implement the `metrics::ResourceSampler` trait in a later host integration. The FFI crate can be built as a static or dynamic library:
+The native [iPhone development host](hosts/ios/README.md) owns saved setup, model import, microphone capture, lifecycle, and one engine instance. The versioned FFI exposes configuration, responsive status, structured transcription results, and a separate bounded metrics observer. Metrics flow out; native measurements are not ingested. Legacy Whisper C symbols retain their signatures.
 
-```bash
-cargo build -p ffi --release --features whisper \
-  --target aarch64-apple-ios
+The [iOS CI workflow](../.github/workflows/pheme-va-ios-ci.yml) builds ARM64 device/simulator libraries, packages an XCFramework, and links/tests the Swift host with production, feature-disabled, and isolated fake variants. The initial build is CPU Whisper. From this directory on an Apple Silicon Mac with full Xcode:
+
+```sh
+bash scripts/build-ios.sh whisper
+bash scripts/test-ios.sh whisper
 ```
 
-Apple linking, Metal/Core ML configuration, signing, and physical-device validation require macOS/Xcode. A successful Linux build is not evidence that iOS inference works. Android should use the same core through a native `.so`/C ABI layer after the iOS spike.
+For optional observation/configuration of the same phone engine, run `cargo run -p cli -- monitor --bind 0.0.0.0:8765` on a trusted development LAN and pair from the phone. This path does not start local inference. See the host guide for setup, ownership, transport bounds, and acceptance checks.
+
+The first successful iOS CI run and physical iPhone acceptance are still required. Simulator/macOS checks do not establish device inference, memory/thermal performance, or continuous background execution. Metal/Core ML and full conversational mobile embedding remain separate work. Android can reuse the same core/C ABI after an Android host is implemented.
 
 ## Design notes
 

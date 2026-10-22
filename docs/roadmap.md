@@ -28,7 +28,7 @@ The following foundation is implemented on this branch:
 - `pheme-va/crates/runtime`: reusable conversation orchestration, typed channels/snapshots, shared inference gate, native settlement and metrics.
 - `pheme-va/crates/server`: Axum adapter preserving stateless routes and adding web-owned reviewed turns, request-scoped reply SSE, inspection/recovery, cancellation/reset and isolated tests.
 - `pheme-va/crates/models/reasoning`: normal reply adapter and host-owned persistent stdio native worker; pinned Qwen GGUF starter and incident role binding in the existing registry.
-- `pheme-va/crates/ffi`: direct-path Whisper C ABI with optional metrics-batch draining for future native hosts.
+- `pheme-va/crates/ffi`: versioned configurable core C ABI, independent bounded metrics observer, and run-correlated results; Swift host and iOS CI implementation present, with iOS/device acceptance pending.
 - `api/`: Gin public API, asynchronous mock benchmark lifecycle with an in-memory queue, SQLite experiment/metric persistence, history/filter APIs, grouped metric/run summaries, idempotent batch ingestion and JSON/CSV export.
 - `web/`: WAV microphone capture, editable transcript review, streamed replies, local-service voice playback and GET-only recovery through Go; benchmark navigation remains a placeholder.
 
