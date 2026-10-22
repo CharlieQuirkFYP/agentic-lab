@@ -1,4 +1,5 @@
 name: PhemePhone
+# Paths are relative to target/ios/<variant>/project, passed as --project-root.
 options:
   bundleIdPrefix: org.agenticlab
   deploymentTarget:
@@ -14,9 +15,9 @@ targets:
   PhemePhone:
     type: application
     platform: iOS
-    sources: [Sources]
+    sources: [../../../../hosts/ios/Sources]
     info:
-      path: ../../target/ios/generated/Info.plist
+      path: Info.plist
       properties:
         CFBundleDisplayName: Pheme
         UILaunchScreen: {}
@@ -41,8 +42,8 @@ targets:
     type: bundle.unit-test
     platform: iOS
     sources:
-      - path: Tests
-      - path: ../../target/ios/assets
+      - path: ../../../../hosts/ios/Tests
+      - path: ../../assets
         optional: true
         type: folder
         buildPhase: resources
