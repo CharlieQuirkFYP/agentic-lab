@@ -43,10 +43,6 @@ targets:
     platform: iOS
     sources:
       - path: ../../../../hosts/ios/Tests
-      - path: ../../assets
-        optional: true
-        type: folder
-        buildPhase: resources
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES

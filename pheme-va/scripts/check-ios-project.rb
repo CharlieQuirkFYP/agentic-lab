@@ -59,5 +59,6 @@ end
 resolved.values.select { |path| File.basename(path) == "assets" }.each do |path|
   expected = File.expand_path("../../assets", root)
   abort "Incorrect test assets reference: #{path}" unless path == expected
+  abort "Missing test assets directory: #{path}" unless File.directory?(path)
 end
 puts "PASS: generated framework, target linkage, Swift sources, Info.plist and asset paths"
