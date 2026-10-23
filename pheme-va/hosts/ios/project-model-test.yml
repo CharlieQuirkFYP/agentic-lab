@@ -1,0 +1,11 @@
+# Selected by test-ios.sh only for the explicitly requested Whisper model test.
+# Keep the base spec paths relative to the generated project root.
+include:
+  - path: ../../../../hosts/ios/project.yml
+    relativePaths: false
+targets:
+  BridgeTests:
+    sources:
+      - path: ../../assets
+        type: folder
+        buildPhase: resources
