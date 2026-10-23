@@ -7,19 +7,27 @@ case "$VARIANT" in whisper|disabled|test) ;; *) echo "Expected whisper, disabled
     echo "Usage: bash scripts/test-ios.sh [whisper|disabled|test] [--generate-only]" >&2; exit 2;
 }
 OUT="$ROOT/target/ios/$VARIANT"
+SPEC="$ROOT/hosts/ios/project.yml"
 export PHEME_XCFRAMEWORK="$OUT/PhemeVA.xcframework"
 export PHEME_SWIFT_FLAGS=""
 export PHEME_VA_TEST_MODEL="" PHEME_VA_TEST_AUDIO=""
 if [[ "$VARIANT" == whisper ]]; then PHEME_SWIFT_FLAGS=PHEME_WHISPER; fi
 if [[ "$VARIANT" == test ]]; then PHEME_SWIFT_FLAGS=PHEME_TEST_SUPPORT; fi
 if [[ "${PHEME_IOS_MODEL_TEST:-0}" == 1 ]]; then
+    [[ "$VARIANT" == whisper ]] || { echo "Model tests require the whisper variant." >&2; exit 2; }
     export PHEME_VA_TEST_MODEL="$ROOT/target/ios/assets/ggml-tiny.en.bin"
     export PHEME_VA_TEST_AUDIO="$ROOT/target/ios/assets/jfk.wav"
-    [[ -f "$PHEME_VA_TEST_MODEL" && -f "$PHEME_VA_TEST_AUDIO" ]]
+    for fixture in "$PHEME_VA_TEST_MODEL" "$PHEME_VA_TEST_AUDIO"; do
+        [[ -f "$fixture" ]] || {
+            echo "Missing iOS model-test fixture: $fixture. Run bash scripts/ios-model-fixture.sh first." >&2
+            exit 1
+        }
+    done
+    SPEC="$ROOT/hosts/ios/project-model-test.yml"
 fi
 [[ -d "$PHEME_XCFRAMEWORK" ]] || { echo "Run build-ios.sh $VARIANT first." >&2; exit 1; }
 mkdir -p "$OUT/project"
-xcodegen generate --spec "$ROOT/hosts/ios/project.yml" \
+xcodegen generate --spec "$SPEC" \
     --project-root "$OUT/project" --project "$OUT/project"
 ruby "$ROOT/scripts/check-ios-project.rb" "$OUT/project/PhemePhone.xcodeproj" "$PHEME_XCFRAMEWORK"
 if [[ "${2:-}" == --generate-only ]]; then exit 0; fi
