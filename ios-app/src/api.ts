@@ -71,7 +71,7 @@ export async function cancelTurn(id: string) {
 export async function getTurn(id: string): Promise<Turn> {
   const response = await checked(await fetch(`${API_BASE}/voice/turns/${encodeURIComponent(id)}`));
   const value = await response.json();
-  return {id: value.turn_id, status: value.status, transcript: value.transcript ?? "", approvedText: value.approved_text, reply: value.reply ?? "", attachments: []};
+  return {id: value.turn_id, status: value.status, transcript: value.transcript ?? "", approvedText: value.approved_text, reply: value.reply ?? "", error: value.error?.message, attachments: []};
 }
 
 export async function uploadAttachments(_attachments: Attachment[]) {
