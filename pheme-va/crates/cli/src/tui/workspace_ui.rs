@@ -956,7 +956,12 @@ fn available_disk(path: &std::path::Path) -> Option<u64> {
         if unsafe { libc::statvfs(path.as_ptr(), stat.as_mut_ptr()) } == 0 {
             // SAFETY: statvfs initialized the structure on success.
             let stat = unsafe { stat.assume_init() };
-            return Some(stat.f_bavail.saturating_mul(stat.f_frsize));
+            // libc's block-count fields differ in width on Darwin and Linux.
+            #[allow(clippy::useless_conversion)]
+            let available = u64::from(stat.f_bavail);
+            #[allow(clippy::useless_conversion)]
+            let fragment_size = u64::from(stat.f_frsize);
+            return Some(available.saturating_mul(fragment_size));
         }
     }
     None
