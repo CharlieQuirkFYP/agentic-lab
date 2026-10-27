@@ -57,6 +57,7 @@ func run() error {
 	defer database.Close()
 
 	router := gin.Default()
+	dashboardEvents := handler.NewDashboardEventHub()
 	voiceService := service.NewVoiceService(phemeClient)
 	voiceHandler := handler.NewVoiceHandler(voiceService)
 	voiceSessionStore := voicehistory.NewStore(database)
@@ -82,20 +83,7 @@ func run() error {
 	voiceMetricsHandler := handler.NewVoiceMetricsHandler(voiceService, voicemetrics.NewStore(database), benchmarkRepository, metricsService)
 	voiceMetricsGroup := router.Group("/api/v1/voice", voiceCORS)
 	voiceMetricsGroup.GET("/metrics", voiceMetricsHandler.Get)
-	go func() {
-		ticker := time.NewTicker(2 * time.Second)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-ticker.C:
-				if err := voiceMetricsHandler.Collect(ctx); err != nil {
-					log.Printf("voice metrics collection deferred: %v", err)
-				}
-			}
-		}
-	}()
+	voiceHandler.SetMetricsCollector(voiceMetricsHandler.Collect)
 
 	benchmarkQueue, err := benchmark.NewJobQueue(100)
 	if err != nil {
@@ -104,12 +92,14 @@ func run() error {
 	benchmarkRunner := benchmark.NewPhemeRunner(phemeClient)
 	benchmarkService := benchmark.NewService(benchmarkRepository, benchmarkQueue, benchmarkRunner)
 	benchmarkService.SetMetricsCollector(metricsbridge.NewCollector(phemeClient, metricsService))
+	benchmarkService.SetUpdateNotifier(func() { dashboardEvents.Publish("experiment.updated") })
+	voiceMetricsHandler.SetUpdateNotifier(func() { dashboardEvents.Publish("metrics.updated") })
 	benchmarkWorker := benchmark.NewWorker(benchmarkService, benchmarkQueue, 1)
 	benchmarkWorker.Start(ctx)
 	dashboardHandler := handler.NewBenchmarkDashboardHandler(benchmarkService, metricsService)
 
 	router.GET("/health", handler.Health)
-	router.GET("/api/v1/dashboard/events", handler.DashboardEvents)
+	router.GET("/api/v1/dashboard/events", dashboardEvents.Handler)
 	router.POST("/api/v1/incidents/analyze", incidentHandler.Analyze)
 	dashboardHandler.RegisterRoutes(router.Group("/api/v1/experiments", benchmarkCORS), metricsService)
 

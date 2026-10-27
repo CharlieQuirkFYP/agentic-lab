@@ -21,6 +21,7 @@ const MaxVoiceUploadBytes = 32 << 20
 type VoiceHandler struct {
 	service  *service.VoiceService
 	sessions *voicehistory.Store
+	collect  func(context.Context) error
 }
 
 func NewVoiceHandler(service *service.VoiceService) *VoiceHandler {
@@ -28,6 +29,10 @@ func NewVoiceHandler(service *service.VoiceService) *VoiceHandler {
 }
 
 func (h *VoiceHandler) SetSessionStore(store *voicehistory.Store) { h.sessions = store }
+
+// SetMetricsCollector connects phone requests to the metrics exporter without
+// making the exporter poll the Pheme server continuously.
+func (h *VoiceHandler) SetMetricsCollector(collect func(context.Context) error) { h.collect = collect }
 
 func (h *VoiceHandler) RegisterRoutes(group *gin.RouterGroup) {
 	for _, route := range []struct{ method, path, action string }{
@@ -81,6 +86,9 @@ func (h *VoiceHandler) Conversation(c *gin.Context, action string) {
 	}
 	response, err := h.service.Conversation(c.Request.Context(), op)
 	forwardVoiceObserved(c, response, err, h.sessions, "")
+	if action == "start" || action == "submit" {
+		h.collectAfterPhoneUpdate(c)
+	}
 }
 
 func (h *VoiceHandler) StartTurn(c *gin.Context) {
@@ -90,6 +98,7 @@ func (h *VoiceHandler) StartTurn(c *gin.Context) {
 	}
 	response, err := h.service.StartTurn(c.Request.Context(), input)
 	forwardVoiceObserved(c, response, err, h.sessions, "")
+	h.collectAfterPhoneUpdate(c)
 }
 
 func (h *VoiceHandler) Submit(c *gin.Context) {
@@ -99,6 +108,7 @@ func (h *VoiceHandler) Submit(c *gin.Context) {
 	}
 	response, err := h.service.Submit(c.Request.Context(), c.Param("turn_id"), input)
 	forwardVoiceObserved(c, response, err, h.sessions, c.Param("turn_id"))
+	h.collectAfterPhoneUpdate(c)
 }
 
 func (h *VoiceHandler) TurnStatus(c *gin.Context) {
@@ -137,6 +147,18 @@ func (h *VoiceHandler) Transcribe(c *gin.Context) {
 	}
 	response, err := h.service.Transcribe(c.Request.Context(), input)
 	forwardVoice(c, response, err)
+	h.collectAfterPhoneUpdate(c)
+}
+
+func (h *VoiceHandler) collectAfterPhoneUpdate(c *gin.Context) {
+	if h.collect == nil || c.Request.Context().Err() != nil {
+		return
+	}
+	if err := h.collect(c.Request.Context()); err != nil {
+		// The phone response is already complete; metric export can be retried
+		// by the next phone update without failing that request.
+		return
+	}
 }
 
 func voiceInput(c *gin.Context, allowAudio, allowText bool) (pheme.Input, bool) {

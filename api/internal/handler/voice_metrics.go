@@ -19,11 +19,14 @@ type VoiceMetricsHandler struct {
 	store          *voicemetrics.Store
 	experiments    benchmark.Repository
 	benchmarkStore *metrics.Service
+	notify         func()
 }
 
 func NewVoiceMetricsHandler(voice *service.VoiceService, store *voicemetrics.Store, experiments benchmark.Repository, benchmarkStore *metrics.Service) *VoiceMetricsHandler {
 	return &VoiceMetricsHandler{voice: voice, store: store, experiments: experiments, benchmarkStore: benchmarkStore}
 }
+
+func (h *VoiceMetricsHandler) SetUpdateNotifier(notify func()) { h.notify = notify }
 
 // Collect drains Pheme's in-memory batcher and persists the batches in the
 // Go-owned SQLite database. It is safe to call periodically and is idempotent
@@ -58,6 +61,9 @@ func (h *VoiceMetricsHandler) Collect(ctx context.Context) error {
 			return err
 		}
 	}
+	if len(batches) > 0 && h.notify != nil {
+		h.notify()
+	}
 	return nil
 }
 
@@ -66,19 +72,7 @@ func phoneExperimentID(runID string) string {
 	return "phone_" + hex.EncodeToString(digest[:12])
 }
 
-// Get performs an immediate collection so a dashboard refresh displays the
-// newest phone metrics, then returns all persisted phone metrics.
 func (h *VoiceMetricsHandler) Get(c *gin.Context) {
-	if err := h.Collect(c.Request.Context()); err != nil {
-		// Existing persisted metrics remain useful if Pheme is temporarily
-		// unavailable; the background collector will retry on its next tick.
-		stored, readErr := h.store.List(c.Request.Context())
-		if readErr != nil || len(stored) == 0 {
-			c.JSON(http.StatusBadGateway, gin.H{"error": "could not read Pheme metrics"})
-			return
-		}
-	}
-
 	stored, err := h.store.List(c.Request.Context())
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": "could not read voice metrics"})
