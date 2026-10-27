@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react"
+import { useEffect, useRef, useState } from "react"
 import { getMetrics, type Experiment, type MetricBatch } from "@/lib/benchmarkApi"
 import { useMetricFilter } from "@/hooks/useMetricFilter"
 import MetricFilter from "./MetricFilter"
@@ -9,10 +9,11 @@ type Series = { name: string; unit: string; points: Point[] }
 export default function ComparisonCharts({ experiments }: { experiments: Experiment[] }) {
   const [series, setSeries] = useState<Series[]>([])
   const [loading, setLoading] = useState(true)
+  const loadedRef = useRef(false)
 
   useEffect(() => {
     let active = true
-    setLoading(true)
+    if (!loadedRef.current) setLoading(true)
     void Promise.all(experiments.map(async experiment => ({ experiment, metrics: await getMetrics(experiment.id) })))
       .then(results => {
         if (!active) return
@@ -34,6 +35,7 @@ export default function ComparisonCharts({ experiments }: { experiments: Experim
           })
         })
         setSeries([...grouped.values()])
+        loadedRef.current = true
         setLoading(false)
       })
       .catch(() => { if (active) { setSeries([]); setLoading(false) } })

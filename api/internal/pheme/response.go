@@ -85,7 +85,7 @@ func (r *Response) ForwardWithObserver(ctx context.Context, w http.ResponseWrite
 		n, readErr := r.body.Read(buffer)
 		if n > 0 {
 			if observe != nil {
-				sseBuffer += string(buffer[:n])
+				sseBuffer = strings.ReplaceAll(sseBuffer+string(buffer[:n]), "\r\n", "\n")
 				blocks := strings.Split(sseBuffer, "\n\n")
 				sseBuffer = blocks[len(blocks)-1]
 				for _, block := range blocks[:len(blocks)-1] {

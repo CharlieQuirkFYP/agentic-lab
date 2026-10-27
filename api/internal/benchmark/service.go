@@ -20,6 +20,7 @@ type Service struct {
 	queue      Queue
 	runner     Runner
 	collector  MetricsCollector
+	notify     func()
 }
 
 // MetricsCollector imports measurements produced during a benchmark run.
@@ -40,6 +41,8 @@ func NewService(repository Repository, queue Queue, runner Runner) *Service {
 func (s *Service) SetMetricsCollector(collector MetricsCollector) {
 	s.collector = collector
 }
+
+func (s *Service) SetUpdateNotifier(notify func()) { s.notify = notify }
 
 func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequest) (Experiment, error) {
 	if req.UseCase == "" {
@@ -70,6 +73,9 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 	if err := s.queue.Enqueue(ctx, Job{ExperimentID: experiment.ID}); err != nil {
 		s.markEnqueueFailed(experiment, err)
 		return Experiment{}, err
+	}
+	if s.notify != nil {
+		s.notify()
 	}
 
 	return experiment, nil
@@ -116,6 +122,9 @@ func (s *Service) ProcessExperiment(ctx context.Context, id string) error {
 
 	if err := s.repository.Update(context.Background(), experiment); err != nil {
 		return err
+	}
+	if s.notify != nil {
+		s.notify()
 	}
 
 	return runErr
