@@ -1,0 +1,94 @@
+name: Pheme VA iOS CI
+on:
+  push:
+    branches: [feat/pheme-va-ios-ffi]
+    paths:
+      - "pheme-va/**"
+      - ".github/workflows/pheme-va-ios-ci.yml"
+  pull_request:
+    branches: [main]
+    paths:
+      - "pheme-va/**"
+      - ".github/workflows/pheme-va-ios-ci.yml"
+  workflow_dispatch:
+    inputs:
+      model_test:
+        description: "Also download the pinned tiny.en model and run simulator transcription"
+        type: boolean
+        default: false
+permissions:
+  contents: read
+concurrency:
+  group: pheme-ios-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  ios:
+    name: iOS / ${{ matrix.variant }}
+    runs-on: macos-15
+    timeout-minutes: 45
+    env:
+      CARGO_NET_RETRY: "5"
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [whisper, disabled, test]
+    defaults:
+      run:
+        working-directory: pheme-va
+    steps:
+      - uses: actions/checkout@v7
+      - uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: "26.0"
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: "1.99.0"
+          targets: aarch64-apple-ios,aarch64-apple-ios-sim
+          components: llvm-tools-preview
+      - name: Cache Cargo dependency downloads
+        uses: actions/cache@v5
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+          key: ios-cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('pheme-va/Cargo.lock') }}
+          restore-keys: |
+            ios-cargo-${{ runner.os }}-${{ runner.arch }}-
+      - name: Install native project/build tools
+        run: brew install cmake xcodegen
+      - name: Test packaging script offline
+        run: bash scripts/test-build-ios.sh
+      - name: Verify generated Xcode project paths
+        run: bash scripts/test-ios-project.sh
+      - name: Build and package both iOS slices
+        shell: bash
+        run: |
+          mkdir -p "target/ios/${{ matrix.variant }}"
+          bash scripts/build-ios.sh "${{ matrix.variant }}" 2>&1 | tee "target/ios/${{ matrix.variant }}/build.log"
+      - name: Optional model fixture
+        if: github.event_name == 'workflow_dispatch' && inputs.model_test && matrix.variant == 'whisper'
+        run: bash scripts/ios-model-fixture.sh
+      - name: Link app and run Swift simulator integration tests
+        env:
+          PHEME_IOS_MODEL_TEST: ${{ github.event_name == 'workflow_dispatch' && inputs.model_test && matrix.variant == 'whisper' && '1' || '0' }}
+        run: bash scripts/test-ios.sh "${{ matrix.variant }}"
+      - name: Upload production library and build metadata
+        if: success() && matrix.variant == 'whisper'
+        uses: actions/upload-artifact@v5
+        with:
+          name: PhemeVA-cpu-xcframework
+          path: |
+            pheme-va/target/ios/whisper/PhemeVA.xcframework
+            pheme-va/target/ios/whisper/build-metadata.txt
+          if-no-files-found: error
+      - name: Upload build diagnostics and test results
+        if: always()
+        uses: actions/upload-artifact@v5
+        with:
+          name: ios-${{ matrix.variant }}-results
+          path: |
+            pheme-va/target/ios/${{ matrix.variant }}/*.xcresult
+            pheme-va/target/ios/${{ matrix.variant }}/build-metadata.txt
+            pheme-va/target/ios/${{ matrix.variant }}/build.log
+            pheme-va/target/ios/${{ matrix.variant }}/*-symbols.txt
+          if-no-files-found: warn

@@ -203,6 +203,8 @@ The frontend workflow installs npm dependencies, runs Node fixture tests, lint a
 
 Pheme VA CI uses stable Rust, formatting/lint checks, workspace tests, combined Whisper/reply-worker build checks and offline downloader tests without weights. A separate fake-backed voice stack workflow exercises the actual Go/Pheme HTTP boundary. Native reply-worker builds require CMake, a C/C++ compiler and libclang; Node tests require 22.18+.
 
+The iOS FFI workflow builds CPU Whisper and feature-disabled device/simulator libraries, checks isolated fake-backed Swift operations, and packages a production XCFramework. Its first successful iOS run and physical-device acceptance remain required; see `pheme-va/hosts/ios/README.md`.
+
 Expand CI incrementally as new components or requirements are introduced.
 
 ## Current Implementation State
@@ -232,6 +234,7 @@ Currently implemented:
 - replaceable transcription, cleanup, and language-model adapter traits
 - optional in-process `whisper-rs`/whisper.cpp backend with a prewarmed model
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
+- versioned FFI configuration/status/results, safe shared lifecycle and bounded live metrics observation; Swift iPhone setup/audio host, paired desktop monitor, and iOS CI packaging/link/simulator workflow implemented with iOS/device acceptance pending
 - conservative deterministic incident-field extraction for offline development
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
