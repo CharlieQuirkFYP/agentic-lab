@@ -19,6 +19,14 @@ type Service struct {
 	repository Repository
 	queue      Queue
 	runner     Runner
+	collector  MetricsCollector
+}
+
+// MetricsCollector imports measurements produced during a benchmark run.
+// It is optional so isolated benchmark tests and the mock runner remain
+// independent from a metrics producer.
+type MetricsCollector interface {
+	Collect(context.Context, Experiment) error
 }
 
 func NewService(repository Repository, queue Queue, runner Runner) *Service {
@@ -27,6 +35,10 @@ func NewService(repository Repository, queue Queue, runner Runner) *Service {
 		queue:      queue,
 		runner:     runner,
 	}
+}
+
+func (s *Service) SetMetricsCollector(collector MetricsCollector) {
+	s.collector = collector
 }
 
 func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequest) (Experiment, error) {
@@ -42,6 +54,7 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 		ID:                 newExperimentID(),
 		UseCase:            req.UseCase,
 		Dataset:            req.Dataset,
+		Cases:              append([]Case(nil), req.Cases...),
 		ModelConfig:        req.ModelConfig,
 		EnvironmentProfile: req.EnvironmentProfile,
 		Status:             ExperimentStatusQueued,
@@ -82,6 +95,11 @@ func (s *Service) ProcessExperiment(ctx context.Context, id string) error {
 	}
 
 	result, runErr := s.runner.Run(ctx, experiment)
+	if s.collector != nil {
+		if err := s.collector.Collect(ctx, experiment); err != nil {
+			log.Printf("failed to import metrics for experiment %s: %v", experiment.ID, err)
+		}
+	}
 	completedAt := time.Now().UTC()
 	experiment.CompletedAt = &completedAt
 	experiment.Result = &result

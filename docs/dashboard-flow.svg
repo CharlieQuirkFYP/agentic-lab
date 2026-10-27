@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="760" viewBox="0 0 1400 760" role="img" aria-labelledby="title desc">
+  <title id="title">Agentic Lab dashboard flow</title>
+  <desc id="desc">A flow diagram showing dashboard loading, benchmark testing, backend execution, metrics, details, export, and downloads.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,3 L0,6 Z" fill="#64748b"/></marker>
+    <style>
+      .box { fill:#fff; stroke:#334155; stroke-width:2; rx:12; }
+      .page { fill:#e0f2fe; stroke:#0369a1; }
+      .api { fill:#fef3c7; stroke:#b45309; }
+      .worker { fill:#dcfce7; stroke:#15803d; }
+      .store { fill:#f3e8ff; stroke:#7e22ce; }
+      .title { font:700 26px Arial; fill:#0f172a; }
+      .label { font:600 16px Arial; fill:#0f172a; text-anchor:middle; }
+      .small { font:14px Arial; fill:#475569; text-anchor:middle; }
+      .line { stroke:#64748b; stroke-width:2.5; fill:none; marker-end:url(#arrow); }
+    </style>
+  </defs>
+  <rect width="1400" height="760" fill="#f8fafc"/>
+  <text x="700" y="42" class="title" text-anchor="middle">Agentic Lab Dashboard Flow</text>
+
+  <rect x="70" y="90" width="190" height="76" class="box page"/><text x="165" y="122" class="label">User opens web app</text><text x="165" y="146" class="small">React Router</text>
+  <rect x="330" y="90" width="190" height="76" class="box page"/><text x="425" y="122" class="label">DashboardPage</text><text x="425" y="146" class="small">/dashboard</text>
+  <rect x="590" y="90" width="220" height="76" class="box api"/><text x="700" y="118" class="label">Backend API</text><text x="700" y="142" class="small">experiments, summary, metrics</text>
+  <rect x="880" y="90" width="210" height="76" class="box store"/><text x="985" y="118" class="label">Experiment data</text><text x="985" y="142" class="small">results and metric batches</text>
+  <rect x="1160" y="90" width="170" height="76" class="box page"/><text x="1245" y="122" class="label">Charts</text><text x="1245" y="146" class="small">comparison view</text>
+
+  <path d="M260 128 H330" class="line"/><path d="M520 128 H590" class="line"/><path d="M810 128 H880" class="line"/><path d="M1090 128 H1160" class="line"/>
+
+  <rect x="70" y="260" width="200" height="76" class="box page"/><text x="170" y="292" class="label">Benchmark Testing</text><text x="170" y="316" class="small">/benchmark-testing</text>
+  <rect x="340" y="260" width="210" height="76" class="box page"/><text x="445" y="292" class="label">Import or edit JSON</text><text x="445" y="316" class="small">configure model/runtime</text>
+  <rect x="620" y="260" width="220" height="76" class="box api"/><text x="730" y="292" class="label">POST /experiments</text><text x="730" y="316" class="small">returns queued status</text>
+  <rect x="910" y="260" width="210" height="76" class="box worker"/><text x="1015" y="292" class="label">Background worker</text><text x="1015" y="316" class="small">runs benchmark cases</text>
+  <rect x="1190" y="260" width="150" height="76" class="box store"/><text x="1265" y="292" class="label">Persist</text><text x="1265" y="316" class="small">results + metrics</text>
+
+  <path d="M270 298 H340" class="line"/><path d="M550 298 H620" class="line"/><path d="M840 298 H910" class="line"/><path d="M1120 298 H1190" class="line"/>
+  <path d="M1265 336 V410 H700 V166" class="line"/>
+
+  <rect x="160" y="500" width="220" height="76" class="box page"/><text x="270" y="532" class="label">Experiment details</text><text x="270" y="556" class="small">/experiments/:id</text>
+  <rect x="470" y="500" width="220" height="76" class="box api"/><text x="580" y="532" class="label">Summary, runs, metrics</text><text x="580" y="556" class="small">filtered by MetricFilter</text>
+  <rect x="780" y="500" width="190" height="76" class="box page"/><text x="875" y="532" class="label">JSON export</text><text x="875" y="556" class="small">backend export endpoint</text>
+  <rect x="1060" y="500" width="190" height="76" class="box page"/><text x="1155" y="532" class="label">Downloads</text><text x="1155" y="556" class="small">browser download store</text>
+
+  <path d="M425 166 V430 H270 V500" class="line"/><path d="M380 538 H470" class="line"/><path d="M690 538 H780" class="line"/><path d="M970 538 H1060" class="line"/>
+
+  <rect x="380" y="650" width="640" height="54" rx="10" fill="#e2e8f0"/>
+  <text x="700" y="683" class="small">Dashboard reads from the backend; benchmark execution happens asynchronously.</text>
+</svg>

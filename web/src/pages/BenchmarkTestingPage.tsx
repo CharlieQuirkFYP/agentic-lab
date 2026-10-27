@@ -7,15 +7,16 @@ import { createExperiment } from "@/lib/benchmarkApi"
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "block rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white" : "block rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
 
 export default function BenchmarkTestingPage() {
-  const [jsonText, setJsonText] = useState('{\n  "name": "incident-reporting-smoke",\n  "dataset": "incident-v03",\n  "cases": []\n}')
+  const [jsonText, setJsonText] = useState('{\n  "name": "incident-reporting-smoke",\n  "dataset": "incident-v03",\n  "cases": [\n    { "id": "smoke-1", "transcript": "Smoke reported near the east entrance. Severity is medium. Notify security." }\n  ]\n}')
   const [status, setStatus] = useState("Ready")
   const [message, setMessage] = useState("Import JSON, then submit it to the benchmark API.")
   const [config, setConfig] = useState({ model: "Qwen 2.5 1.5B", quantization: "Q4_K_M", runtime: "cpu", profile: "Reference CPU", cpu_cores: 4, memory_mb: 8192 })
   const runTest = async () => {
     try {
-      const data = JSON.parse(jsonText) as { dataset?: string; use_case?: string }
+      const data = JSON.parse(jsonText) as { dataset?: string; use_case?: string; cases?: { id?: string; transcript?: string }[] }
+      const cases = (data.cases ?? []).filter(item => typeof item.transcript === "string" && item.transcript.trim()).map(item => ({ id: item.id, transcript: item.transcript!.trim() }))
       setStatus("Queued")
-      const result = await createExperiment({ ...config, dataset: data.dataset ?? "uploaded-json", use_case: data.use_case ?? "incident-reporting" })
+      const result = await createExperiment({ ...config, cases, dataset: data.dataset ?? "uploaded-json", use_case: data.use_case ?? "incident-reporting" })
       setMessage(`Experiment ${result.id} accepted by the backend.`)
     } catch (error) { setStatus("Failed"); setMessage(error instanceof Error ? error.message : "Invalid JSON or request failed.") }
   }

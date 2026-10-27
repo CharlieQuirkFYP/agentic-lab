@@ -2,11 +2,18 @@ package pheme
 
 import (
 	"context"
+	"encoding/json"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
+
+type SSEEvent struct {
+	Event string
+	Data  map[string]any
+}
 
 // Response owns an upstream body and its request cancellation. Call Forward or
 // Close once it is no longer needed. Neither JSON nor SSE events are rewritten.
@@ -28,6 +35,10 @@ func (r *Response) Close() {
 }
 
 func (r *Response) Forward(ctx context.Context, w http.ResponseWriter) error {
+	return r.ForwardWithObserver(ctx, w, nil)
+}
+
+func (r *Response) ForwardWithObserver(ctx context.Context, w http.ResponseWriter, observe func(SSEEvent)) error {
 	defer r.Close()
 	if ctx.Err() != nil {
 		return ctx.Err()
@@ -40,6 +51,12 @@ func (r *Response) Forward(ctx context.Context, w http.ResponseWriter) error {
 	w.Header().Set("Cache-Control", "no-store, no-transform")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if !r.stream {
+		if observe != nil {
+			var data map[string]any
+			if json.Unmarshal(r.payload, &data) == nil {
+				observe(SSEEvent{Event: "turn.snapshot", Data: data})
+			}
+		}
 		w.WriteHeader(r.status)
 		_, err := w.Write(r.payload)
 		if err != nil {
@@ -60,12 +77,29 @@ func (r *Response) Forward(ctx context.Context, w http.ResponseWriter) error {
 	}
 
 	buffer := make([]byte, 32<<10)
+	sseBuffer := ""
 	for {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
 		n, readErr := r.body.Read(buffer)
 		if n > 0 {
+			if observe != nil {
+				sseBuffer += string(buffer[:n])
+				blocks := strings.Split(sseBuffer, "\n\n")
+				sseBuffer = blocks[len(blocks)-1]
+				for _, block := range blocks[:len(blocks)-1] {
+					name := strings.TrimSpace(strings.TrimPrefix(firstLine(block, "event:"), "event:"))
+					payload := strings.TrimSpace(strings.TrimPrefix(firstLine(block, "data:"), "data:"))
+					if name == "" || payload == "" {
+						continue
+					}
+					var data map[string]any
+					if json.Unmarshal([]byte(payload), &data) == nil {
+						observe(SSEEvent{Event: name, Data: data})
+					}
+				}
+			}
 			_ = controller.SetWriteDeadline(time.Now().Add(30 * time.Second))
 			if _, err := w.Write(buffer[:n]); err != nil {
 				return transportError(ctx, err)
@@ -83,4 +117,13 @@ func (r *Response) Forward(ctx context.Context, w http.ResponseWriter) error {
 		// Copy raw chunks: comments/heartbeats and split Unicode/event frames
 		// remain intact. Adding our own frames here could corrupt a partial frame.
 	}
+}
+
+func firstLine(block, prefix string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(block, "\r\n", "\n"), "\n") {
+		if strings.HasPrefix(line, prefix) {
+			return line
+		}
+	}
+	return ""
 }

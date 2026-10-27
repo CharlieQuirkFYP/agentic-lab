@@ -1,4 +1,5 @@
 import type { Attachment, Readiness, Turn } from "./types";
+import type { File } from "expo-file-system";
 
 const API_BASE = (process.env.EXPO_PUBLIC_API_BASE_URL ?? "http://127.0.0.1:8080/api/v1").replace(/\/$/, "");
 
@@ -48,11 +49,11 @@ export async function getReadiness(): Promise<Readiness> {
   return response.json() as Promise<Readiness>;
 }
 
-export async function startTurn(input: string | Uint8Array, onEvent: (event: Event) => void, signal: AbortSignal) {
+export async function startTurn(input: string | Uint8Array | File, onEvent: (event: Event) => void, signal: AbortSignal, idempotencyKey = requestId()) {
   const response = await checked(await fetch(`${API_BASE}/voice/turns`, {
     method: "POST",
     signal,
-    headers: {Accept: "text/event-stream", "Content-Type": typeof input === "string" ? "application/json" : "audio/wav", "Idempotency-Key": requestId()},
+    headers: {Accept: "text/event-stream", "Content-Type": typeof input === "string" ? "application/json" : "audio/wav", "Idempotency-Key": idempotencyKey},
     body: (typeof input === "string" ? JSON.stringify({text: input}) : input) as unknown as BodyInit,
   }));
   await readSse(response, onEvent);

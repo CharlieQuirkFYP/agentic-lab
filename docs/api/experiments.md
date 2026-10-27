@@ -1,6 +1,6 @@
 # Experiment API
 
-The experiment API starts generic benchmark runs asynchronously. The server stores experiments and separate metric batches in a Go-owned SQLite database, uses an in-memory queue, and executes a mocked runner in a background Go worker. See the [benchmark UI integration guide](benchmark-ui.md) for history/filtering, summary/run responses, export, browser configuration and frontend examples.
+The experiment API starts incident-reporting benchmark runs asynchronously. The server stores experiments and separate metric batches in a Go-owned SQLite database, uses an in-memory queue, and executes a Pheme-backed runner in a background Go worker. See the [benchmark UI integration guide](benchmark-ui.md) for history/filtering, summary/run responses, export, browser configuration and frontend examples.
 
 ## Create Experiment
 
@@ -113,10 +113,10 @@ Example:
 - `GET /api/v1/experiments/:id/runs`: paginated metric-run summaries; no synthetic sample trials.
 - `GET /api/v1/experiments/:id/export?format=json|csv`: raw observations and experiment metadata.
 
-New experiments include `result_source: "mock"` in detail/history responses. The server defaults to `data/experiments.sqlite` relative to its working directory (`API_DATABASE_PATH` overrides it). Completed results survive restarts. Previously queued/running experiments become failed with an interruption explanation; the volatile queue is not replayed. In-memory repositories remain available for isolated tests/development.
+New experiments include `result_source: "measured"` in detail/history responses. The server defaults to `data/experiments.sqlite` relative to its working directory (`API_DATABASE_PATH` overrides it). Completed results survive restarts. Previously queued/running experiments become failed with an interruption explanation; the volatile queue is not replayed. In-memory repositories remain available for isolated tests/development.
 
 ## Current Limitations and Planned Work
 
-The runner returns hardcoded values; latency, memory, and tokens per second are not actual benchmark measurements. There is no real scenario runner, automatic Pheme metric import, measured resource integration in `Experiment.Result`, or verified whole-device power/energy telemetry. Summary metrics reflect uploaded observations and do not turn the mock generic result into a measurement.
+The runner sends each configured text case to Pheme `/v1/analyze` with experiment/run correlation headers. Wall-clock latency and Pheme application/resource observations are real when Pheme metrics and resource sampling are enabled. Peak memory, tokens per second, and verified whole-device power/energy telemetry remain unavailable in the generic result unless a producer reports them as detailed metric observations.
 
 The [planned architecture](../architecture.md) adds a real incident scenario runner and measured workflow results. The separate Rust Pheme VA metrics path can emit application/resource telemetry (with additional GPU, component-temperature, and single-battery values on supported Linux hosts), but verified whole-device power and energy are not currently available.

@@ -4,7 +4,7 @@ import { ArrowLeft, Download, FlaskConical, RefreshCw } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import MetricFilter from "@/components/dashboard/MetricFilter"
 import { useMetricFilter } from "@/hooks/useMetricFilter"
-import { exportExperiment, getExperiment, getMetrics, getRuns, getSummary, type Experiment, type MetricBatch, type MetricSummary, type RunPage, type Summary } from "@/lib/benchmarkApi"
+import { exportExperiment, getExperiment, getMetrics, getRuns, getSummary, getVoiceSessions, type Experiment, type MetricBatch, type MetricSummary, type RunPage, type Summary, type VoiceSession } from "@/lib/benchmarkApi"
 
 const navClass = ({ isActive }: { isActive: boolean }) => isActive ? "block rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white" : "block rounded-lg px-3 py-2 text-sm font-medium text-muted-foreground hover:bg-muted"
 const date = (value?: string | number) => value ? new Date(value).toLocaleString() : "—"
@@ -15,12 +15,15 @@ export default function ExperimentDetailsPage() {
   const [summary, setSummary] = useState<Summary | null>(null)
   const [runs, setRuns] = useState<RunPage | null>(null)
   const [batches, setBatches] = useState<MetricBatch[]>([])
+  const [phoneSessions, setPhoneSessions] = useState<VoiceSession[]>([])
   const [error, setError] = useState("")
 
   const load = async () => {
     try {
       const [item, nextSummary, nextRuns, metrics] = await Promise.all([getExperiment(id), getSummary(id), getRuns(id), getMetrics(id)])
-      setExperiment(item); setSummary(nextSummary); setRuns(nextRuns); setBatches(metrics.batches); setError("")
+      setExperiment(item); setSummary(nextSummary); setRuns(nextRuns); setBatches(metrics.batches)
+      setPhoneSessions(item.dataset === "phone" ? (await getVoiceSessions()).sessions : [])
+      setError("")
     } catch (err) { setError(err instanceof Error ? err.message : "Could not load experiment details.") }
   }
 
@@ -45,6 +48,7 @@ export default function ExperimentDetailsPage() {
     <div className="min-w-0"><header className="flex flex-wrap items-center justify-between gap-3 border-b bg-card px-5 py-4 sm:px-8"><div><Link to="/dashboard" className="flex items-center gap-1 text-sm text-blue-700"><ArrowLeft className="size-4" /> Back to dashboard</Link><h1 className="mt-2 text-xl font-semibold">Experiment details</h1><p className="mt-1 font-mono text-xs text-muted-foreground">{id}</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => void load()}><RefreshCw /> Refresh</Button><Button variant="outline" onClick={() => void download()}><Download /> JSON export</Button></div></header>
       <div className="space-y-6 px-5 py-7 sm:px-8">{error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}{experiment && <>
         <section className="grid gap-4 sm:grid-cols-4"><Card label="Status" value={experiment.status} /><Card label="Result source" value={experiment.result_source} /><Card label="Runs" value={String(summary?.run_count ?? 0)} /><Card label="Metric batches" value={String(batches.length)} /></section>
+        {experiment.dataset === "phone" ? <section className="rounded-xl border bg-card p-5 shadow-sm"><h2 className="font-semibold">Phone voice conversation</h2><p className="mt-1 text-sm text-muted-foreground">Transcript, approved chat, and Pheme response for this phone voice flow.</p>{phoneSessions.length ? <div className="mt-4 space-y-4">{phoneSessions.map(session => <article key={session.id} className="rounded-lg border bg-muted/20 p-4"><div className="flex flex-wrap items-center justify-between gap-2"><span className="font-mono text-xs text-muted-foreground">{session.id}</span><span className="text-xs font-medium capitalize">{session.status}</span></div>{session.transcript ? <p className="mt-3 text-sm"><span className="font-semibold">Transcript:</span> {session.transcript}</p> : null}{session.approved_text ? <p className="mt-2 text-sm"><span className="font-semibold">Approved chat:</span> {session.approved_text}</p> : null}{session.reply ? <p className="mt-2 text-sm"><span className="font-semibold">Pheme response:</span> {session.reply}</p> : null}</article>)}</div> : <p className="mt-4 text-sm text-muted-foreground">No phone conversation has been persisted yet.</p>}</section> : null}
         <section className="rounded-xl border bg-card p-5 shadow-sm"><h2 className="font-semibold">Configuration</h2><dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3"><Entry label="Use case" value={experiment.use_case} /><Entry label="Dataset" value={experiment.dataset} /><Entry label="Model" value={experiment.model_config.name} /><Entry label="Quantization" value={experiment.model_config.quantization} /><Entry label="Runtime" value={experiment.model_config.runtime} /><Entry label="Environment" value={experiment.environment_profile.name} /><Entry label="Created" value={date(experiment.created_at)} /><Entry label="Started" value={date(experiment.started_at)} /><Entry label="Completed" value={date(experiment.completed_at)} /></dl></section>
         <section className="rounded-xl border bg-card p-5 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Metrics and timeline</h2><p className="mt-1 text-sm text-muted-foreground">The filter is shared with the dashboard.</p></div><MetricFilter metricNames={allMetrics.map(metric => metric.name)} {...filter} /></div>{visibleMetrics.length ? <div className="mt-4 grid gap-3 sm:grid-cols-2">{visibleMetrics.map(metric => <SummaryCard key={`${metric.name}-${metric.unit}-${metric.source}`} metric={metric} />)}</div> : <p className="mt-4 text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}</section>
         <section className="rounded-xl border bg-card p-5 shadow-sm"><h2 className="font-semibold">Metric charts over time</h2>{chartMetrics.length ? <div className="mt-4 grid gap-4 lg:grid-cols-2">{chartMetrics.map(metric => <MetricChart key={`${metric.name}-${metric.unit}`} name={metric.name} unit={metric.unit} points={metric.points} />)}</div> : <p className="mt-4 text-sm text-muted-foreground">No numeric metric data available.</p>}</section>

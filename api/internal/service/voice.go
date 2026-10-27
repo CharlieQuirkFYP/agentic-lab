@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
 )
 
@@ -17,6 +18,7 @@ type VoiceClient interface {
 	Inspect(context.Context) (*pheme.Response, error)
 	TestReply(context.Context, pheme.Input) (*pheme.Response, error)
 	Transcribe(context.Context, pheme.Input) (*pheme.Response, error)
+	DrainMetrics(context.Context) ([]metrics.Batch, error)
 }
 
 func (s *VoiceService) Conversation(ctx context.Context, op pheme.ConversationOperation) (*pheme.Response, error) {
@@ -61,4 +63,8 @@ func (s *VoiceService) TestReply(ctx context.Context, input pheme.Input) (*pheme
 
 func (s *VoiceService) Transcribe(ctx context.Context, input pheme.Input) (*pheme.Response, error) {
 	return s.client.Transcribe(ctx, input)
+}
+
+func (s *VoiceService) DrainMetrics(ctx context.Context) ([]metrics.Batch, error) {
+	return s.client.DrainMetrics(ctx)
 }

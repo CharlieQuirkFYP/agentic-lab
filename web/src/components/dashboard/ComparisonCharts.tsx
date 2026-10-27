@@ -33,7 +33,7 @@ export default function ComparisonCharts({ experiments }: { experiments: Experim
             grouped.set(key, current)
           })
         })
-        setSeries([...grouped.values()].filter(item => item.points.length > 1))
+        setSeries([...grouped.values()])
         setLoading(false)
       })
       .catch(() => { if (active) { setSeries([]); setLoading(false) } })
@@ -45,17 +45,12 @@ export default function ComparisonCharts({ experiments }: { experiments: Experim
   const visible = series.filter(item => filter.activeNames.has(item.name))
 
   if (loading) return <p className="text-sm text-muted-foreground">Loading comparison metrics…</p>
-  if (!series.length) return <p className="text-sm text-muted-foreground">Add metric data to see comparisons.</p>
+  if (!series.length) return <p className="text-sm text-muted-foreground">Add phone voice data to see metrics.</p>
 
   return <div>
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">Each point is the average for one experiment.</p><MetricFilter metricNames={metricNames} {...filter} /></div>
-    {visible.length ? <><div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">{visible.map(item => <MetricCard key={`${item.name}-${item.unit}`} series={item} />)}</div><div className="mt-5 grid gap-4 lg:grid-cols-2">{visible.map(item => <MetricChart key={`${item.name}-${item.unit}`} {...item} />)}</div></> : <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}
+    {visible.length ? <div className="mt-5 grid gap-4 lg:grid-cols-2">{visible.map(item => <MetricChart key={`${item.name}-${item.unit}`} {...item} />)}</div> : <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}
   </div>
-}
-
-function MetricCard({ series }: { series: Series }) {
-  const average = series.points.reduce((sum, point) => sum + point.value, 0) / series.points.length
-  return <div className="rounded-xl border bg-card p-4 shadow-sm"><p className="truncate text-sm text-muted-foreground">{series.name}</p><p className="mt-2 text-2xl font-semibold">{average.toFixed(2)}</p><p className="mt-1 text-xs text-muted-foreground">Average {series.unit} · {series.points.length} experiments</p></div>
 }
 
 function MetricChart({ name, unit, points }: Series) {
@@ -67,5 +62,6 @@ function MetricChart({ name, unit, points }: Series) {
   const height = 180
   const coords = points.map((point, index) => ({ x: points.length === 1 ? width / 2 : 24 + index * ((width - 48) / (points.length - 1)), y: height - 24 - ((point.value - min) / spread) * (height - 48) }))
   const path = coords.map((point, index) => `${index ? "L" : "M"}${point.x},${point.y}`).join(" ")
-  return <article className="rounded-xl border bg-card p-4 shadow-sm"><div className="flex items-baseline justify-between gap-3"><h3 className="truncate font-medium">{name}</h3><span className="text-xs text-muted-foreground">average · {unit}</span></div><svg viewBox={`0 0 ${width} ${height}`} className="mt-4 h-40 w-full" role="img" aria-label={`${name} average by experiment`}><line x1="24" y1="156" x2="496" y2="156" stroke="currentColor" className="text-slate-200" /><line x1="24" y1="24" x2="24" y2="156" stroke="currentColor" className="text-slate-200" /><path d={path} fill="none" stroke="currentColor" strokeWidth="3" className="text-blue-600" />{coords.map((point, index) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="5" className="fill-blue-600"><title>{points[index].label}: average {points[index].value.toFixed(2)} {unit}</title></circle>)}</svg><div className="flex justify-between text-xs text-muted-foreground"><span>Min {min.toFixed(2)}</span><span>Max {max.toFixed(2)}</span><span>{points.length} experiments</span></div></article>
+  const displayUnit = unit === "percent" || unit === "%" ? "%" : unit
+  return <article className="rounded-xl border bg-card p-4 shadow-sm"><div className="flex items-baseline justify-between gap-3"><h3 className="truncate font-medium">{name}</h3><span className="text-xs text-muted-foreground">average · {displayUnit}</span></div><svg viewBox={`0 0 ${width} ${height}`} className="mt-4 h-40 w-full" role="img" aria-label={`${name} average by experiment`}><line x1="24" y1="156" x2="496" y2="156" stroke="currentColor" className="text-slate-200" /><line x1="24" y1="24" x2="24" y2="156" stroke="currentColor" className="text-slate-200" /><path d={path} fill="none" stroke="currentColor" strokeWidth="3" className="text-blue-600" />{coords.map((point, index) => <circle key={`${point.x}-${point.y}`} cx={point.x} cy={point.y} r="5" className="fill-blue-600"><title>{points[index].label}: average {points[index].value.toFixed(2)}{displayUnit === "%" ? "%" : ` ${displayUnit}`}</title></circle>)}</svg><div className="flex justify-between text-xs text-muted-foreground"><span>Min {min.toFixed(2)}</span><span>Max {max.toFixed(2)}</span><span>{points.length} experiments</span></div></article>
 }

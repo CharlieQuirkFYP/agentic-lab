@@ -12,18 +12,22 @@ import (
 
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/voicehistory"
 	"github.com/gin-gonic/gin"
 )
 
 const MaxVoiceUploadBytes = 32 << 20
 
 type VoiceHandler struct {
-	service *service.VoiceService
+	service  *service.VoiceService
+	sessions *voicehistory.Store
 }
 
 func NewVoiceHandler(service *service.VoiceService) *VoiceHandler {
 	return &VoiceHandler{service: service}
 }
+
+func (h *VoiceHandler) SetSessionStore(store *voicehistory.Store) { h.sessions = store }
 
 func (h *VoiceHandler) RegisterRoutes(group *gin.RouterGroup) {
 	for _, route := range []struct{ method, path, action string }{
@@ -76,7 +80,7 @@ func (h *VoiceHandler) Conversation(c *gin.Context, action string) {
 		op.Input.MetricsCursor = &cursor
 	}
 	response, err := h.service.Conversation(c.Request.Context(), op)
-	forwardVoice(c, response, err)
+	forwardVoiceObserved(c, response, err, h.sessions, "")
 }
 
 func (h *VoiceHandler) StartTurn(c *gin.Context) {
@@ -85,7 +89,7 @@ func (h *VoiceHandler) StartTurn(c *gin.Context) {
 		return
 	}
 	response, err := h.service.StartTurn(c.Request.Context(), input)
-	forwardVoice(c, response, err)
+	forwardVoiceObserved(c, response, err, h.sessions, "")
 }
 
 func (h *VoiceHandler) Submit(c *gin.Context) {
@@ -94,12 +98,12 @@ func (h *VoiceHandler) Submit(c *gin.Context) {
 		return
 	}
 	response, err := h.service.Submit(c.Request.Context(), c.Param("turn_id"), input)
-	forwardVoice(c, response, err)
+	forwardVoiceObserved(c, response, err, h.sessions, c.Param("turn_id"))
 }
 
 func (h *VoiceHandler) TurnStatus(c *gin.Context) {
 	response, err := h.service.TurnStatus(c.Request.Context(), c.Param("turn_id"))
-	forwardVoice(c, response, err)
+	forwardVoiceObserved(c, response, err, h.sessions, c.Param("turn_id"))
 }
 
 func (h *VoiceHandler) Cancel(c *gin.Context) {
@@ -179,10 +183,24 @@ func voiceInput(c *gin.Context, allowAudio, allowText bool) (pheme.Input, bool) 
 }
 
 func forwardVoice(c *gin.Context, response *pheme.Response, err error) {
+	forwardVoiceObserved(c, response, err, nil, "")
+}
+
+func forwardVoiceObserved(c *gin.Context, response *pheme.Response, err error, sessions *voicehistory.Store, fallbackID string) {
 	if err == nil {
 		// After streaming starts, transport failure closes the response; it must
 		// not invent a Rust workflow event or append a JSON error to SSE bytes.
-		err = response.Forward(c.Request.Context(), c.Writer)
+		if sessions != nil {
+			sessionID := fallbackID
+			err = response.ForwardWithObserver(c.Request.Context(), c.Writer, func(event pheme.SSEEvent) {
+				if value, ok := event.Data["turn_id"].(string); ok && value != "" {
+					sessionID = value
+				}
+				sessions.Apply(context.Background(), sessionID, event)
+			})
+		} else {
+			err = response.Forward(c.Request.Context(), c.Writer)
+		}
 		if err == nil || c.Writer.Written() {
 			return
 		}

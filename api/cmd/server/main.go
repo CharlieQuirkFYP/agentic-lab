@@ -15,9 +15,12 @@ import (
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/benchmark"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/handler"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metricsbridge"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/storage"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/voicehistory"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/voicemetrics"
 	"github.com/gin-gonic/gin"
 )
 
@@ -56,6 +59,11 @@ func run() error {
 	router := gin.Default()
 	voiceService := service.NewVoiceService(phemeClient)
 	voiceHandler := handler.NewVoiceHandler(voiceService)
+	voiceSessionStore := voicehistory.NewStore(database)
+	voiceHandler.SetSessionStore(voiceSessionStore)
+	voiceSessionsHandler := handler.NewVoiceSessionsHandler(voiceSessionStore)
+	voiceSessionsGroup := router.Group("/api/v1/voice", voiceCORS)
+	voiceSessionsGroup.GET("/sessions", voiceSessionsHandler.List)
 	voiceHandler.RegisterRoutes(router.Group("/api/v1/voice", voiceCORS))
 
 	incidentAnalyzer := analyzer.NewMockIncidentAnalyzer()
@@ -71,18 +79,37 @@ func run() error {
 	}
 	metricsRepository := metrics.NewSQLiteRepository(database)
 	metricsService := metrics.NewService(metricsRepository)
+	voiceMetricsHandler := handler.NewVoiceMetricsHandler(voiceService, voicemetrics.NewStore(database), benchmarkRepository, metricsService)
+	voiceMetricsGroup := router.Group("/api/v1/voice", voiceCORS)
+	voiceMetricsGroup.GET("/metrics", voiceMetricsHandler.Get)
+	go func() {
+		ticker := time.NewTicker(2 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				if err := voiceMetricsHandler.Collect(ctx); err != nil {
+					log.Printf("voice metrics collection deferred: %v", err)
+				}
+			}
+		}
+	}()
 
 	benchmarkQueue, err := benchmark.NewJobQueue(100)
 	if err != nil {
 		return err
 	}
-	benchmarkRunner := benchmark.NewMockRunner()
+	benchmarkRunner := benchmark.NewPhemeRunner(phemeClient)
 	benchmarkService := benchmark.NewService(benchmarkRepository, benchmarkQueue, benchmarkRunner)
+	benchmarkService.SetMetricsCollector(metricsbridge.NewCollector(phemeClient, metricsService))
 	benchmarkWorker := benchmark.NewWorker(benchmarkService, benchmarkQueue, 1)
 	benchmarkWorker.Start(ctx)
 	dashboardHandler := handler.NewBenchmarkDashboardHandler(benchmarkService, metricsService)
 
 	router.GET("/health", handler.Health)
+	router.GET("/api/v1/dashboard/events", handler.DashboardEvents)
 	router.POST("/api/v1/incidents/analyze", incidentHandler.Analyze)
 	dashboardHandler.RegisterRoutes(router.Group("/api/v1/experiments", benchmarkCORS), metricsService)
 
