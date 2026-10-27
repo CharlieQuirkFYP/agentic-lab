@@ -16,23 +16,28 @@ export class MicrophoneRecorder {
       throw new Error('This browser does not support microphone recording.')
     }
 
-    this.stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
-    })
-    this.audioContext = new AudioContext()
-    await this.audioContext.resume()
-    this.source = this.audioContext.createMediaStreamSource(this.stream)
-    this.processor = this.audioContext.createScriptProcessor(4096, 1, 1)
-    const silentOutput = this.audioContext.createGain()
-    silentOutput.gain.value = 0
-    this.chunks = []
-    this.processor.onaudioprocess = (event) => {
-      this.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)))
+    try {
+      this.stream = await navigator.mediaDevices.getUserMedia({
+        audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true },
+      })
+      this.audioContext = new AudioContext()
+      await this.audioContext.resume()
+      this.source = this.audioContext.createMediaStreamSource(this.stream)
+      this.processor = this.audioContext.createScriptProcessor(4096, 1, 1)
+      const silentOutput = this.audioContext.createGain()
+      silentOutput.gain.value = 0
+      this.chunks = []
+      this.processor.onaudioprocess = (event) => {
+        this.chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)))
+      }
+      this.source.connect(this.processor)
+      this.processor.connect(silentOutput)
+      silentOutput.connect(this.audioContext.destination)
+      this.startedAt = Date.now()
+    } catch (error) {
+      await this.cancel()
+      throw error
     }
-    this.source.connect(this.processor)
-    this.processor.connect(silentOutput)
-    silentOutput.connect(this.audioContext.destination)
-    this.startedAt = Date.now()
   }
 
   async stop(): Promise<Recording> {
@@ -51,6 +56,7 @@ export class MicrophoneRecorder {
     this.processor = undefined
     this.source = undefined
     this.stream = undefined
+    this.chunks = []
     return { blob: encodeWav(samples, sampleRate), durationSeconds }
   }
 
