@@ -42,7 +42,7 @@ Fetch locked Cargo dependencies first if the cache is empty. The optional script
 
 ## Prepare the real native app
 
-1. Install/select full Xcode and its simulator SDK. Set up device trust, Developer Mode and signing for the actual iPhone. Use an SDK that supports the phone's installed iOS. The existing Pheme iOS scripts pin Xcode 26.0/Rust 1.99.0 and target iOS 17+; the target phone's compatibility is an acceptance check.
+1. Install/select full Xcode 26.4 or newer and its simulator SDK. Expo SDK 57 requires Xcode 26.4 / Swift 6.3 or newer; the older Xcode 26.0 setting in the separate Pheme-only workflow is insufficient for the Expo app. Set up device trust, Developer Mode and signing for the actual iPhone. Use an SDK that supports the phone's installed iOS. Pheme's build script pins Rust 1.99.0 and targets iOS 17+; the target phone's compatibility is an acceptance check. The Expo native-link job uses macOS 26 with Xcode 26.4 and builds ARM64, matching the packaged Rust simulator slice.
 2. Build the CPU Whisper library from the repository:
 
    ```sh
