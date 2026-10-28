@@ -21,7 +21,7 @@ The Go API remains the application-facing backend and benchmark coordinator. The
 
 ## Local Development
 
-The active components are the Go API, the Pheme VA Rust workspace, the web voice consoles, and the separate Expo/React Native iOS client in `ios-app/`. The iOS client is API-backed and does not run the GGUF reply model on-device. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
+The active components are the Go API, the Pheme VA Rust workspace, the web voice consoles, and the separate Expo/React Native iOS client in `ios-app/`. The iOS client retains remote development chat and now has a separate local-transcription route/native module, with native-link and device acceptance pending. It does not run the GGUF reply model on-device. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
 
 ### Go API
 
@@ -200,6 +200,8 @@ npm run build
 The Vite development server runs at `http://localhost:5173`. Open `/voice` for microphone → review → streamed reply → client-side speech. Its `/api/v1` proxy calls Go, not Rust directly. Browser speech uses local-service voices only; if a browser exposes only remote voices, the dropdown remains empty while text replies still work. Availability/offline behavior depends on the OS/browser. The benchmark view marks real measurements/dashboard features as not implemented. See [web setup](web/README.md).
 
 ### iOS Client
+
+For the on-device Pheme transcription build and automated/device tests, see [`ios-app/NATIVE_TESTING.md`](ios-app/NATIVE_TESTING.md). This uses a custom native development build, not Expo Go. The following instructions launch the retained remote development chat.
 
 `ios-app/` is the separate Expo/React Native mobile client. It provides a centered microphone action, mono 16 kHz WAV capture, transcription-model and reply-model readiness, input-bar transcript editing/approval, streamed replies, pending-turn recovery, and automatic native TTS. The composer hides while a reply is generating and returns after completion; user bubbles appear only after approval. Start it with:
 

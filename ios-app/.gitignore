@@ -1,0 +1,10 @@
+node_modules/
+.expo/
+/ios/
+/android/
+/dist/
+/.env
+/.env.*
+!/.env.example
+/modules/pheme-native/ios/Frameworks/
+/modules/pheme-native/ios/Generated/

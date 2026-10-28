@@ -1,5 +1,6 @@
 import { Directory, File, Paths } from "expo-file-system";
 import { openDatabaseSync } from "expo-sqlite";
+import { initializeRecordingsSchema } from './localStorageSchema';
 
 export const MAX_RECORDING_SECONDS = 10 * 60;
 export const MAX_RECORDING_BYTES = 19_200_044;
@@ -13,25 +14,21 @@ const db = openDatabaseSync("voice-recordings.db");
 export type PendingRecording = {
   id: string; uri: string; bytes: number; durationSeconds: number;
   createdAt: number; updatedAt: number; idempotencyKey: string;
-  status: "saved" | "uploading" | "failed"; turnId?: string; error?: string;
+  status: "saved" | "uploading" | "failed"; purpose: "remote" | "local"; turnId?: string; error?: string;
 };
 
 type RecordingRow = {
   id: string; uri: string; bytes: number; duration_seconds: number;
   created_at: number; updated_at: number; idempotency_key: string;
-  status: PendingRecording["status"]; turn_id: string | null; error: string | null;
+  status: PendingRecording["status"]; purpose: PendingRecording["purpose"]; turn_id: string | null; error: string | null;
 };
 
-db.execSync(`CREATE TABLE IF NOT EXISTS recordings (
-  id TEXT PRIMARY KEY NOT NULL, uri TEXT NOT NULL, bytes INTEGER NOT NULL,
-  duration_seconds REAL NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL,
-  idempotency_key TEXT NOT NULL UNIQUE, status TEXT NOT NULL, turn_id TEXT, error TEXT
-)`);
+initializeRecordingsSchema(db);
 
 function ensureDirectory() { directory.create({ intermediates: true, idempotent: true }); }
 
 function fromRow(row: RecordingRow): PendingRecording {
-  return { id: row.id, uri: row.uri, bytes: row.bytes, durationSeconds: row.duration_seconds, createdAt: row.created_at, updatedAt: row.updated_at, idempotencyKey: row.idempotency_key, status: row.status, turnId: row.turn_id ?? undefined, error: row.error ?? undefined };
+  return { id: row.id, uri: row.uri, bytes: row.bytes, durationSeconds: row.duration_seconds, createdAt: row.created_at, updatedAt: row.updated_at, idempotencyKey: row.idempotency_key, status: row.status, purpose: row.purpose, turnId: row.turn_id ?? undefined, error: row.error ?? undefined };
 }
 
 function rows() {
@@ -73,32 +70,32 @@ export function purgeLeastRecentlyUsedRecordings(protectedIds: readonly string[]
   for (const recording of rows().map(fromRow)) if (!new File(recording.uri).exists) db.runSync("DELETE FROM recordings WHERE id = ?", recording.id);
 }
 
-export function saveRecording(wav: Uint8Array, durationSeconds: number): PendingRecording {
+export function saveRecording(wav: Uint8Array, durationSeconds: number, purpose: PendingRecording["purpose"] = "remote"): PendingRecording {
   if (durationSeconds > MAX_RECORDING_SECONDS) throw new Error("Recordings are limited to 10 minutes.");
   if (wav.byteLength > MAX_RECORDING_BYTES) throw new Error("This recording is too large. Keep voice reports under 10 minutes.");
   ensureDirectory();
   const id = `recording-${Date.now()}-${Math.random().toString(36).slice(2)}`;
   const file = new File(directory, `${id}.wav`); file.write(wav);
   const now = Date.now();
-  const value: PendingRecording = { id, uri: file.uri, bytes: wav.byteLength, durationSeconds, createdAt: now, updatedAt: now, idempotencyKey: `ios-${id}`, status: "saved" };
-  db.runSync("INSERT INTO recordings (id, uri, bytes, duration_seconds, created_at, updated_at, idempotency_key, status) VALUES (?, ?, ?, ?, ?, ?, ?, ?)", value.id, value.uri, value.bytes, value.durationSeconds, value.createdAt, value.updatedAt, value.idempotencyKey, value.status);
+  const value: PendingRecording = { id, uri: file.uri, bytes: wav.byteLength, durationSeconds, createdAt: now, updatedAt: now, idempotencyKey: `ios-${id}`, status: "saved", purpose };
+  db.runSync("INSERT INTO recordings (id, uri, bytes, duration_seconds, created_at, updated_at, idempotency_key, status, purpose) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", value.id, value.uri, value.bytes, value.durationSeconds, value.createdAt, value.updatedAt, value.idempotencyKey, value.status, value.purpose);
   purgeLeastRecentlyUsedRecordings([value.id]);
   return value;
 }
 
-export function readPendingRecording(): PendingRecording | null {
-  return rows().map(fromRow).find((recording) => new File(recording.uri).exists) ?? null;
+export function readPendingRecording(purpose: PendingRecording["purpose"] = "remote"): PendingRecording | null {
+  return rows().map(fromRow).find((recording) => recording.purpose === purpose && new File(recording.uri).exists) ?? null;
 }
 
-export function updatePendingRecording(patch: Partial<PendingRecording>) {
-  const current = readPendingRecording(); if (!current) return;
+export function updatePendingRecording(patch: Partial<PendingRecording>, purpose: PendingRecording["purpose"] = "remote") {
+  const current = readPendingRecording(purpose); if (!current) return;
   const next = { ...current, ...patch, updatedAt: Date.now() };
   db.runSync("UPDATE recordings SET updated_at = ?, status = ?, turn_id = ?, error = ? WHERE id = ?", next.updatedAt, next.status, next.turnId ?? null, next.error ?? null, current.id);
   purgeLeastRecentlyUsedRecordings([current.id]);
 }
 
-export function removePendingRecording() {
-  const current = readPendingRecording(); if (!current) return;
+export function removePendingRecording(purpose: PendingRecording["purpose"] = "remote") {
+  const current = readPendingRecording(purpose); if (!current) return;
   removeFile(current); db.runSync("DELETE FROM recordings WHERE id = ?", current.id);
 }
 
