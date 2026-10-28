@@ -42,7 +42,8 @@ jobs:
         run: npx expo export --platform ios --output-dir "$RUNNER_TEMP/expo-bundle"
 
   native-link:
-    runs-on: macos-15
+    # Expo SDK 57 requires Xcode 26.4 / Swift 6.3 or newer.
+    runs-on: macos-26
     timeout-minutes: 60
     defaults:
       run:
@@ -56,7 +57,7 @@ jobs:
           cache-dependency-path: ios-app/package-lock.json
       - uses: maxim-lobanov/setup-xcode@v1
         with:
-          xcode-version: "26.0"
+          xcode-version: "26.4"
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.0"
@@ -88,7 +89,8 @@ jobs:
           task_scheme=$(node -e 'const c=require("./app.json"); console.log(c.expo.name.replace(/[^a-zA-Z0-9]/g,""))')
           xcodebuild -workspace "$task_workspace" -scheme "$task_scheme" \
             -configuration Debug -sdk iphonesimulator -destination 'generic/platform=iOS Simulator' \
-            -derivedDataPath "$RUNNER_TEMP/expo-derived" CODE_SIGNING_ALLOWED=NO build \
+            -derivedDataPath "$RUNNER_TEMP/expo-derived" CODE_SIGNING_ALLOWED=NO \
+            ARCHS=arm64 ONLY_ACTIVE_ARCH=YES build \
             2>&1 | tee "$RUNNER_TEMP/expo-native-build.log"
       - name: Retain native link diagnostics
         if: always()
