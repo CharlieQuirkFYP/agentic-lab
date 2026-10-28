@@ -15,7 +15,16 @@
         }
       ],
       "expo-document-picker",
-      "expo-status-bar"
+      "expo-status-bar",
+      "expo-sqlite",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "17.0"
+          }
+        }
+      ]
     ],
     "ios": {
       "supportsTablet": true,

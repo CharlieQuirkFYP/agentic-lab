@@ -205,6 +205,8 @@ Pheme VA CI uses stable Rust, formatting/lint checks, workspace tests, combined 
 
 The iOS FFI workflow builds CPU Whisper and feature-disabled device/simulator libraries, checks isolated fake-backed Swift operations, and packages a production XCFramework. Its first successful iOS run and physical-device acceptance remain required; see `pheme-va/hosts/ios/README.md`.
 
+The Expo app workflow adds locked dependency installation, TypeScript/SQLite/native-client tests, fake-backed Swift runtime/WAV tests, JS bundling and production XCFramework-to-Expo simulator linking. Full native-link CI and physical-phone acceptance remain gates; see `ios-app/NATIVE_TESTING.md`.
+
 Expand CI incrementally as new components or requirements are introduced.
 
 ## Current Implementation State
@@ -235,6 +237,7 @@ Currently implemented:
 - optional in-process `whisper-rs`/whisper.cpp backend with a prewarmed model
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
 - versioned FFI configuration/status/results, safe shared lifecycle and bounded live metrics observation; Swift iPhone setup/audio host, paired desktop monitor, and iOS CI packaging/link/simulator workflow implemented with iOS/device acceptance pending
+- Expo local native module and separate on-device transcription route with checksum-verified model import, WAV/microphone inputs, local transcript recovery, JS-context-safe lifecycle and automated tests; full Expo native linking and physical-device acceptance pending
 - conservative deterministic incident-field extraction for offline development
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag

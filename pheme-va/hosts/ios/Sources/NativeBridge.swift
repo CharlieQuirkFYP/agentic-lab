@@ -1,64 +1,6 @@
 import Foundation
 import PhemeVA
 
-struct BridgeConfiguration: Codable, Equatable, Sendable {
-    var schema_version: UInt32 = 1
-    var model_path: String
-    var language: String? = nil
-    var dictionary: [String] = []
-    var threads: Int = 4
-    var max_audio_seconds: Int = 120
-    var metrics_enabled: Bool = true
-}
-struct BridgeFailure: Error, Codable, LocalizedError, Sendable {
-    let code: Int32
-    let message: String
-    let run_id: String?
-    var errorDescription: String? { message }
-}
-struct Capabilities: Codable, Sendable {
-    let whisper: Bool
-    let whisper_metal: Bool
-    let whisper_coreml: Bool
-    let metrics_output: Bool
-}
-struct BridgeSnapshot: Codable, Sendable {
-    let schema_version: UInt32
-    let state: String
-    let ready: Bool
-    let capabilities: Capabilities
-    let configuration: BridgeConfiguration?
-    let active_run: String?
-    let last_failure: BridgeFailure?
-}
-struct ObserverSnapshot: Codable, Sendable {
-    let capacity_events: Int
-    let pending_events: Int
-    let dropped_events: UInt64
-}
-struct Transcription: Decodable, Sendable {
-    let schema_version: UInt32
-    let run_id: String
-    let result: ResultBody
-    struct ResultBody: Decodable, Sendable {
-        let text: String
-        let status: String
-        let model_id: String
-        let processing_time_ms: Double
-    }
-}
-struct CapturedAudio: Sendable {
-    let samples: [Float]
-    let sampleRate: UInt32
-    let channels: UInt16
-}
-struct BridgePoll: Sendable {
-    let snapshot: BridgeSnapshot
-    let observer: ObserverSnapshot
-    // Keep this exact payload for fan-out/retry. Do not re-drain for each consumer.
-    let batchesJSON: String
-}
-
 /// Each queued call retains this owner until native work returns. ARC destruction
 /// therefore cannot race inference, polling, or a cancelled Swift UI task.
 /// Rust synchronizes engine access; the execution queue keeps blocking work off UI.
@@ -67,7 +9,12 @@ final class NativeBridge: @unchecked Sendable {
     private let observer: OpaquePointer
     private let executor = DispatchQueue(label: "org.agenticlab.pheme.inference", qos: .userInitiated)
 
-    init(handle: OpaquePointer? = pheme_va_create()) throws {
+    convenience init() throws {
+        guard pheme_va_abi_version() == 1 else { throw BridgeFailure(code: 5, message: "Unsupported Pheme ABI version.", run_id: nil) }
+        try self.init(handle: pheme_va_create())
+    }
+
+    init(handle: OpaquePointer?) throws {
         guard let handle else { throw BridgeFailure(code: 4, message: "Could not allocate the engine.", run_id: nil) }
         guard let observer = pheme_va_observer_new(handle) else {
             pheme_va_free(handle)
@@ -101,6 +48,12 @@ final class NativeBridge: @unchecked Sendable {
 
     func inspect() throws -> BridgeSnapshot {
         try decode { pheme_va_inspect(handle, $0) }
+    }
+
+    // Admission is already stopped by the host. close does not free the handle;
+    // ARC releases it only after all retained native calls have returned.
+    func close() throws {
+        _ = try raw { pheme_va_close(handle, $0) }
     }
 
     /// Called by exactly one service poller, independently of the inference queue.

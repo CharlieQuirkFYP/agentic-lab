@@ -4,7 +4,10 @@ ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 cd "$ROOT"
 # Avoid running host CPU feature probes; use the same conservative baseline as iOS.
 export GGML_NATIVE=OFF GGML_CPU_ARM_ARCH=armv8-a
-for VARIANT in disabled whisper test; do
+VARIANTS=(disabled whisper test)
+if [[ $# -gt 0 ]]; then VARIANTS=("$@"); fi
+for VARIANT in "${VARIANTS[@]}"; do
+    case "$VARIANT" in disabled|whisper|test) ;; *) echo "Unknown variant: $VARIANT" >&2; exit 2 ;; esac
     OUT="$ROOT/target/ffi-swift/$VARIANT"
     mkdir -p "$OUT/include"
     cp include/pheme_va.h include/module.modulemap "$OUT/include/"
@@ -22,7 +25,7 @@ for VARIANT in disabled whisper test; do
     fi
     cargo build --locked -p ffi --lib --target-dir "$OUT/cargo" "${CARGO_FLAGS[@]}"
     swiftc -parse-as-library -I "$OUT/include" -module-cache-path "$OUT/module-cache" \
-        "${FLAGS[@]}" hosts/ios/Sources/NativeBridge.swift hosts/ios/Tests/FFISmoke.swift \
+        "${FLAGS[@]}" hosts/ios/Sources/BridgeTypes.swift hosts/ios/Sources/NativeBridge.swift hosts/ios/Tests/FFISmoke.swift \
         "$OUT/cargo/debug/libffi.a" -framework Accelerate -framework Security \
         -framework SystemConfiguration -lc++ -lresolv -o "$OUT/smoke"
     "$OUT/smoke"
