@@ -1,5 +1,5 @@
 // Frontend contract reference for the Go benchmark API. See benchmark-ui.md.
-// The current server uses mock execution; these types do not imply real inference.
+// The current server executes configured text cases through Pheme.
 export type ExperimentStatus = 'queued' | 'running' | 'completed' | 'failed';
 export type ResultSource = 'mock' | 'measured' | 'unavailable';
 export type UseCase = 'incident-reporting' | 'interview-assistant' | 'license-plate-monitoring';
@@ -19,9 +19,15 @@ export interface EnvironmentProfile {
   gpu_info?: string;
 }
 
+export interface BenchmarkCase {
+  id?: string;
+  transcript: string;
+}
+
 export interface CreateExperimentRequest {
   use_case: UseCase;
   dataset?: string;
+  cases?: BenchmarkCase[];
   model_config?: ModelConfig;
   environment_profile?: EnvironmentProfile;
 }
@@ -40,6 +46,7 @@ export interface Experiment {
   id: string;
   use_case: UseCase;
   dataset?: string;
+  cases?: BenchmarkCase[];
   model_config: ModelConfig;
   environment_profile: EnvironmentProfile;
   result_source: ResultSource;

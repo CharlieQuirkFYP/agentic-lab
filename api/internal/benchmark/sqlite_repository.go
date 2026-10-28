@@ -59,8 +59,11 @@ func (r *SQLiteRepository) List(ctx context.Context, q ListQuery) (ExperimentPag
 	if err := q.Validate(); err != nil {
 		return ExperimentPage{}, err
 	}
-	clauses := []string{"1=1"}
-	args := []any{}
+	// Older API versions created a synthetic voice-sessions experiment. Phone
+	// activity is now stored outside benchmark experiments, so keep that legacy
+	// row out of benchmark listings without deleting historical database data.
+	clauses := []string{"id <> ?"}
+	args := []any{"voice-sessions"}
 	for _, filter := range []struct {
 		column string
 		value  string

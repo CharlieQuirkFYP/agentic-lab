@@ -69,6 +69,12 @@ CREATE TABLE IF NOT EXISTS metric_batches (
  payload TEXT NOT NULL,
  PRIMARY KEY (experiment_id, run_id, sequence_number)
 );
+CREATE TABLE IF NOT EXISTS voice_metric_batches (
+ run_id TEXT NOT NULL,
+ sequence_number INTEGER NOT NULL,
+ payload TEXT NOT NULL,
+ PRIMARY KEY (run_id, sequence_number)
+);
 `)
 	if err != nil {
 		_ = db.Close()

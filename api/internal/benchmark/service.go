@@ -19,6 +19,15 @@ type Service struct {
 	repository Repository
 	queue      Queue
 	runner     Runner
+	collector  MetricsCollector
+	notify     func()
+}
+
+// MetricsCollector imports measurements produced during a benchmark run.
+// It is optional so isolated benchmark tests and the mock runner remain
+// independent from a metrics producer.
+type MetricsCollector interface {
+	Collect(context.Context, Experiment) error
 }
 
 func NewService(repository Repository, queue Queue, runner Runner) *Service {
@@ -28,6 +37,12 @@ func NewService(repository Repository, queue Queue, runner Runner) *Service {
 		runner:     runner,
 	}
 }
+
+func (s *Service) SetMetricsCollector(collector MetricsCollector) {
+	s.collector = collector
+}
+
+func (s *Service) SetUpdateNotifier(notify func()) { s.notify = notify }
 
 func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequest) (Experiment, error) {
 	if req.UseCase == "" {
@@ -42,6 +57,7 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 		ID:                 newExperimentID(),
 		UseCase:            req.UseCase,
 		Dataset:            req.Dataset,
+		Cases:              append([]Case(nil), req.Cases...),
 		ModelConfig:        req.ModelConfig,
 		EnvironmentProfile: req.EnvironmentProfile,
 		Status:             ExperimentStatusQueued,
@@ -57,6 +73,9 @@ func (s *Service) CreateExperiment(ctx context.Context, req CreateExperimentRequ
 	if err := s.queue.Enqueue(ctx, Job{ExperimentID: experiment.ID}); err != nil {
 		s.markEnqueueFailed(experiment, err)
 		return Experiment{}, err
+	}
+	if s.notify != nil {
+		s.notify()
 	}
 
 	return experiment, nil
@@ -82,6 +101,11 @@ func (s *Service) ProcessExperiment(ctx context.Context, id string) error {
 	}
 
 	result, runErr := s.runner.Run(ctx, experiment)
+	if s.collector != nil {
+		if err := s.collector.Collect(ctx, experiment); err != nil {
+			log.Printf("failed to import metrics for experiment %s: %v", experiment.ID, err)
+		}
+	}
 	completedAt := time.Now().UTC()
 	experiment.CompletedAt = &completedAt
 	experiment.Result = &result
@@ -98,6 +122,9 @@ func (s *Service) ProcessExperiment(ctx context.Context, id string) error {
 
 	if err := s.repository.Update(context.Background(), experiment); err != nil {
 		return err
+	}
+	if s.notify != nil {
+		s.notify()
 	}
 
 	return runErr

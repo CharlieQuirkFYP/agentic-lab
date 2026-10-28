@@ -20,11 +20,31 @@ export default function ExperimentDetailsPage() {
   const load = async () => {
     try {
       const [item, nextSummary, nextRuns, metrics] = await Promise.all([getExperiment(id), getSummary(id), getRuns(id), getMetrics(id)])
-      setExperiment(item); setSummary(nextSummary); setRuns(nextRuns); setBatches(metrics.batches); setError("")
+      setExperiment(item); setSummary(nextSummary); setRuns(nextRuns); setBatches(metrics.batches)
+      setError("")
     } catch (err) { setError(err instanceof Error ? err.message : "Could not load experiment details.") }
   }
 
   useEffect(() => { void load() }, [id])
+  useEffect(() => {
+    let socket: WebSocket | null = null
+    let reconnectTimer: number | undefined
+    let stopped = false
+    const connect = () => {
+      if (stopped) return
+      const protocol = window.location.protocol === "https:" ? "wss:" : "ws:"
+      socket = new WebSocket(`${protocol}//${window.location.host}/api/v1/dashboard/events`)
+      socket.onmessage = event => {
+        try {
+          const message = JSON.parse(event.data) as { type?: string }
+          if (message.type === "metrics.updated") void load()
+        } catch { /* Ignore malformed or non-event messages. */ }
+      }
+      socket.onclose = () => { if (!stopped) reconnectTimer = window.setTimeout(connect, 2000) }
+    }
+    connect()
+    return () => { stopped = true; if (reconnectTimer) window.clearTimeout(reconnectTimer); socket?.close() }
+  }, [id])
 
   const download = async () => {
     const data = await exportExperiment(id)
