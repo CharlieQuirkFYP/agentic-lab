@@ -1,0 +1,85 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="1080" viewBox="0 0 1600 1080" role="img" aria-labelledby="title desc">
+  <title id="title">Agentic Lab end-to-end system flow</title>
+  <desc id="desc">End-to-end flow from the mobile phone voice recording and web dashboard through the Go API, Pheme services, storage, and user interfaces.</desc>
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="3" orient="auto" markerUnits="strokeWidth"><path d="M0,0 L10,3 L0,6 Z" fill="#64748b"/></marker>
+    <style>
+      .box { fill:#fff; stroke:#334155; stroke-width:2; rx:12; }
+      .client { fill:#e0f2fe; stroke:#0369a1; }
+      .backend { fill:#fef3c7; stroke:#b45309; }
+      .engine { fill:#dcfce7; stroke:#15803d; }
+      .store { fill:#f3e8ff; stroke:#7e22ce; }
+      .boundary { fill:none; stroke:#94a3b8; stroke-width:2; stroke-dasharray:8 7; rx:16; }
+      .title { font:700 28px Arial; fill:#0f172a; }
+      .lane { font:700 19px Arial; fill:#334155; }
+      .label { font:600 16px Arial; fill:#0f172a; text-anchor:middle; }
+      .small { font:14px Arial; fill:#475569; text-anchor:middle; }
+      .line { stroke:#64748b; stroke-width:2.5; fill:none; marker-end:url(#arrow); }
+      .dashed { stroke-dasharray:7 6; }
+    </style>
+  </defs>
+  <rect width="1600" height="1080" fill="#f8fafc"/>
+  <text x="800" y="42" class="title" text-anchor="middle">Agentic Lab — End-to-End System Flow</text>
+
+  <rect x="35" y="70" width="440" height="950" class="boundary"/>
+  <rect x="500" y="70" width="690" height="950" class="boundary"/>
+  <rect x="1215" y="70" width="350" height="950" class="boundary"/>
+  <text x="70" y="105" class="lane">Clients</text>
+  <text x="535" y="105" class="lane">Backend and Pheme services</text>
+  <text x="1250" y="105" class="lane">Persistence and views</text>
+
+  <rect x="75" y="155" width="170" height="78" class="box client"/><text x="160" y="187" class="label">iPhone user</text><text x="160" y="211" class="small">speaks incident report</text>
+  <rect x="290" y="155" width="145" height="78" class="box client"/><text x="362" y="187" class="label">Expo app</text><text x="362" y="211" class="small">records audio</text>
+  <path d="M245 194 H290" class="line"/>
+
+  <rect x="75" y="300" width="170" height="78" class="box store"/><text x="160" y="332" class="label">Device WAV file</text><text x="160" y="356" class="small">document storage</text>
+  <rect x="290" y="300" width="145" height="78" class="box store"/><text x="362" y="332" class="label">SQLite</text><text x="362" y="356" class="small">status and retry data</text>
+  <path d="M362 233 V300" class="line"/>
+  <path d="M290 339 H245" class="line"/>
+
+  <rect x="75" y="445" width="170" height="78" class="box client"/><text x="160" y="477" class="label">WAV upload</text><text x="160" y="501" class="small">audio/wav + idempotency key</text>
+  <rect x="290" y="445" width="145" height="78" class="box client"/><text x="362" y="477" class="label">Transcript review</text><text x="362" y="501" class="small">edit and approve</text>
+  <path d="M160 378 V445" class="line"/>
+  <path d="M245 484 H290" class="line"/>
+
+  <rect x="75" y="650" width="170" height="78" class="box client"/><text x="160" y="682" class="label">Web user</text><text x="160" y="706" class="small">opens dashboard</text>
+  <rect x="290" y="650" width="145" height="78" class="box client"/><text x="362" y="682" class="label">React web app</text><text x="362" y="706" class="small">dashboard and testing</text>
+  <path d="M245 689 H290" class="line"/>
+
+  <rect x="75" y="800" width="170" height="78" class="box client"/><text x="160" y="832" class="label">JSON test set</text><text x="160" y="856" class="small">import or edit cases</text>
+  <rect x="290" y="800" width="145" height="78" class="box client"/><text x="362" y="832" class="label">Dashboard charts</text><text x="362" y="856" class="small">metrics and results</text>
+  <path d="M362 728 V800" class="line"/>
+
+  <rect x="550" y="155" width="190" height="78" class="box backend"/><text x="645" y="187" class="label">Go API</text><text x="645" y="211" class="small">voice routes</text>
+  <rect x="800" y="155" width="190" height="78" class="box engine"/><text x="895" y="187" class="label">Pheme STT</text><text x="895" y="211" class="small">Whisper transcription</text>
+  <rect x="1045" y="155" width="105" height="78" class="box store"/><text x="1097" y="187" class="label">Turn</text><text x="1097" y="211" class="small">state</text>
+  <path d="M435 484 H500 V194 H550" class="line"/>
+  <path d="M740 194 H800" class="line"/>
+  <path d="M990 194 H1045" class="line"/>
+  <path d="M1045 233 V484 H435" class="line dashed"/>
+
+  <rect x="550" y="350" width="190" height="78" class="box backend"/><text x="645" y="382" class="label">Approved text</text><text x="645" y="406" class="small">submit turn</text>
+  <rect x="800" y="350" width="190" height="78" class="box engine"/><text x="895" y="382" class="label">Pheme reply</text><text x="895" y="406" class="small">response generation</text>
+  <rect x="1045" y="350" width="105" height="78" class="box client"/><text x="1097" y="382" class="label">SSE</text><text x="1097" y="406" class="small">stream</text>
+  <path d="M435 484 H500 V389 H550" class="line"/>
+  <path d="M740 389 H800" class="line"/>
+  <path d="M990 389 H1045" class="line"/>
+  <path d="M1045 428 V484 H435" class="line dashed"/>
+
+  <rect x="550" y="650" width="190" height="78" class="box backend"/><text x="645" y="682" class="label">Go benchmark API</text><text x="645" y="706" class="small">experiments and metrics</text>
+  <rect x="800" y="650" width="190" height="78" class="box backend"/><text x="895" y="682" class="label">Queue + worker</text><text x="895" y="706" class="small">async execution</text>
+  <rect x="1045" y="650" width="105" height="78" class="box engine"/><text x="1097" y="682" class="label">Pheme</text><text x="1097" y="706" class="small">runner</text>
+  <path d="M435 689 H550" class="line"/>
+  <path d="M740 689 H800" class="line"/>
+  <path d="M990 689 H1045" class="line"/>
+
+  <rect x="550" y="820" width="190" height="78" class="box store"/><text x="645" y="852" class="label">Benchmark SQLite</text><text x="645" y="876" class="small">experiments + metrics</text>
+  <rect x="800" y="820" width="190" height="78" class="box backend"/><text x="895" y="852" class="label">Summary APIs</text><text x="895" y="876" class="small">list, runs, export</text>
+  <rect x="1045" y="820" width="105" height="78" class="box client"/><text x="1097" y="852" class="label">Charts</text><text x="1097" y="876" class="small">view</text>
+  <path d="M1045 728 V820 H740" class="line"/>
+  <path d="M740 859 H800" class="line"/>
+  <path d="M990 859 H1045" class="line"/>
+  <path d="M1097 820 V728 H435" class="line dashed"/>
+
+  <text x="800" y="980" class="small">Phone voice processing and dashboard benchmarking use separate API flows, sharing the backend/Pheme platform.</text>
+</svg>

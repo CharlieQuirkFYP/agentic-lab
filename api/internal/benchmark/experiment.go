@@ -48,6 +48,7 @@ type Experiment struct {
 	ID                 string             `json:"id"`
 	UseCase            UseCase            `json:"use_case"`
 	Dataset            string             `json:"dataset,omitempty"`
+	Cases              []Case             `json:"cases,omitempty"`
 	ModelConfig        ModelConfig        `json:"model_config"`
 	EnvironmentProfile EnvironmentProfile `json:"environment_profile"`
 	Status             ExperimentStatus   `json:"status"`
@@ -57,9 +58,15 @@ type Experiment struct {
 	Result             *Result            `json:"result,omitempty"`
 }
 
+type Case struct {
+	ID         string `json:"id,omitempty"`
+	Transcript string `json:"transcript"`
+}
+
 type CreateExperimentRequest struct {
 	UseCase            UseCase            `json:"use_case"`
 	Dataset            string             `json:"dataset,omitempty"`
+	Cases              []Case             `json:"cases,omitempty"`
 	ModelConfig        ModelConfig        `json:"model_config"`
 	EnvironmentProfile EnvironmentProfile `json:"environment_profile"`
 }

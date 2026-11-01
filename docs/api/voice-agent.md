@@ -253,7 +253,7 @@ If `X-Run-ID` is absent, the server generates a process-local ID such as `run_<e
 
 Metric collection is disabled by default. Enable application events with `--metrics-enabled` or `PHEME_VA_METRICS_ENABLED=true`; resource snapshots additionally require `--resource-sampling` or `PHEME_VA_RESOURCE_SAMPLING=true`. `/v1/analyze` enables incident-only metrics by default unless a valid `X-Incident-Active: false` header overrides them. `/v1/transcribe` uses the startup `--incident-metrics` setting unless overridden.
 
-`GET /v1/metrics/batches` drains all currently buffered batches as a JSON array and removes them from the in-memory batcher. It has no filters, acknowledgements, retry queue, or persistence. Events can be forwarded by an external exporter to the Go route `POST /api/v1/experiments/:id/metrics`; the Rust server does not know the Go URL or forward automatically. See [the metrics contract](metrics.md) for event fields and resource availability.
+`GET /v1/metrics/batches` drains all currently buffered batches as a JSON array and removes them from the in-memory batcher. It has no filters, acknowledgements, retry queue, or persistence. The Go benchmark worker calls this endpoint after an experiment and persists the returned batches through the Go metrics store. See [the metrics contract](metrics.md) for event fields and resource availability.
 
 ## Current Go public API
 

@@ -55,6 +55,7 @@ Model weights are not committed. The local `models/` directory contains the chec
 - A separate local GGUF reply runtime with native cancellation, fresh per-call KV state, and a registry-bound incident role. Qwen2.5-1.5B-Instruct Q4_K_M is the starter model, not a validated deployment choice.
 - A TUI workspace with alphabetic Chat/Web/Tests/Models/Telemetry navigation, turn-bound transcript editing, one manifest-backed Models page, inline local downloads, automatic model-selection persistence, reply role choices, combined prompt preview/hash, and remembered automatic voice replies with playback status.
 - A Go-delegated React voice console with complete-turn WAV capture, explicit review, real reply streaming, and local-voice-only browser speech synthesis.
+- A separate Expo/React Native mobile client with a centered microphone action, native PCM/WAV input, transcription/reply readiness labels, input-bar transcript editing and approval, streamed replies with generating dots, pending-turn recovery, automatic native reply speech, and staged file selection; multipart upload remains backend work.
 - A portable `metrics` crate with synchronous pub/sub, per-run filtering, application timings/status events, resource snapshots, explicit unavailable values, and batched export data.
 - Linux/macOS/Windows process/system CPU and RAM sampling through `sysinfo`, with extension points for native mobile sensors and device power/thermal providers.
 - Core and incident-analysis instrumentation that keeps pure text analysis separate from transcription.

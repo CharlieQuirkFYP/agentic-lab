@@ -1,6 +1,6 @@
 # Benchmark dashboard integration
 
-The Go API supports dashboard integration independently of Pheme/model setup. Experiment execution still uses `MockRunner`; every created experiment has `result_source: "mock"`. The API does **not** run a real benchmark, select a model runtime, or automatically import Pheme metrics yet.
+The Go API supports dashboard integration with Pheme. Experiment execution sends configured text cases through Pheme and records `result_source: "measured"`. The API does not select a model runtime; Pheme owns runtime/model selection. The benchmark worker drains Pheme’s buffered metric batches after each experiment and persists them in the Go-owned metrics store for dashboard queries.
 
 [TypeScript request/response types](benchmark-types.ts) are provided as a frontend contract reference.
 
@@ -115,7 +115,7 @@ A completed experiment without uploaded metric batches currently returns:
 }
 ```
 
-`result_source` describes only the generic `result`: `mock`, `measured` (reserved for a future explicitly identified real runner), or `unavailable`. Show a visible mock label and do not chart its hardcoded numbers as measured performance. Summary `result` is null while no result exists; the existing experiment detail omits `result` in that case. Interruption results contain `success: false` and an explanation; their legacy numeric zero fields are not measurements.
+`result_source` describes only the generic `result`: `mock`, `measured`, or `unavailable`. Show the source label next to the result and do not treat unavailable values as measurements. Summary `result` is null while no result exists; the existing experiment detail omits `result` in that case. Interruption results contain `success: false` and an explanation; their legacy numeric zero fields are not measurements.
 
 Metric observations are reported separately by their producers. Each summary group has this shape:
 
@@ -199,7 +199,7 @@ After creating an experiment, POST this fixture to `/api/v1/experiments/<actual-
 }
 ```
 
-This is integration fixture data, not a measurement. The route supplies `experiment_id` when omitted. If present in the batch/events, it must match the route. Identical retries keyed by `(experiment_id, run_id, sequence_number)` return 202 without another stored batch; different content for that identity returns 409. Keep event sequences unique across a run and send each event in one batch; producer-side rebatching of the same event under a different batch identity is not deduplicated. Out-of-order batches are accepted. Invalid batches return 400; uploads over 4 MiB return 413. No Pheme exporter is automatically posting these batches yet.
+This is integration fixture data, not a measurement. The route supplies `experiment_id` when omitted. If present in the batch/events, it must match the route. Identical retries keyed by `(experiment_id, run_id, sequence_number)` return 202 without another stored batch; different content for that identity returns 409. Keep event sequences unique across a run and send each event in one batch; producer-side rebatching of the same event under a different batch identity is not deduplicated. Out-of-order batches are accepted. Invalid batches return 400; uploads over 4 MiB return 413. The Go benchmark worker also imports batches drained from the configured Pheme server after a run.
 
 ### Export
 

@@ -30,6 +30,7 @@ export default function App() {
   const [isDraggingFile, setIsDraggingFile] = useState(false)
   const [microphoneBlocked, setMicrophoneBlocked] = useState(false)
   const dragDepth = useRef(0)
+  const requestGeneration = useRef(0)
 
   useEffect(() => {
     try {
@@ -54,16 +55,22 @@ export default function App() {
   }, [])
 
   const sendAudio = async (blob: Blob, durationSeconds: number, fileName?: string) => {
+    const generation = requestGeneration.current
     const controller = new AbortController()
     processingAbortController.current = controller
     const audioUrl = await blobToDataUrl(blob)
+    if (generation !== requestGeneration.current) return
     setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'user', kind: 'voice', createdAt: new Date().toISOString(), audioUrl, fileName, durationSeconds }])
 
-    const result = await transcribe(blob, controller.signal)
-    if (!result.text.trim()) throw new Error('No speech was detected. Move closer to the microphone and try again.')
-    const report = await analyze(result.text, controller.signal)
-    setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', kind: 'text', createdAt: new Date().toISOString(), text: result.text, report }])
-    processingAbortController.current = null
+    try {
+      const result = await transcribe(blob, controller.signal)
+      if (!result.text.trim()) throw new Error('No speech was detected. Move closer to the microphone and try again.')
+      const report = await analyze(result.text, controller.signal)
+      if (generation !== requestGeneration.current) return
+      setMessages((current) => [...current, { id: crypto.randomUUID(), role: 'assistant', kind: 'text', createdAt: new Date().toISOString(), text: result.text, report }])
+    } finally {
+      if (processingAbortController.current === controller) processingAbortController.current = null
+    }
   }
 
   const toggleRecording = async () => {
@@ -72,12 +79,16 @@ export default function App() {
       try {
         setError('')
         setErrorKind(null)
+        if (!window.isSecureContext && !['localhost', '127.0.0.1', '[::1]'].includes(window.location.hostname)) {
+          throw new Error('Microphone access requires HTTPS on a phone. Open this app through an HTTPS URL, or use localhost on the computer.')
+        }
         const nextRecorder = new MicrophoneRecorder()
         recorder.current = nextRecorder
         await nextRecorder.start()
         setMicrophoneBlocked(false)
         setState('recording')
       } catch (caught) {
+        await recorder.current?.cancel()
         recorder.current = null
         setError(messageFor(caught, 'We could not access your microphone. Check browser permission and try again.'))
         setErrorKind('microphone')
@@ -141,7 +152,17 @@ export default function App() {
     if (file) await processFile(file)
   }
 
-  const clearChat = () => { setMessages([]); setError(''); setErrorKind(null); setState('ready') }
+  const clearChat = () => {
+    requestGeneration.current += 1
+    processingAbortController.current?.abort()
+    processingAbortController.current = null
+    void recorder.current?.cancel()
+    recorder.current = null
+    setMessages([])
+    setError('')
+    setErrorKind(null)
+    setState('ready')
+  }
 
   const cancelProcessing = () => {
     processingAbortController.current?.abort()

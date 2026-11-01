@@ -21,7 +21,7 @@ The Go API remains the application-facing backend and benchmark coordinator. The
 
 ## Local Development
 
-The active components are the Go API, the Pheme VA Rust workspace, and the web voice console. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
+The active components are the Go API, the Pheme VA Rust workspace, the web voice consoles, and the separate Expo/React Native iOS client in `ios-app/`. The iOS client is API-backed and does not run the GGUF reply model on-device. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
 
 ### Go API
 
@@ -197,7 +197,19 @@ npm run lint
 npm run build
 ```
 
-The Vite development server runs at `http://localhost:5173`. Open `/voice` for microphone → review → streamed reply → client-side speech. Its `/api/v1` proxy calls Go, not Rust directly. Browser speech uses local-service voices only; availability/offline behavior depends on the OS/browser. The benchmark view marks real measurements/dashboard features as not implemented. See [web setup](web/README.md).
+The Vite development server runs at `http://localhost:5173`. Open `/voice` for microphone → review → streamed reply → client-side speech. Its `/api/v1` proxy calls Go, not Rust directly. Browser speech uses local-service voices only; if a browser exposes only remote voices, the dropdown remains empty while text replies still work. Availability/offline behavior depends on the OS/browser. The benchmark view marks real measurements/dashboard features as not implemented. See [web setup](web/README.md).
+
+### iOS Client
+
+`ios-app/` is the separate Expo/React Native mobile client. It provides a centered microphone action, mono 16 kHz WAV capture, transcription-model and reply-model readiness, input-bar transcript editing/approval, streamed replies, pending-turn recovery, and automatic native TTS. The composer hides while a reply is generating and returns after completion; user bubbles appear only after approval. Start it with:
+
+```bash
+cd ios-app
+npm install
+EXPO_PUBLIC_API_BASE_URL=http://YOUR_COMPUTER_IP:8080/api/v1 npx expo start --lan -c
+```
+
+For a physical phone, replace `YOUR_COMPUTER_IP` with the computer's LAN IP (for example `192.168.3.83`), use the same Wi-Fi network, and bind the Go API to `0.0.0.0:8080`. The app restores a pending server turn after reload; finish it from the input bar before starting another recording. Native TTS requires an installed system voice; on iPhone, silent mode can prevent speech. Attachments are currently staged locally because the Go voice API accepts JSON text or complete WAV audio, not multipart files. See [`ios-app/README.md`](ios-app/README.md) and [`docs/plans/ios-app-draft.md`](docs/plans/ios-app-draft.md).
 
 ### Voice Agent Web Frontend
 
@@ -229,7 +241,7 @@ Microphone access requires browser permission and, on a physical device, an HTTP
 
 Whisper/whisper.cpp is the current speech-recognition baseline. Pheme keeps transcription and language-model inference behind replaceable boundaries so alternative local models can be evaluated. A concrete llama.cpp-compatible language-model adapter for structured incident extraction is still planned; the current rule-based extractor is deliberately conservative and does not invent facts.
 
-The eventual target may be an iOS phone or NVIDIA Jetson, but Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
+An initial API-backed Expo/React Native iOS client now lives in `ios-app/`; it uses the Go API and does not imply on-device model inference. An eventual embedded iOS target or NVIDIA Jetson deployment still requires native builds, device validation, and performance measurements. Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
 
 ## Tech Stack and Frameworks Utilised
 

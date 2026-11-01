@@ -3,6 +3,7 @@ package pheme
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"mime"
@@ -13,6 +14,8 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
 )
 
 const DefaultURL = "http://127.0.0.1:8000"
@@ -32,7 +35,17 @@ type Input struct {
 	ContentType    string
 	IdempotencyKey string
 	AudioSource    string
+	RunID          string
+	ExperimentID   string
 	MetricsCursor  *uint64
+}
+
+type Analysis struct {
+	IncidentType      string `json:"incident_type"`
+	Location          string `json:"location"`
+	Severity          string `json:"severity"`
+	Summary           string `json:"summary"`
+	RecommendedAction string `json:"recommended_action"`
 }
 
 // ConversationOperation selects an explicit transport operation. Pheme owns its state.
@@ -148,6 +161,52 @@ func (c *Client) TestReply(ctx context.Context, input Input) (*Response, error) 
 	return c.request(ctx, http.MethodPost, []string{"v1", "voice", "test", "reply"}, input, true)
 }
 
+func (c *Client) Analyze(ctx context.Context, transcript, runID, experimentID string) (Analysis, error) {
+	body, err := json.Marshal(struct {
+		Transcript string `json:"transcript"`
+	}{Transcript: transcript})
+	if err != nil {
+		return Analysis{}, ErrInvalidResponse
+	}
+	response, err := c.request(ctx, http.MethodPost, []string{"v1", "analyze"}, Input{
+		Body:         body,
+		ContentType:  "application/json",
+		RunID:        runID,
+		ExperimentID: experimentID,
+	}, false)
+	if err != nil {
+		return Analysis{}, err
+	}
+	defer response.Close()
+	if response.status < http.StatusOK || response.status >= http.StatusMultipleChoices {
+		return Analysis{}, ErrInvalidResponse
+	}
+	var analysis Analysis
+	if err := json.Unmarshal(response.payload, &analysis); err != nil {
+		return Analysis{}, ErrInvalidResponse
+	}
+	return analysis, nil
+}
+
+// DrainMetrics retrieves and decodes the batches currently buffered by Pheme.
+// Pheme removes these batches when the endpoint is read, so callers must
+// persist them before returning success.
+func (c *Client) DrainMetrics(ctx context.Context) ([]metrics.Batch, error) {
+	response, err := c.request(ctx, http.MethodGet, []string{"v1", "metrics", "batches"}, Input{}, false)
+	if err != nil {
+		return nil, err
+	}
+	defer response.Close()
+	if response.status < http.StatusOK || response.status >= http.StatusMultipleChoices {
+		return nil, ErrInvalidResponse
+	}
+	var batches []metrics.Batch
+	if err := json.Unmarshal(response.payload, &batches); err != nil {
+		return nil, ErrInvalidResponse
+	}
+	return batches, nil
+}
+
 func (c *Client) Transcribe(ctx context.Context, input Input) (*Response, error) {
 	return c.request(ctx, http.MethodPost, []string{"v1", "transcribe"}, input, false)
 }
@@ -190,6 +249,12 @@ func (c *Client) request(ctx context.Context, method string, segments []string, 
 	}
 	if input.AudioSource != "" {
 		req.Header.Set("X-Audio-Source", input.AudioSource)
+	}
+	if input.RunID != "" {
+		req.Header.Set("X-Run-ID", input.RunID)
+	}
+	if input.ExperimentID != "" {
+		req.Header.Set("X-Experiment-ID", input.ExperimentID)
 	}
 	req.Header.Set("Accept-Encoding", "identity")
 	if stream {

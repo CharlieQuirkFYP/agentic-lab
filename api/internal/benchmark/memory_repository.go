@@ -62,6 +62,7 @@ func (r *MemoryRepository) Update(ctx context.Context, experiment Experiment) er
 
 func cloneExperiment(experiment Experiment) Experiment {
 	clone := experiment
+	clone.Cases = append([]Case(nil), experiment.Cases...)
 
 	if experiment.StartedAt != nil {
 		startedAt := *experiment.StartedAt

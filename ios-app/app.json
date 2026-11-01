@@ -1,0 +1,28 @@
+{
+  "expo": {
+    "name": "Incident Reporting Agent",
+    "slug": "incident-reporting-agent",
+    "scheme": "pheme",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "plugins": [
+      "expo-router",
+      [
+        "expo-audio",
+        {
+          "microphonePermission": "Allow Incident Reporting Agent to record incident reports."
+        }
+      ],
+      "expo-document-picker",
+      "expo-status-bar"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.example.incidentreportingagent",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "Incident Reporting Agent uses the microphone to turn spoken reports into editable drafts."
+      }
+    }
+  }
+}
