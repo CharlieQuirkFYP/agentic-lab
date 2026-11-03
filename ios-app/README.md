@@ -1,43 +1,65 @@
 # Incident Reporting Agent mobile app
 
-Separate Expo/React Native implementation of the web voice-console flow. The existing `../web` app is untouched.
+The iPhone app frontend is Expo/React Native. Swift integration belongs only to
+`modules/pheme-native/ios/`; the separate SwiftUI development app has been removed.
+The existing `../web` app is untouched.
 
-## On-device transcription
+## On-device inference
 
-The app now includes a separate **On-device transcription** route with a local Expo Swift module linking Pheme. It imports/verifies a model, transcribes saved WAVs or microphone recordings, and saves editable local transcripts. It requires a native development build. Full Expo native linking and physical-device acceptance remain pending; see [build and test instructions](NATIVE_TESTING.md). Local reasoning and durable benchmark metric uploads remain later work.
+```text
+Existing Expo chat / model settings
+  -> PhemeNative Swift module
+  -> PhemeVA (Rust core + Whisper) and PhemeReasoning (Rust + llama.cpp)
+  -> local model files in the same app bundle
+```
 
-The existing remote chat flow below remains available for development.
+Chat now uses local native calls, not the desktop Go HTTP API. No silent remote
+fallback exists. The former HTTP client source remains for reference, but is not
+used by either route. Model settings also supports verified Whisper file import
+and saved WAV testing. Physical-device dual-model acceptance remains required.
 
 ## Current implementation
 
 - Chat-style incident-reporting screen with a large centered microphone action.
-- Typed questions sent to the existing `/api/v1/voice/turns` SSE flow.
-- Visible transcription and reply model readiness labels from `/api/v1/voice/inspect`.
-- Transcription model and reply model readiness labels.
+- Typed questions sent directly to native reasoning.
+- ASR and Reasoning model readiness from the embedded engines.
 - Transcription is placed directly in the bottom input bar for editing; no separate review box is shown.
 - The input-bar arrow approves and sends the edited transcript.
-- User bubbles appear only after approval; streamed replies show animated dots while generating.
+- User bubbles appear only after approval; animated dots remain until the complete native reply returns.
 - The composer hides while a reply is generating and returns when the turn finishes.
-- Pending server turns are recovered after app reload; conflicting new turns are blocked until the current one is finished.
+- Pheme owns bounded successful reasoning history; New chat resets it without reloading weights.
+- Local recordings/transcripts and chat display history persist. Native reasoning context is not restored after process exit.
 - Native speech playback via `expo-speech`, including automatic speech for the first and subsequent completed replies.
-- Microphone reports captured as mono 16 kHz PCM and sent as WAV bytes without constructing a React Native `Blob`.
+- Microphone reports captured as mono 16 kHz PCM, saved as WAV, and passed by file URI to Swift.
 - Multi-file selection with removable attachment chips.
 
-Attachments are intentionally staged but not uploaded yet because the current Go API accepts text or WAV audio, not multipart files. The next backend change should add the multipart contract described in `../docs/plans/ios-app-draft.md`.
+Attachments are staged only, not analyzed. Replies are development output, not
+finalized incident reports. Structured confirmation/storage/retrieval remains
+Pheme core work; durable metric export is not implemented here.
 
 ## Run
 
 ```sh
-npm install
-EXPO_PUBLIC_API_BASE_URL=http://YOUR_COMPUTER_IP:8080/api/v1 npx expo start --lan -c
+npm ci
+PHEME_IOS_RUST_TOOLCHAIN=stable npm run native:build
+npm run native:bundle
+npx expo prebuild --platform ios
+npm run ios
 ```
 
-For a physical iPhone, `127.0.0.1` points to the phone, not the development computer. Use the computer’s LAN IP and allow the API port through the firewall. An HTTPS deployed API is recommended outside the local network.
+Run from `ios-app/` on an Apple Silicon Mac with full Xcode, CMake, CocoaPods and
+the Rust iOS targets. `stable` explicitly selects the installed toolchain;
+omitting it retains the pinned 1.99.0 default. Set your bundle ID in `app.json`
+and select your development team/device when building.
 
-The mobile client captures mono 16 kHz PCM with `expo-audio`, switches the audio session back to playback mode, wraps the recording as WAV bytes, and sends it through the existing WAV transcription endpoint. The transcript is placed in the input bar for editing; tap the centered arrow to approve it. During reply generation the input bar is hidden, animated dots are shown, and the completed reply is spoken automatically through the phone’s native TTS. If the first reply is silent, verify that the phone has an installed system voice and is not muted. Multipart attachment upload remains pending because the Go API currently accepts JSON text or complete WAV audio only.
+Prebuild regenerates Expo's scene-based app host and pods. Repeat it after
+config/plugin changes so an older ignored `ios/` project does not survive.
 
-## Next implementation steps
+`native:bundle` reuses/downloads and verifies the pinned Whisper/Qwen weights,
+then stages them as CocoaPods resources. No phone-side model download/import is
+required. The weights alone total about 2.74 GB; suitability for the phone's
+memory/latency budget is not yet established. Use `npm run ios:release` for
+embedded JavaScript and offline acceptance. Expo Go cannot run this module.
 
-1. Add multipart attachment upload after the backend contract is available.
-2. Persist unsent drafts and conversation history deliberately, with a clear privacy setting.
-3. Add unit tests for SSE parsing, turn state transitions, duplicate-send prevention, and attachment validation.
+See [native tests and acceptance](NATIVE_TESTING.md) for build gates, lifecycle,
+model provenance and what still requires physical-device testing.
