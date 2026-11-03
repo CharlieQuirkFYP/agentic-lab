@@ -293,7 +293,9 @@ bash scripts/test-ios.sh whisper
 
 For optional observation/configuration of the same phone engine, run `cargo run -p cli -- monitor --bind 0.0.0.0:8765` on a trusted development LAN and pair from the phone. This path does not start local inference. See the host guide for setup, ownership, transport bounds, and acceptance checks.
 
-The first successful iOS CI run and physical iPhone acceptance are still required. Simulator/macOS checks do not establish device inference, memory/thermal performance, or continuous background execution. Metal/Core ML and full conversational mobile embedding remain separate work. Android can reuse the same core/C ABI after an Android host is implemented.
+For an opt-in app containing local Whisper and Qwen weights, run `PHEME_IOS_RUST_TOOLCHAIN=stable bash scripts/build-phone.sh`. The Swift host exposes separate ASR/Reasoning model setup and reviewed-text replies; Qwen runs through a separate dynamic Rust framework with private GGML symbols, not the desktop child-process worker. Model files remain ignored by Git. See the [bundled-app instructions](hosts/ios/README.md#bundled-asr-and-reasoning-app) for package size, test commands and signing.
+
+Physical iPhone acceptance is still required. Simulator/macOS checks do not establish device memory/thermal performance or continuous background execution. Metal/Core ML, spoken replies and full incident-report persistence remain separate work. Android can reuse the core/C ABI after an Android host is implemented.
 
 ## Design notes
 

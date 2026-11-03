@@ -1,19 +1,20 @@
 # Pheme iPhone development host
 
-This host embeds the portable Rust transcription engine through the C ABI. The phone owns the model, audio capture, settings, and execution. Core metrics flow out through one observer; no metrics-ingestion API is provided.
+This host embeds the portable Rust transcription engine through the C ABI. An opt-in bundled development build also embeds the existing Qwen reasoning adapter through a separate dynamic framework. The phone owns the models, audio capture, settings, and execution. Core transcription metrics flow out through one observer; no metrics-ingestion API is provided. Reasoning displays load/reply timings separately, not a full metrics batch.
 
-The implementation is present, but iOS deployment is **not yet accepted**. The first iOS CI run and physical-device checks below are still required. The development machine used for implementation has Command Line Tools, without full Xcode or an iOS simulator.
+The implementation is present, but full physical-device acceptance is **not yet complete**. The initial transcription app has been launched on a physical iPhone by the developer; model-backed microphone turns, both-model operation, lifecycle and resource checks below remain required. Full Xcode 27.1 and iOS simulators are now installed locally. CI still pins Xcode 26.0.
 
 ## Build and simulator checks
 
 Use an Apple Silicon Mac with Xcode 26.0, its iOS simulator runtime, CMake, XcodeGen, and Rust 1.99.0. The minimum app deployment target is iOS 17.0. CI selects these Rust/Xcode versions and records the actual SDK/tool versions and library checksums.
 
-The packaging script installs `llvm-tools-preview` for the selected Rust toolchain and uses its `llvm-nm` to inspect exported symbols. Xcode's older `nm` cannot reliably read the LLVM bitcode bundled into Rust 1.99 archives (`Unknown attribute kind`); this inspection failure does not establish that the native library cannot link. Keep the subsequent device link and simulator tests as the compatibility gates.
+The packaging script reuses the selected Rust toolchain when installed and installs it with the minimal profile only when unavailable. It also installs only missing iOS targets and `llvm-tools-preview`, then uses that toolchain's `llvm-nm` to inspect exported symbols. The default remains Rust 1.99.0; another installed version is not silently substituted. An explicit `PHEME_IOS_RUST_TOOLCHAIN` override selects a different toolchain, but is outside the pinned CI configuration. Missing prerequisites and uncached Cargo dependencies still require network access.
+
+Xcode's older `nm` cannot reliably read the LLVM bitcode bundled into Rust 1.99 archives (`Unknown attribute kind`); this inspection failure does not establish that the native library cannot link. Keep the subsequent device link and simulator tests as the compatibility gates.
 
 From `pheme-va/`:
 
 ```sh
-rustup toolchain install 1.99.0
 brew install cmake xcodegen
 bash scripts/build-ios.sh whisper
 bash scripts/test-ios.sh whisper
@@ -53,6 +54,78 @@ On a Mac with only Command Line Tools, `bash scripts/test-ffi-swift.sh` checks n
 Local validation on 2026-10-22 passed formatting, workspace Clippy, the complete Rust suite with one test thread (305 passed, 6 intentionally ignored), both FFI feature variants (7 / 8 tests), and all three macOS Swift/C integration variants. The full-suite command was `GGML_NATIVE=OFF GGML_CPU_ARM_ARCH=armv8-a cargo test --workspace -- --test-threads=1`. Earlier parallel runs intermittently failed existing TUI fixtures; their serial pass is not evidence that the default parallel suite is reliable. See the [implementation plan](../../../docs/plans/pheme-va-ios-ffi-plan.md) for the validation record and remaining gates.
 
 ## Open and run the app
+
+### Bundled ASR and reasoning app
+
+From `pheme-va/`, explicitly opt into packaging both models:
+
+```sh
+PHEME_IOS_RUST_TOOLCHAIN=stable bash scripts/build-phone.sh
+open target/ios/whisper/project/PhemePhone.xcodeproj
+```
+
+`stable` is an explicit local choice, not an update request. The script reuses
+and verifies existing files, or downloads missing files using the existing
+checksum-verified downloader. It bundles Whisper large-v3-turbo (1,624,555,275
+bytes) and Qwen2.5-1.5B-Instruct Q4_K_M (1,117,320,736 bytes), plus the incident
+role instruction. These are development baselines, not validated phone
+selections. Allow roughly 2.74 GB for model files alone and additional device
+storage for installation. Large Whisper may exceed an individual phone's
+memory or latency budget; simultaneous loading requires device acceptance.
+
+Weights stay ignored by Git under `models/` and `target/`. `--prepare-only`
+verifies/downloads and stages resources without building. The app opens
+read-only model paths inside its bundle, without duplicating weights into
+Application Support. File import remains available for alternative Whisper
+models. Resource bundling is opt-in; ordinary PR/simulator checks do not
+include model weights or the reasoning framework.
+
+The separate **ASR Model (Whisper)** and **Reasoning Model** controls discover
+the bundled files and select defaults on first launch. Models load sequentially
+off the UI thread using a shared native queue. Saved selections are restored.
+Each model has its own load state and settings. Record and transcribe, tap
+**Use transcript**, review/correct the text, then **Send to reasoning model**.
+Typed text can also test reasoning without microphone input. **Reset
+conversation** clears Pheme-owned successful history without reloading weights.
+Native reasoning retains at most two successful pairs and 256 request IDs,
+uses a 2048-token context and 128-token reply limit, and cancels at 120 seconds.
+Cancellation is cooperative: native resources remain owned until inference
+settles. Inactivity discards pending replies; memory warnings release models
+after admitted work settles. Reapply/load settings afterward.
+
+Qwen uses the existing `reply-native` CPU adapter through `reply-ffi`, packaged
+as `PhemeReasoning.xcframework`. It is a signed embedded dynamic framework,
+not a downloaded executable, child process or server. Its private GGML symbols
+are not exported; the packaging script rejects a symbol leak. Never statically
+merge its native objects into `PhemeVA.xcframework`. This avoids the incompatible
+Whisper/llama GGML collision without changing the desktop worker.
+
+Project generation retains the existing app Debug signing team and bundle
+identifier when present. `PHEME_PHONE_TEAM` and `PHEME_PHONE_BUNDLE_ID` explicitly
+override them. Select your Personal Team in Xcode if none was previously saved.
+No App Store/TestFlight packaging is included. Review upstream model licences
+and provide full required notices before distributing model-containing builds.
+
+To regenerate this project without rebuilding native libraries:
+
+```sh
+PHEME_IOS_APP_MODELS=1 bash scripts/test-ios.sh whisper --generate-only
+```
+
+Optional real-model simulator checks (large weights and CPU inference):
+
+```sh
+PHEME_IOS_APP_MODELS=1 \
+PHEME_VA_TEST_REPLY_MODEL="$PWD/models/reply/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
+bash scripts/test-ios.sh whisper
+```
+
+This checks that both models can load in the same process and Qwen can respond.
+It does not establish microphone acceptance, device memory or energy efficiency.
+Replies are development output; the app does not finalize/save incident reports,
+run continuously in the background, or synthesize spoken replies.
+
+### Transcription-only app
 
 After packaging, generate the project from `pheme-va/`:
 
@@ -162,6 +235,6 @@ Record the first successful iOS workflow run before declaring the library integr
 - Monitor pairing, rejected/busy configuration, reconnect gaps, and continued phone inference after disconnect.
 - Cold/warm latency, peak memory, and sustained thermal behaviour with device/OS/model checksum/build configuration recorded.
 
-CPU Whisper is the required baseline. Metal/Core ML execution, energy/endurance, continuous background operation, conversational reasoning, and the full incident-report workflow require separate implementation or acceptance.
+CPU Whisper is the required baseline. Metal/Core ML execution, energy/endurance, continuous background operation, spoken replies, and the full incident-report workflow require separate implementation or acceptance. The opt-in CPU reasoning host also needs physical-device acceptance.
 
-The Swift host plus embedded Rust C ABI/XCFramework is the intended on-device boundary for this transcription prototype. Go and the desktop monitor are not required for phone inference. The desktop conversation runtime's child-process reply worker is not an iOS deployment design: full phone conversations need an iOS-compatible in-process reasoning adapter, including resolution of the Whisper/llama GGML symbol collision, before that runtime can be embedded.
+The Swift host plus embedded Rust C ABI/XCFramework is the on-device boundary. Go and the desktop monitor are not required for phone inference. The desktop runtime retains its child-process reply worker; the mobile host instead uses the same native adapter through the isolated dynamic reasoning framework and core conversation validation. It does not embed the desktop TUI/server runtime unchanged.

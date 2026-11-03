@@ -211,6 +211,11 @@ EXPO_PUBLIC_API_BASE_URL=http://YOUR_COMPUTER_IP:8080/api/v1 npx expo start --la
 
 For a physical phone, replace `YOUR_COMPUTER_IP` with the computer's LAN IP (for example `192.168.3.83`), use the same Wi-Fi network, and bind the Go API to `0.0.0.0:8080`. The app restores a pending server turn after reload; finish it from the input bar before starting another recording. Native TTS requires an installed system voice; on iPhone, silent mode can prevent speech. Attachments are currently staged locally because the Go voice API accepts JSON text or complete WAV audio, not multipart files. See [`ios-app/README.md`](ios-app/README.md) and [`docs/plans/ios-app-draft.md`](docs/plans/ios-app-draft.md).
 
+For a native app with Whisper, local reasoning, and both models bundled on the
+phone, use the [iPhone deployment guide](docs/iphone-deployment.md). It covers
+simulator runs, signed device installation, and development IPA export without
+the desktop API or Expo Go.
+
 ### Voice Agent Web Frontend
 
 `voice-agent-web/` is the standalone, phone-friendly development frontend for the Pheme VA HTTP host. It is separate from the benchmark dashboard under `web/`.
@@ -266,4 +271,3 @@ An initial API-backed Expo/React Native iOS client now lives in `ios-app/`; it u
 <i>Golang · Rust</i>
 </p>
 <br>
-

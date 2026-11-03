@@ -235,6 +235,7 @@ Currently implemented:
 - optional in-process `whisper-rs`/whisper.cpp backend with a prewarmed model
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
 - versioned FFI configuration/status/results, safe shared lifecycle and bounded live metrics observation; Swift iPhone setup/audio host, paired desktop monitor, and iOS CI packaging/link/simulator workflow implemented with iOS/device acceptance pending
+- opt-in iPhone app packaging of checksum-verified local Whisper/Qwen weights, separate ASR/Reasoning controls, and an in-process CPU reasoning C ABI in a dynamic framework with private GGML symbols; reviewed text replies use core validation and bounded Pheme-owned history, with physical-device dual-model acceptance pending
 - conservative deterministic incident-field extraction for offline development
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
