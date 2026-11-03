@@ -1,0 +1,16 @@
+[package]
+name = "reply-ffi"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+description = "In-process mobile reasoning host with an isolated dynamic C ABI"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+reply-native = { path = "../models/reasoning/native" }
+va_core = { package = "core", path = "../core" }
+serde.workspace = true
+serde_json.workspace = true
