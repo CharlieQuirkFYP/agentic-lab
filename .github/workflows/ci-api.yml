@@ -1,4 +1,4 @@
-name: API CI
+name: CI / API
 
 on:
   pull_request:
@@ -6,10 +6,15 @@ on:
       - main
     paths:
       - "api/**"
-      - ".github/workflows/api-ci.yml"
+      - ".github/workflows/ci-api.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   api:
