@@ -45,14 +45,7 @@ impl Configuration {
 }
 
 fn conversation_config() -> ConversationConfig {
-    ConversationConfig {
-        context_size: 2048,
-        max_input_chars: 6000,
-        max_output_tokens: 128,
-        max_history_turns: 2,
-        temperature: 0.0,
-        ..Default::default()
-    }
+    ConversationConfig::default()
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -476,13 +469,14 @@ mod tests {
         let handle = ReplyHandle::new(fake);
         assert!(!handle.inspect().unwrap()["ready"].as_bool().unwrap());
         handle.configure(config()).unwrap();
-        for index in 0..5 {
+        let history_limit = ConversationConfig::default().max_history_turns;
+        for index in 0..history_limit + 3 {
             handle
                 .respond(request(&index.to_string(), "hello"))
                 .unwrap();
         }
-        assert_eq!(handle.inspect().unwrap()["history_turns"], 2);
-        assert!(handle.respond(request("4", "hello")).is_err());
+        assert_eq!(handle.inspect().unwrap()["history_turns"], history_limit);
+        assert!(handle.respond(request("0", "hello")).is_err());
         handle.reset().unwrap();
         assert_eq!(handle.inspect().unwrap()["history_turns"], 0);
     }

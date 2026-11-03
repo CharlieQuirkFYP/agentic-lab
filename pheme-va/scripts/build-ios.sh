@@ -41,9 +41,9 @@ fi
     xcrun swift --version
     xcrun --sdk iphoneos --show-sdk-version
     xcrun --sdk iphonesimulator --show-sdk-version
-    xcodegen --version
     cmake --version
-    shasum -a 256 Cargo.lock include/pheme_va.h
+    shasum -a 256 Cargo.lock Cargo.toml include/pheme_va.h
+    find crates -type f \( -name '*.rs' -o -name Cargo.toml \) -exec shasum -a 256 {} + | LC_ALL=C sort
 } > "$OUT/build-metadata.txt"
 
 INSTALLED_TARGETS=$(rustup target list --installed)

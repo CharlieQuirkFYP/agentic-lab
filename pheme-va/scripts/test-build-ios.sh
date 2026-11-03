@@ -7,11 +7,11 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 export FAKE_ROOT="$TEST_DIR/workspace with spaces"
 export FAKE_SYSROOT="$TEST_DIR/rust toolchain"
 export FAKE_LOG="$TEST_DIR/commands.log"
-mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/include" "$TEST_DIR/bin" \
+mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/include" "$FAKE_ROOT/crates" "$TEST_DIR/bin" \
     "$FAKE_SYSROOT/lib/rustlib/aarch64-apple-darwin/bin"
 cp "$ROOT/scripts/build-ios.sh" "$FAKE_ROOT/scripts/"
 cp "$ROOT/include/pheme_va.h" "$ROOT/include/module.modulemap" "$FAKE_ROOT/include/"
-cp "$ROOT/Cargo.lock" "$FAKE_ROOT/"
+cp "$ROOT/Cargo.lock" "$ROOT/Cargo.toml" "$FAKE_ROOT/"
 
 cat > "$TEST_DIR/bin/fake-tool" <<'EOF'
 #!/usr/bin/env bash

@@ -3,7 +3,10 @@ set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 [[ $(uname -m) == arm64 ]] || { echo "An Apple Silicon Mac is required." >&2; exit 1; }
 export RUSTUP_TOOLCHAIN=${PHEME_IOS_RUST_TOOLCHAIN:-1.99.0}
-export CARGO_TARGET_DIR="$ROOT/target/ios/reply/cargo"
+# Native CMake caches contain absolute SDK paths; never reuse them after Xcode
+# changes, even if Cargo considers the Rust dependencies unchanged.
+XCODE_KEY=$(xcodebuild -version | shasum -a 256 | cut -c 1-12)
+export CARGO_TARGET_DIR="$ROOT/target/ios/reply/cargo-$XCODE_KEY"
 export IPHONEOS_DEPLOYMENT_TARGET=17.0
 export RUSTFLAGS=""
 unset CARGO_ENCODED_RUSTFLAGS
@@ -12,6 +15,13 @@ mkdir -p "$OUT"
 cd "$ROOT"
 rustup run "$RUSTUP_TOOLCHAIN" rustc --version
 cargo fetch --locked --target aarch64-apple-ios --target aarch64-apple-ios-sim
+{
+    printf 'variant=reply\nminimum_ios=17.0\n'
+    rustc --version --verbose
+    xcodebuild -version
+    shasum -a 256 Cargo.lock Cargo.toml include/pheme_reply.h
+    find crates -type f \( -name '*.rs' -o -name Cargo.toml \) -exec shasum -a 256 {} + | LC_ALL=C sort
+} > "$OUT/build-metadata.txt"
 for TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
     SDK=iphoneos
     CLANG_TARGET=arm64-apple-ios17.0
