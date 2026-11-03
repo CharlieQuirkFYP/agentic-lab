@@ -5,10 +5,11 @@
   "main": "expo-router/entry",
   "scripts": {
     "start": "expo start",
-    "ios": "npm run native:prepare && expo run:ios --device",
+    "ios": "npm run native:toolchain && npm run native:prepare && expo run:ios --device",
     "typecheck": "tsc --noEmit && tsc --noEmit -p tsconfig.tests.json",
     "test": "node --test tests/*.test.ts tests/*.test.mjs",
     "test:native": "bash scripts/test-native.sh",
+    "native:toolchain": "node scripts/check-native-toolchain.mjs",
     "native:prepare": "node scripts/prepare-native.mjs",
     "native:check": "node scripts/prepare-native.mjs --check"
   },

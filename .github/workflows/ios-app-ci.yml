@@ -58,6 +58,8 @@ jobs:
       - uses: maxim-lobanov/setup-xcode@v1
         with:
           xcode-version: "26.4"
+      - name: Verify Expo native toolchain before building
+        run: npm run native:toolchain
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: "1.99.0"

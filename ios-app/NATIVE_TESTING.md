@@ -1,6 +1,6 @@
 # On-device Pheme: build and test
 
-Status: native module, local WAV/microphone screen, transcript recovery and automated tests are implemented. A successful full Expo iOS native build and physical iPhone acceptance are still required. The current development machine selects Command Line Tools, not full Xcode. Passing JavaScript or host Swift tests does not establish that the Expo app has linked or run successfully on an iPhone.
+Status: native module, local WAV/microphone screen, transcript recovery and automated tests are implemented. A successful full Expo iOS native build and physical iPhone acceptance are still required. Run `npm run native:toolchain` to check the selected local Xcode, Swift compiler and simulator SDK. Passing JavaScript or host Swift tests does not establish that the Expo app has linked or run successfully on an iPhone.
 
 The target is the user's iPhone 18 Pro; record its actual iOS version before selecting Xcode/SDK and signing settings. Expo Go cannot contain the custom Swift/Rust module. Use an installed development build, then a release-like standalone build for offline acceptance.
 
@@ -61,6 +61,12 @@ Fetch locked Cargo dependencies first if the cache is empty. The optional script
 The preparation script copies only generated artifacts into ignored `modules/pheme-native/ios/Frameworks/` and `Generated/`. The canonical shared Swift source remains in `pheme-va/hosts/ios/Sources/`; do not edit generated copies. Preparation verifies both library slices, production symbol checks, header/Cargo fingerprints and library checksums against build metadata. Pod installation also checks source/artifact freshness and fails with setup instructions if inputs are missing/stale. This intentionally prevents a successful-looking development build with a disabled/fake backend.
 
 Generated `ios/`, `android/`, Expo caches and native binaries are ignored. Commit module sources/configuration and lockfile, never model weights, XCFramework binaries or recordings. No EAS account/service is required for this local build path.
+
+### Toolchain failures
+
+If the `native-link` log reports `'weak' must be a mutable variable` in `expo-modules-jsi`, check its Xcode path. Xcode 26.0.1 cannot compile the `weak let` declarations used by Expo SDK 57; this is a Swift compilation failure before Rust linking, not a missing Pheme symbol. Do not patch `node_modules` or change the module's Swift language mode to work around an older compiler.
+
+The Expo workflow selects Xcode 26.4 and runs `npm run native:toolchain` before the Rust build; `npm run ios` performs the same check locally. If an older CI run still shows `/Applications/Xcode_26.0.1.app`, run the workflow on a revision containing the Xcode update. Re-running the old revision uses its old workflow. Native host-only tests can still use an older macOS Swift toolchain and do not run this Expo-specific preflight.
 
 ## First real-model test
 
