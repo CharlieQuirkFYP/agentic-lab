@@ -59,13 +59,18 @@ struct BridgePoll: Sendable {
     let batchesJSON: String
 }
 
+enum NativeExecution {
+    // Both embedded models share admission to blocking CPU inference.
+    static let queue = DispatchQueue(label: "org.agenticlab.pheme.inference", qos: .userInitiated)
+}
+
 /// Each queued call retains this owner until native work returns. ARC destruction
 /// therefore cannot race inference, polling, or a cancelled Swift UI task.
 /// Rust synchronizes engine access; the execution queue keeps blocking work off UI.
 final class NativeBridge: @unchecked Sendable {
     private let handle: OpaquePointer
     private let observer: OpaquePointer
-    private let executor = DispatchQueue(label: "org.agenticlab.pheme.inference", qos: .userInitiated)
+    private let executor = NativeExecution.queue
 
     init(handle: OpaquePointer? = pheme_va_create()) throws {
         guard let handle else { throw BridgeFailure(code: 4, message: "Could not allocate the engine.", run_id: nil) }

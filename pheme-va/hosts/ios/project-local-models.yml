@@ -1,0 +1,17 @@
+# Opt-in development app containing both model weights and native runtimes.
+include:
+  - path: ../../../../hosts/ios/project.yml
+    relativePaths: false
+targets:
+  PhemePhone:
+    sources:
+      - path: ../../app-models/PhemeModels
+        type: folder
+        buildPhase: resources
+    dependencies:
+      - framework: ${PHEME_REASONING_XCFRAMEWORK}
+        embed: true
+  BridgeTests:
+    dependencies:
+      - framework: ${PHEME_REASONING_XCFRAMEWORK}
+        embed: false

@@ -29,7 +29,9 @@ targets:
         LSSupportsOpeningDocumentsInPlace: true
     settings:
       base:
-        PRODUCT_BUNDLE_IDENTIFIER: org.agenticlab.PhemePhone
+        PRODUCT_BUNDLE_IDENTIFIER: ${PHEME_PHONE_BUNDLE_ID}
+        DEVELOPMENT_TEAM: ${PHEME_PHONE_TEAM}
+        CODE_SIGN_STYLE: Automatic
     dependencies:
       - framework: ${PHEME_XCFRAMEWORK}
         embed: false
@@ -46,6 +48,8 @@ targets:
     settings:
       base:
         GENERATE_INFOPLIST_FILE: YES
+        DEVELOPMENT_TEAM: ${PHEME_PHONE_TEAM}
+        CODE_SIGN_STYLE: Automatic
     dependencies:
       - target: PhemePhone
       - framework: ${PHEME_XCFRAMEWORK}
@@ -66,3 +70,4 @@ schemes:
       environmentVariables:
         PHEME_VA_TEST_MODEL: ${PHEME_VA_TEST_MODEL}
         PHEME_VA_TEST_AUDIO: ${PHEME_VA_TEST_AUDIO}
+        PHEME_VA_TEST_REPLY_MODEL: ${PHEME_VA_TEST_REPLY_MODEL}

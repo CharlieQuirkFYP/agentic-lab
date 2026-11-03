@@ -64,6 +64,32 @@ final class BridgeTests: XCTestCase {
     }
 
     #if PHEME_TEST_SUPPORT
+    @MainActor
+    func testBundledASRLoadsWithoutCopyingWeights() async throws {
+        let suite = "pheme-bundle-tests-" + UUID().uuidString
+        let defaults = try XCTUnwrap(UserDefaults(suiteName: suite))
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent(suite)
+        let bundled = root.appendingPathComponent("bundle")
+        let imported = root.appendingPathComponent("imports")
+        try FileManager.default.createDirectory(at: bundled, withIntermediateDirectories: true)
+        let source = bundled.appendingPathComponent("fake.bin")
+        try Data("fake fixture".utf8).write(to: source)
+        defer {
+            defaults.removePersistentDomain(forName: suite)
+            try? FileManager.default.removeItem(at: root)
+        }
+        let service = PhemeService(defaults: defaults, directory: imported, bundledDirectory: bundled,
+            bridgeFactory: { try NativeBridge(handle: pheme_va_test_create()) })
+        service.start()
+        XCTAssertEqual(service.models, ["Bundled: fake.bin"])
+        XCTAssertEqual(service.setup.modelFile, "Bundled: fake.bin")
+        let applied = await service.applySetup()
+        XCTAssertTrue(applied)
+        XCTAssertEqual(service.snapshot?.configuration?.model_path, source.path)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: source.path))
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: imported.path), [])
+    }
+
     func testFakeSuccessfulCoreOperationAndRunCorrelation() async throws {
         let bridge = try NativeBridge(handle: pheme_va_test_new())
         let audio = CapturedAudio(samples: [Float](repeating: 0.05, count: 16000), sampleRate: 16000, channels: 1)
@@ -126,6 +152,45 @@ final class BridgeTests: XCTestCase {
         XCTAssertEqual(output.map { String(cString: $0) }, "[]")
         pheme_va_string_free(output)
         pheme_va_observer_free(observer)
+    }
+    #endif
+
+    #if PHEME_REASONING
+    func testReasoningUnloadedAndValidation() async throws {
+        let bridge = try ReasoningBridge()
+        XCTAssertFalse(try bridge.inspect().ready)
+        do {
+            _ = try await bridge.load(path: "/missing/reply.gguf", prompt: "Be accurate.", threads: 0)
+            XCTFail("Invalid threads accepted")
+        } catch let error as BridgeFailure { XCTAssertEqual(error.code, 1) }
+        do {
+            _ = try await bridge.respond(text: "Hello")
+            XCTFail("Unloaded reasoning accepted")
+        } catch let error as BridgeFailure { XCTAssertEqual(error.code, 4) }
+        XCTAssertEqual(try bridge.inspect().state, "unloaded")
+    }
+
+    func testOptionalBothRealModelsInSameProcess() async throws {
+        let environment = ProcessInfo.processInfo.environment
+        guard environment["PHEME_VA_TEST_REPLY_MODEL"]?.isEmpty == false else {
+            throw XCTSkip("Real reasoning model test was not requested")
+        }
+        let reply = try ReasoningBridge()
+        let path = BundledModels.files(in: BundledModels.root?.appendingPathComponent("Reasoning"), extension: "gguf")
+            .values.first?.path ?? environment["PHEME_VA_TEST_REPLY_MODEL"]!
+        let loaded = try await reply.load(path: path, prompt: BundledModels.prompt, threads: 2)
+        XCTAssertTrue(loaded.ready)
+        let asr = try NativeBridge()
+        if let model = BundledModels.files(in: BundledModels.root?.appendingPathComponent("ASR"), extension: "bin").values.first {
+            _ = try await asr.configure(BridgeConfiguration(model_path: model.path, language: "en", threads: 2))
+            XCTAssertTrue(try asr.inspect().ready)
+        }
+        let response = try await reply.respond(text: "There is smoke at the west entrance. Ask one short clarification question.")
+        XCTAssertFalse(response.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        XCTAssertEqual(try reply.inspect().history_turns, 1)
+        _ = try await reply.reset()
+        XCTAssertEqual(try reply.inspect().history_turns, 0)
+        XCTAssertTrue(try reply.inspect().ready)
     }
     #endif
 

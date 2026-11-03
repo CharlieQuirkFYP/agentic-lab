@@ -34,14 +34,19 @@ final class PhemeService: ObservableObject {
     private let bridgeFactory: @Sendable () throws -> NativeBridge
     private let defaults: UserDefaults
     private let directory: URL
+    private let bundledDirectory: URL?
+    private var bundledModels: [String: URL] = [:]
     // Hosts can attach one transport to this fan-out, without draining FFI again.
     var onObservation: ((BridgePoll) -> Void)?
 
-    init(defaults: UserDefaults = .standard, directory: URL? = nil, bridgeFactory: @escaping @Sendable () throws -> NativeBridge = { try NativeBridge() }) {
+    init(defaults: UserDefaults = .standard, directory: URL? = nil,
+         bundledDirectory: URL? = BundledModels.root?.appendingPathComponent("ASR"),
+         bridgeFactory: @escaping @Sendable () throws -> NativeBridge = { try NativeBridge() }) {
         self.bridgeFactory = bridgeFactory
         self.defaults = defaults
         self.directory = directory ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
             .appendingPathComponent("PhemeModels", isDirectory: true)
+        self.bundledDirectory = bundledDirectory
     }
 
     func start() {
@@ -55,6 +60,9 @@ final class PhemeService: ObservableObject {
                 catch { message = "Saved setup could not be read. Choose your settings again." }
             }
             try replaceBridge()
+            if setup.modelFile.isEmpty, let first = bundledModels.keys.sorted().first {
+                setup.modelFile = first
+            }
             // Unit tests own their fixtures and never load a user's saved model.
             if ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil { return }
             if models.contains(setup.modelFile) { Task { await applySetup() } }
@@ -63,9 +71,11 @@ final class PhemeService: ObservableObject {
     }
 
     func refreshModels() {
-        models = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
+        bundledModels = BundledModels.files(in: bundledDirectory, extension: "bin")
+        let imported = ((try? FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: [.isRegularFileKey])) ?? [])
             .filter { (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
             .map(\.lastPathComponent).sorted()
+        models = (Array(bundledModels.keys) + imported).sorted()
     }
 
     func importModel(_ url: URL) async {
@@ -94,7 +104,7 @@ final class PhemeService: ObservableObject {
         // Selection comes from the app-owned directory, never an arbitrary remote path.
         guard models.contains(setup.modelFile) else { message = "Select an imported model."; return false }
         let selected = setup
-        let path = directory.appendingPathComponent(selected.modelFile).path
+        let path = (bundledModels[selected.modelFile] ?? directory.appendingPathComponent(selected.modelFile)).path
         guard FileManager.default.fileExists(atPath: path) else { refreshModels(); message = "Model is missing."; return false }
         let config = BridgeConfiguration(model_path: path,
             language: selected.language.isEmpty ? nil : selected.language,

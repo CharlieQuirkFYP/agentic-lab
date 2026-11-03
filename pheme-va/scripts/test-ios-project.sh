@@ -2,6 +2,7 @@
 # Real XcodeGen, no models/compiler/simulator; generated files stay in a temp tree.
 set -euo pipefail
 ROOT=$(CDPATH='' cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
+unset PHEME_IOS_APP_MODELS
 TEST_DIR=$(mktemp -d)
 trap 'rm -rf "$TEST_DIR"' EXIT
 WORK="$TEST_DIR/workspace with spaces"
@@ -95,4 +96,20 @@ for variant in whisper disabled test; do
     PHEME_IOS_MODEL_TEST=0 bash "$WORK/scripts/test-ios.sh" "$variant" --generate-only
     assert_assets "$variant" 0
 done
+expect_failure "Run build-ios-reply.sh first." env PHEME_IOS_APP_MODELS=1 \
+    bash "$WORK/scripts/test-ios.sh" whisper --generate-only
+mkdir -p "$WORK/target/ios/reply/PhemeReasoning.xcframework"
+expect_failure "Missing bundled model asset:" env PHEME_IOS_APP_MODELS=1 \
+    bash "$WORK/scripts/test-ios.sh" whisper --generate-only
+mkdir -p "$WORK/target/ios/app-models/PhemeModels/ASR" "$WORK/target/ios/app-models/PhemeModels/Reasoning"
+touch "$WORK/target/ios/app-models/PhemeModels/ASR/ggml-large-v3-turbo.bin" \
+    "$WORK/target/ios/app-models/PhemeModels/Reasoning/qwen2.5-1.5b-instruct-q4_k_m.gguf" \
+    "$WORK/target/ios/app-models/PhemeModels/incident-reporting.txt"
+PHEME_IOS_APP_MODELS=1 bash "$WORK/scripts/test-ios.sh" whisper --generate-only
+expect_failure "Choose bundled app or fixture tests, not both." env PHEME_IOS_APP_MODELS=1 PHEME_IOS_MODEL_TEST=1 \
+    bash "$WORK/scripts/test-ios.sh" whisper --generate-only
+expect_failure "Bundled app requires the whisper variant." env PHEME_IOS_APP_MODELS=1 \
+    bash "$WORK/scripts/test-ios.sh" disabled --generate-only
+# Presence on disk must never opt ordinary CI projects into weights or reasoning.
+bash "$WORK/scripts/test-ios.sh" whisper --generate-only
 echo "PASS: clean variants, opt-in assets, missing fixtures, paths with spaces and invalid-reference rejection"
