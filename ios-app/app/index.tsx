@@ -1,16 +1,17 @@
-import { Link } from "expo-router";
-import { useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Animated, Dimensions, FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
+import { Link, useFocusEffect } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { ActivityIndicator, Animated, AppState, Dimensions, FlatList, KeyboardAvoidingView, PanResponder, Platform, Pressable, StyleSheet, Text, TextInput, View } from "react-native";
 import { useAudioStream, requestRecordingPermissionsAsync, setAudioModeAsync } from "expo-audio";
 import type { AudioStreamBuffer } from "expo-audio";
 import * as DocumentPicker from "expo-document-picker";
 import * as Speech from "expo-speech";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { SafeAreaView } from "react-native-safe-area-context";
-import { cancelTurn, getReadiness, getTurn, startTurn, submitTurn } from "../src/api";
+import { cancelTurn, getReadiness, getTurn, startTurn, submitTurn, resetChat } from "../src/onDeviceChat";
+import Pheme from "../modules/pheme-native/src/PhemeNativeModule";
 import type { Attachment, Readiness, Turn } from "../src/types";
 import { pcm16ToWav } from "../src/wav";
-import { MAX_RECORDING_SECONDS, pendingFile, purgeExpiredRecording, readPendingRecording, removePendingRecording, saveRecording, updatePendingRecording, type PendingRecording } from "../src/recordingStore";
+import { pendingFile, purgeExpiredRecording, readPendingRecording, removePendingRecording, saveRecording, updatePendingRecording, type PendingRecording } from "../src/recordingStore";
 import { listRecentChats, saveChat } from "../src/chatStore";
 
 const colors = { ink: "#172033", muted: "#667085", line: "#e4e7ec", panel: "#f7f8fa", accent: "#176b5b", user: "#e4f3ef" };
@@ -40,6 +41,9 @@ export default function ChatScreen() {
   const previousStatusRef = useRef<Turn["status"] | null>(null);
   const pendingRecordingRef = useRef<PendingRecording | null>(null);
   const pollingTurnRef = useRef<string | null>(null);
+  const busyRef = useRef(false);
+  const recordedBytes = useRef(0);
+  const recordingLimit = useRef(120);
 
   const audio = useAudioStream({
     sampleRate: 16000,
@@ -48,7 +52,10 @@ export default function ChatScreen() {
     onBuffer: (buffer: AudioStreamBuffer) => {
       if (!recordingRef.current) return;
       // Copy native memory before the audio callback returns.
-      chunksRef.current.push(new Uint8Array(buffer.data).slice().buffer);
+      const limit = buffer.sampleRate * buffer.channels * 2 * recordingLimit.current;
+      const take = Math.min(buffer.data.byteLength, Math.max(0, limit - recordedBytes.current));
+      if (take) chunksRef.current.push(new Uint8Array(buffer.data).slice(0, take).buffer);
+      recordedBytes.current += take;
       sampleRateRef.current = buffer.sampleRate;
       channelsRef.current = buffer.channels;
     },
@@ -81,27 +88,36 @@ export default function ChatScreen() {
   useEffect(() => {
     setRecentChats(listRecentChats());
     purgeExpiredRecording();
-    const pending = readPendingRecording();
+    const pending = readPendingRecording('local');
     if (pending) pendingRecordingRef.current = pending;
     if (pending) setPendingRecovery(true);
-    getReadiness().then((value) => {
-      setReadiness(value);
-      const current = value.current_turn;
-      if (current && ["transcribing", "awaiting_review", "generating"].includes(current.status)) {
-        const restored: Turn = {
-          id: current.turn_id,
-          status: current.status,
-          transcript: current.transcript ?? "",
-          approvedText: current.approved_text ?? null,
-          reply: current.reply ?? "",
-          error: current.error?.message,
-          attachments: [],
-        };
-        setActive(restored);
-        if (restored.status === "awaiting_review") setDraft(restored.transcript);
-      }
-    }).catch((e) => setError(e.message));
   }, []);
+  useFocusEffect(useCallback(() => {
+    let stopped = false;
+    setError(""); setBusy(true); busyRef.current = true;
+    getReadiness().then(value => {
+      if (!stopped) { setReadiness(value); recordingLimit.current = value.maxAudioSeconds ?? 120; }
+    })
+      .catch(e => { if (!stopped) setError(e.message); })
+      .finally(() => { busyRef.current = false; if (!stopped) setBusy(false); });
+    return () => { stopped = true; };
+  }, []));
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', state => {
+      if (state === 'active') return;
+      if (recordingRef.current) {
+        recordingRef.current = false;
+        audio.stream.stop();
+        chunksRef.current = []; recordedBytes.current = 0;
+        setRecording(false);
+        void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+        setError('Recording interrupted. Record again when the app is active.');
+      }
+      void Speech.stop();
+      void Pheme.cancel().catch(() => {});
+    });
+    return () => { subscription.remove(); audio.stream.stop(); void Speech.stop(); };
+  }, [audio.stream]);
   useEffect(() => {
     if (!active || active.status === "transcribing" || active.id.startsWith("pending-")) return;
     saveChat(active);
@@ -121,7 +137,8 @@ export default function ChatScreen() {
     if (!recording) return;
     const started = Date.now();
     const timer = setInterval(() => setRecordingSeconds(Math.floor((Date.now() - started) / 1000)), 250);
-    return () => clearInterval(timer);
+    const timeout = setTimeout(() => void stopRecording(), recordingLimit.current * 1000);
+    return () => { clearInterval(timer); clearTimeout(timeout); };
   }, [recording]);
 
   async function speakReply(text: string) {
@@ -150,14 +167,14 @@ export default function ChatScreen() {
 
   function updateFromEvent(event: { event: string; data: Record<string, unknown> }) {
     const pending = pendingRecordingRef.current;
-    if (pending && event.data.turn_id) updatePendingRecording({ turnId: String(event.data.turn_id), status: "uploading" });
+    if (pending && event.data.turn_id) updatePendingRecording({ turnId: String(event.data.turn_id), status: "saved" }, 'local');
     setActive((current) => {
-      // Keep the server-issued turn ID across SSE events. Later events may omit it;
+      // Keep the local turn ID across progress events. Later events may omit it;
       // falling back to the render-time `active` value can restore the temporary ID
       // and make the approval request target a nonexistent turn.
       const id = String(event.data.turn_id ?? current?.id ?? "");
       const next = { ...(current ?? { id, status: "transcribing" as const, transcript: "", approvedText: null, reply: "", attachments }), id: id || current?.id || "" };
-      if (event.event === "transcript.ready") { setBusy(false); setPendingRecovery(false); if (pending) { removePendingRecording(); pendingRecordingRef.current = null; } setDraft(String(event.data.text ?? "")); return { ...next, status: "awaiting_review", transcript: String(event.data.text ?? "") }; }
+      if (event.event === "transcript.ready") { setBusy(false); setPendingRecovery(false); if (pending) { removePendingRecording('local'); pendingRecordingRef.current = null; } setDraft(String(event.data.text ?? "")); return { ...next, status: "awaiting_review", transcript: String(event.data.text ?? "") }; }
       if (event.event === "question.approved") { setBusy(true); setDraft(""); return { ...next, status: "generating", approvedText: String(event.data.text ?? "") }; }
       if (event.event === "reply.started") return { ...next, status: "generating" };
       if (event.event === "reply.delta") return { ...next, status: "generating", reply: next.reply + String(event.data.text ?? "") };
@@ -166,43 +183,45 @@ export default function ChatScreen() {
       if (event.event === "turn.failed" || event.event === "reply.failed") {
         setBusy(false);
         const failure = event.data.error as { message?: string } | undefined;
-        if (pending) updatePendingRecording({ status: "failed", error: failure?.message ?? "The turn failed." });
+        if (pending) updatePendingRecording({ status: "failed", error: failure?.message ?? "The turn failed." }, 'local');
         return { ...next, status: "failed", error: failure?.message ?? "The turn failed." };
       }
       return next;
     });
   }
 
-  async function runTurn(input: string | Uint8Array | ReturnType<typeof pendingFile>, pending: PendingRecording | null = null) {
+  async function runTurn(input: string | ReturnType<typeof pendingFile>, pending: PendingRecording | null = null) {
+    if (busyRef.current) return;
+    busyRef.current = true;
     if (active?.status === "completed") {
       setHistory((current) => current.some((turn) => turn.id === active.id) ? current : [...current, active]);
     }
     setError(""); setBusy(true); setDraft(typeof input === "string" ? input : ""); setActive({ id: `pending-${Date.now()}`, status: "transcribing", transcript: typeof input === "string" ? input : "", approvedText: null, reply: "", attachments });
     const controller = new AbortController(); abortRef.current = controller;
-    if (pending) { pendingRecordingRef.current = pending; setPendingRecovery(false); updatePendingRecording({ status: "uploading" }); }
-    try { await startTurn(input, updateFromEvent, controller.signal, pending?.idempotencyKey); }
+    if (pending) { pendingRecordingRef.current = pending; setPendingRecovery(false); updatePendingRecording({ status: "saved" }, 'local'); }
+    try { await startTurn(input, updateFromEvent, controller.signal); }
     catch (e) {
       if (!controller.signal.aborted) {
         const message = e instanceof Error ? e.message : "Could not send question.";
         setError(message.toLowerCase().includes("inference") ? "Another report is still processing. Check the input bar." : message);
         setActive((current) => current ? { ...current, status: "failed", error: message } : current);
-        if (pending) { updatePendingRecording({ status: "failed", error: message }); setPendingRecovery(true); }
+        if (pending) { updatePendingRecording({ status: "failed", error: message }, 'local'); setPendingRecovery(true); }
       }
     }
-    finally { setBusy(false); abortRef.current = null; }
+    finally { busyRef.current = false; setBusy(false); abortRef.current = null; }
   }
 
   async function send() {
     const text = draft.trim();
-    if (!text || busy) return;
+    if (!text || busyRef.current || busy || !readiness?.reply.ready) return;
     await runTurn(text);
   }
 
   async function startRecording() {
-    if (busy || recording) return;
+    if (busyRef.current || busy || recording || !readiness?.stt.ready) return;
     if (active?.status === "awaiting_review" && !draft.trim()) {
       // An empty reviewed draft means the user discarded the transcript.
-      // Cancel that server turn before starting a fresh recording.
+      // Cancel that local turn before starting a fresh recording.
       const discardedTurnId = active.id;
       setActive(null);
       setDraft("");
@@ -219,6 +238,7 @@ export default function ChatScreen() {
       // Keep the microphone usable while iOS ReplayKit/Screen Recording is active.
       await setAudioModeAsync({ allowsRecording: true, playsInSilentMode: true, interruptionMode: "mixWithOthers" });
       chunksRef.current = [];
+      recordedBytes.current = 0;
       sampleRateRef.current = 16000;
       channelsRef.current = 1;
       recordingRef.current = true;
@@ -235,10 +255,10 @@ export default function ChatScreen() {
   }
 
   async function stopRecording() {
-    if (!recording) return;
+    if (!recordingRef.current) return;
     try {
       audio.stream.stop();
-      // Stop updating the UI immediately. Transcription/network processing can
+      // Stop updating the UI immediately. Native transcription can
       // take much longer and must not keep the button looking like it listens.
       recordingRef.current = false;
       setRecording(false);
@@ -258,9 +278,9 @@ export default function ChatScreen() {
       }
       const wav = pcm16ToWav(chunks, sampleRateRef.current, channelsRef.current);
       const durationSeconds = chunks.reduce((total, chunk) => total + chunk.byteLength, 0) / (sampleRateRef.current * channelsRef.current * 2);
-      if (durationSeconds > MAX_RECORDING_SECONDS) { setError("Recordings are limited to 10 minutes."); return; }
-      // Persist before touching the network. A crash after this point leaves a retryable file and manifest.
-      const pending = saveRecording(wav, durationSeconds);
+      if (durationSeconds > recordingLimit.current) { setError(`Local recordings are limited to ${recordingLimit.current} seconds.`); return; }
+      // Persist before inference so failure leaves a retryable local recording.
+      const pending = saveRecording(wav, durationSeconds, 'local');
       pendingRecordingRef.current = pending;
       await runTurn(pendingFile(pending), pending);
     } catch (e) {
@@ -273,7 +293,7 @@ export default function ChatScreen() {
   }
 
   async function retrySavedRecording() {
-    const pending = readPendingRecording();
+    const pending = readPendingRecording('local');
     if (!pending || busy) return;
     setError("");
     setPendingRecovery(false);
@@ -281,9 +301,10 @@ export default function ChatScreen() {
   }
 
   async function approve() {
-    if (!active || active.status !== "awaiting_review" || !draft.trim()) return;
-    if (!active.id || active.id.startsWith("pending-")) { setError("The server has not assigned this turn yet. Please wait a moment and try again."); return; }
+    if (busyRef.current || !active || active.status !== "awaiting_review" || !draft.trim()) return;
+    if (!active.id || active.id.startsWith("pending-")) { setError("The local turn is not ready. Please wait and try again."); return; }
     const turnID = active.id;
+    busyRef.current = true;
     setBusy(true); setError("");
     setActive((current) => current?.id === turnID ? { ...current, status: "generating", transcript: "", approvedText: draft.trim() } : current);
     try { await submitTurn(turnID, draft.trim()); await pollTurn(turnID); }
@@ -292,6 +313,7 @@ export default function ChatScreen() {
       const message = e instanceof Error ? e.message : "Could not approve question.";
       setError(message.toLowerCase().includes("inference") ? "Another report is still processing. Check the input bar and try again when it finishes." : message);
     }
+    finally { busyRef.current = false; }
   }
 
   async function pollTurn(turnID: string) {
@@ -328,7 +350,8 @@ export default function ChatScreen() {
   async function stop() {
     abortRef.current?.abort();
     if (active) { try { await cancelTurn(active.id); } catch { /* already stopped locally */ } }
-    setBusy(false);
+    // Native cancellation settles asynchronously. The originating promise owns
+    // the busy flag until Pheme has released its admitted operation.
   }
 
   async function recover() {
@@ -337,20 +360,29 @@ export default function ChatScreen() {
     catch (e) { setError(e instanceof Error ? e.message : "Could not recover turn."); }
   }
 
-  function openRecentChat(chat: Turn) {
-    if (busy) return;
+  async function openRecentChat(chat: Turn) {
+    if (busy || busyRef.current) return;
     void Speech.stop();
-    setHistory((current) => current.filter((turn) => turn.id !== chat.id));
-    setActive(chat);
-    setDraft(chat.status === "awaiting_review" ? chat.transcript : chat.approvedText ?? "");
-    setError("");
-    closeDrawer();
+    busyRef.current = true; setBusy(true);
+    try {
+      await resetChat();
+      setHistory([chat]); setActive(null);
+      setDraft(chat.status === "awaiting_review" ? chat.transcript : "");
+      setError("Saved chat is read-only. New messages start a fresh local conversation.");
+      closeDrawer();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not open saved chat.'); }
+    finally { busyRef.current = false; setBusy(false); }
   }
 
-  function startNewChat() {
-    if (busy) return;
+  async function startNewChat() {
+    if (busy || busyRef.current) return;
     void Speech.stop();
-    setActive(null); setHistory([]); setDraft(""); setError(""); setAttachments([]); closeDrawer();
+    busyRef.current = true; setBusy(true);
+    try {
+      await resetChat();
+      setActive(null); setHistory([]); setDraft(""); setError(""); setAttachments([]); closeDrawer();
+    } catch (e) { setError(e instanceof Error ? e.message : 'Could not reset local conversation.'); }
+    finally { busyRef.current = false; setBusy(false); }
   }
 
   async function pickFile() {
@@ -360,12 +392,23 @@ export default function ChatScreen() {
 
   const displayTurns = [...history, ...(active ? [active] : [])];
   return <SafeAreaView style={styles.safe}><KeyboardAvoidingView style={styles.screen} behavior={Platform.OS === "ios" ? "padding" : "height"} keyboardVerticalOffset={0}>
-    <View style={styles.header}><Pressable accessibilityLabel="Open recent chats" onPress={openDrawer} style={styles.menuButton}><MaterialIcons name="menu" size={27} color={colors.ink} /></Pressable><View style={styles.headerCopy}><Text style={styles.title}>Incident Reporting Agent</Text><Link href="/local-transcription" disabled={busy || recording} style={styles.action}>On-device transcription →</Link><Text style={styles.subtitle}>{readiness?.stt.ready ? `Transcription · ${readiness.stt.name}` : "Connecting to transcription model…"}</Text><Text style={styles.subtitle}>{readiness?.reply.ready ? `Reply · ${readiness.reply.name}` : "Connecting to reply model…"}</Text></View><View style={[styles.dot, { backgroundColor: readiness?.stt.ready && readiness?.reply.ready ? colors.accent : "#d0d5dd" }]} /></View>
+    <View style={styles.header}>
+      <Pressable accessibilityLabel="Open recent chats" onPress={openDrawer} style={styles.menuButton}><MaterialIcons name="menu" size={27} color={colors.ink} /></Pressable>
+      <View style={styles.headerCopy}>
+        <Text style={styles.title}>Incident Reporting Agent</Text>
+        <Link href="/local-transcription" disabled={busy || recording} style={styles.action}>On-device model settings</Link>
+        <Text style={styles.subtitle}>{readiness?.stt.ready ? `ASR: ${readiness.stt.name}` : "Loading local ASR model..."}</Text>
+        <Text style={styles.subtitle}>{readiness?.reply.ready ? `Reasoning: ${readiness.reply.name}` : "Loading local reasoning model..."}</Text>
+        <Text style={styles.subtitle}>Inference runs on this iPhone. Replies are not saved incident reports.</Text>
+      </View>
+      <View style={[styles.dot, { backgroundColor: readiness?.stt.ready && readiness?.reply.ready ? colors.accent : "#d0d5dd" }]} />
+    </View>
     <FlatList data={displayTurns} keyExtractor={(item) => item.id} contentContainerStyle={styles.messages} renderItem={({ item }) => { const question = item.approvedText; return <View style={styles.turn}>{question ? <View style={[styles.bubble, styles.userBubble]}><Text style={styles.label}>You</Text><Text style={styles.body}>{question}</Text></View> : null}{item.status === "awaiting_review" && item.transcript ? <View style={[styles.bubble, styles.transcriptBubble]}><Text style={styles.label}>Transcript</Text><Text style={styles.body}>{item.transcript}</Text></View> : null}{item.status === "transcribing" ? <View style={[styles.bubble, styles.assistantBubble, styles.statusBubble]}><ActivityIndicator color={colors.accent} /><Text style={styles.statusText}>Processing report…</Text></View> : null}{item.status === "generating" ? <View style={[styles.bubble, styles.assistantBubble]}><Text style={styles.label}>Incident agent</Text>{item.reply ? <Text style={styles.body}>{item.reply}</Text> : <Text style={styles.typing}>{typingDots}</Text>}{item.reply ? <Pressable onPress={() => void speakReply(item.reply)}><Text style={styles.action}>🔊 Speak</Text></Pressable> : null}</View> : null}{item.status === "completed" ? <View style={[styles.bubble, styles.assistantBubble]}><Text style={styles.label}>Incident agent</Text><Text style={styles.body}>{item.reply || "Reply completed, but no reply text was returned."}</Text>{item.reply ? <Pressable onPress={() => void speakReply(item.reply)}><Text style={styles.action}>🔊 Speak</Text></Pressable> : null}</View> : null}{item.status === "failed" ? <View style={[styles.bubble, styles.failureBubble]}><Text style={styles.label}>Transcription failed</Text><Text style={styles.failureText}>{item.error ?? "The report could not be transcribed."}</Text><Text style={styles.statusText}>Check the microphone permission and try recording again.</Text></View> : null}{item.status === "cancelled" ? <View style={[styles.bubble, styles.assistantBubble]}><Text style={styles.statusText}>Report cancelled.</Text></View> : null}</View>; }} ListEmptyComponent={<View style={styles.empty}><Pressable onPress={recording ? stopRecording : startRecording} style={[styles.micButton, recording && styles.micButtonRecording]} disabled={busy && !recording}><MaterialIcons name={recording ? "stop" : "mic"} size={48} color="#fff" /></Pressable></View>} />
     {recording ? <View style={styles.recording}><Text style={styles.recordingText}>● Listening… {recordingSeconds}s</Text></View> : null}
     {attachments.length ? <View style={styles.chips}>{attachments.map((file, index) => <Pressable key={`${file.uri}-${index}`} onPress={() => setAttachments((items) => items.filter((_, i) => i !== index))} style={styles.chip}><Text numberOfLines={1} style={styles.chipText}>📎 {file.name}  ×</Text></Pressable>)}</View> : null}
     {error ? <View style={styles.error}><Text style={styles.errorText}>{error}</Text>{active ? <Pressable onPress={recover}><Text style={styles.action}>Read status</Text></Pressable> : null}</View> : null}
-    {pendingRecovery ? <View style={styles.recovery}><Text style={styles.recoveryText}>A previous voice recording is ready to retry.</Text><Pressable onPress={() => void retrySavedRecording} disabled={busy}><Text style={styles.action}>Retry transcription</Text></Pressable></View> : null}
+    {pendingRecovery ? <View style={styles.recovery}><Text style={styles.recoveryText}>A previous local recording is ready to retry.</Text><Pressable onPress={() => void retrySavedRecording()} disabled={busy}><Text style={styles.action}>Retry transcription</Text></Pressable></View> : null}
+    {busy && active?.status === "generating" ? <Pressable accessibilityRole="button" onPress={() => void stop()}><Text style={styles.action}>Cancel local reply</Text></Pressable> : null}
     {busy && active?.status === "transcribing" ? <View style={styles.processing}><ActivityIndicator color={colors.accent} /><Text style={styles.statusText}>Processing your report…</Text></View> : null}
     <Text style={styles.footnote}>{recording ? "Speak clearly, then tap the button again to review the transcription." : active?.status === "awaiting_review" ? "Check the input bar, edit the transcript, then tap ↑ to send." : active?.status === "generating" ? "Incident agent is responding…" : "Start an incident report · Ask by typing or speaking"}</Text>
     {!active || active.status === "awaiting_review" || active.status === "completed" || active.status === "failed" || active.status === "cancelled" ? <View style={styles.composer}><Pressable onPress={pickFile} style={styles.icon}><Text>＋</Text></Pressable><Pressable accessibilityLabel={recording ? "Stop speaking" : "Speak"} onPress={recording ? stopRecording : startRecording} style={[styles.icon, styles.speakButton]} disabled={busy && !recording}><MaterialIcons name={recording ? "stop" : "mic"} size={21} color={recording ? "#b54708" : colors.accent} /></Pressable><TextInput value={draft} onChangeText={setDraft} placeholder={active?.status === "awaiting_review" ? "Edit the transcript, then tap ↑ to send…" : "Or type an incident question…"} placeholderTextColor="#98a2b3" multiline style={styles.input} editable={!busy || active?.status === "awaiting_review"} /><Pressable onPress={active?.status === "awaiting_review" ? approve : busy ? stop : send} style={[styles.send, !draft.trim() && !busy && styles.disabled]}><MaterialIcons name={busy ? "stop" : "arrow-upward"} size={22} color="#fff" /></Pressable></View> : null}

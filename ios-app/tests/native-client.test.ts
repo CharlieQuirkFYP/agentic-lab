@@ -7,6 +7,9 @@ const ok = (value: unknown) => JSON.stringify({ ok: true, value });
 function fake(overrides: Partial<NativeTransport> = {}): NativeTransport {
   return { open: async () => ok({ busy: false }), inspect: async () => ok({ busy: false }), listModels: async () => ok([]), savedSettings: async () => ok(null),
     importModel: async () => ok({ id: 'artifact' }), configure: async () => ok({ ready: true }),
+    listReasoningModels: async () => ok([]), configureReasoning: async () => ok({ ready: true }),
+    respond: async () => ok({ reply: { run_id: 'reply-1', text: 'Where exactly?' }, execution_location: 'device' }),
+    resetConversation: async () => ok({ ready: true, history_turns: 0 }),
     transcribeFile: async () => ok({ transcription: { run_id: 'run-1' }, execution_location: 'device' }),
     poll: async () => ok({ batchesJSON: '[]' }), cancel: async () => {}, close: async () => {}, ...overrides };
 }
@@ -16,6 +19,23 @@ test('missing native build fails explicitly without making network requests', as
   assert.equal(client.available, false);
   await assert.rejects(client.inspect(), (e: unknown) => e instanceof PhemeError && e.code === 'native_unavailable');
   await client.close();
+});
+
+test('reasoning forwards reviewed text and request identity through the native module', async () => {
+  let request: string[] = [];
+  let loaded: [string, number] | undefined;
+  let resets = 0;
+  const client = createPhemeClient(fake({
+    configureReasoning: async (id, threads) => { loaded = [id, threads]; return ok({ ready: true }); },
+    respond: async (text, id) => { request = [text, id]; return ok({ reply: { text: 'Which entrance?', run_id: 'r-1' }, execution_location: 'device' }); },
+    resetConversation: async () => { resets++; return ok({ history_turns: 0 }); },
+  }));
+  await client.configureReasoning('hash', 2);
+  assert.deepEqual(loaded, ['hash', 2]);
+  assert.equal((await client.respond('Smoke at the entrance', 'request-1')).reply.run_id, 'r-1');
+  assert.deepEqual(request, ['Smoke at the entrance', 'request-1']);
+  await client.resetConversation();
+  assert.equal(resets, 1);
 });
 
 test('passes file URI and settings directly; retains run ID and exact metric payload', async () => {

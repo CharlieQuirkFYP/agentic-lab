@@ -1,4 +1,4 @@
-import type { Inspection, LocalResult, Model, NativeTransport, Observation, Settings, Snapshot } from './PhemeNative.types.ts';
+import type { Inspection, LocalReply, LocalResult, Model, NativeTransport, Observation, ReasoningSnapshot, Settings, Snapshot } from './PhemeNative.types.ts';
 
 export class PhemeError extends Error {
   readonly code: string;
@@ -34,6 +34,10 @@ export function createPhemeClient(transport: NativeTransport | null) {
     importModel: async (uri: string, name: string, sha256: string) => decode<Model>(await native().importModel(uri, name, sha256)),
     configure: async (settings: Settings) => decode<Snapshot>(await native().configure(JSON.stringify(settings))),
     transcribeFile: async (uri: string) => decode<LocalResult>(await native().transcribeFile(uri)),
+    listReasoningModels: async () => decode<Model[]>(await native().listReasoningModels()),
+    configureReasoning: async (modelID: string, threads = 4) => decode<ReasoningSnapshot>(await native().configureReasoning(modelID, threads)),
+    respond: async (text: string, requestID: string) => decode<LocalReply>(await native().respond(text, requestID)),
+    resetConversation: async () => decode<ReasoningSnapshot>(await native().resetConversation()),
     poll: async () => decode<Observation>(await native().poll()),
     cancel: async () => native().cancel(),
     close: async () => { if (transport) await transport.close(); },

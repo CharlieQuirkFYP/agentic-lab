@@ -10,7 +10,10 @@
     "test": "node --test tests/*.test.ts tests/*.test.mjs",
     "test:native": "bash scripts/test-native.sh",
     "native:prepare": "node scripts/prepare-native.mjs",
-    "native:check": "node scripts/prepare-native.mjs --check"
+    "native:check": "node scripts/prepare-native.mjs --check",
+    "native:build": "bash scripts/build-native.sh",
+    "native:bundle": "bash scripts/bundle-models.sh",
+    "ios:release": "npm run native:check && expo run:ios --device --configuration Release"
   },
   "dependencies": {
     "@expo/vector-icons": "^15.0.0",

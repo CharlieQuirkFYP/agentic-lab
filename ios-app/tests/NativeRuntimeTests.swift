@@ -58,6 +58,39 @@ func failure(_ code: String, _ work: @Sendable () async throws -> Void) async th
     catch let error as PhemeLocalFailure { try expect(error.code == code, "Expected \(code), got \(error.code)") }
 }
 
+final class FakeReasoning: PhemeReasoningEngine, @unchecked Sendable {
+    private let lock = NSLock()
+    private var path: String?
+    private var waiter: CheckedContinuation<Void, Never>?
+    private var history = 0
+    private var resets = 0
+    private var closes = 0
+    var paused: Bool { lock.withLock { waiter != nil } }
+    var closeCount: Int { lock.withLock { closes } }
+    var resetCount: Int { lock.withLock { resets } }
+    func inspect() throws -> ReasoningSnapshot {
+        lock.withLock { ReasoningSnapshot(ready: path != nil, state: path == nil ? "unloaded" : "ready",
+            model_path: path, threads: 4, active_run: nil, history_turns: history, load_time_ms: 1) }
+    }
+    func load(path: String, prompt: String, threads: Int) async throws -> ReasoningSnapshot {
+        try expect(prompt == "Test incident role", "Bundled role was not passed to Pheme")
+        lock.withLock { self.path = path }
+        return try inspect()
+    }
+    func respond(text: String, requestID: String) async throws -> ReasoningResult {
+        await withCheckedContinuation { continuation in lock.withLock { waiter = continuation } }
+        lock.withLock { history += 1 }
+        return ReasoningResult(run_id: requestID, text: "Which entrance?", processing_time_ms: 1)
+    }
+    func release() { let next = lock.withLock { let value = waiter; waiter = nil; return value }; next?.resume() }
+    func reset() async throws -> ReasoningSnapshot {
+        lock.withLock { history = 0; resets += 1 }
+        return try inspect()
+    }
+    func cancel() {} // Exercise the native-success / host-cancellation race.
+    func close() { lock.withLock { path = nil; closes += 1 } }
+}
+
 @main struct RuntimeTests {
     static func main() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
@@ -155,6 +188,44 @@ func failure(_ code: String, _ work: @Sendable () async throws -> Void) async th
         try await failure("closed") { _ = try freshOwner.get(contextID: oldID) }
         freshOwner.close(contextID: newID)
         try expect(newRuntime.isClosed, "Current JS context did not close its own engine")
+
+        let bundle = root.appendingPathComponent("PhemeModels.bundle")
+        try FileManager.default.createDirectory(at: bundle, withIntermediateDirectories: true)
+        let fixtureModel = PhemeModel(id: hash, name: "Bundled fixture", sha256: hash, bytes: 3)
+        let entries = [
+            BundledModel(model: fixtureModel, purpose: "transcription", relativePath: "asr.bin"),
+            BundledModel(model: fixtureModel, purpose: "reasoning", relativePath: "reply.gguf")
+        ]
+        try JSONEncoder().encode(entries).write(to: bundle.appendingPathComponent("catalog.json"))
+        try Data("abc".utf8).write(to: bundle.appendingPathComponent("asr.bin"))
+        try Data("abc".utf8).write(to: bundle.appendingPathComponent("reply.gguf"))
+        try Data("Test incident role".utf8).write(to: bundle.appendingPathComponent("incident-reporting.txt"))
+        let bundledEngine = FakeEngine(), reasoning = FakeReasoning()
+        let imports = root.appendingPathComponent("fresh-imports")
+        let bundled = PhemeRuntime(engine: bundledEngine, reasoning: reasoning, bundled: BundledModels(root: bundle),
+            directory: imports, appRoot: root, decodeAudio: decode)
+        let asrModels = try await bundled.listModels(), replyModels = try await bundled.listReasoningModels()
+        try expect(asrModels.count == 1 && replyModels.count == 1, "Bundled model discovery failed")
+        _ = try await bundled.configure(PhemeSettings(modelID: hash))
+        _ = try await bundled.configureReasoning(modelID: hash, threads: 4)
+        let bundledSnapshot = try bundledEngine.inspect()
+        try expect(bundledSnapshot.configuration?.model_path == bundle.appendingPathComponent("asr.bin").path, "ASR model was not loaded directly from bundle")
+        try expect(!FileManager.default.fileExists(atPath: imports.appendingPathComponent(hash + ".bin").path), "Bundled weights were duplicated")
+        let replyOperation = Task { try await bundled.respond(text: "Smoke", requestID: "reply-1") }
+        try await waitUntil { reasoning.paused }
+        try await failure("busy") { _ = try await bundled.transcribeFile(uri: wav.absoluteString) }
+        bundled.cancel()
+        reasoning.release()
+        try await failure("cancelled") { _ = try await replyOperation.value }
+        try expect(reasoning.resetCount == 1, "Discarded native success remained in conversation history")
+        let nextReply = Task { try await bundled.respond(text: "Smoke at gate", requestID: "reply-2") }
+        try await waitUntil { reasoning.paused }
+        bundled.shutdown()
+        try expect(reasoning.closeCount == 0 && bundledEngine.closeCount == 0, "Shutdown freed models before reasoning settled")
+        reasoning.release()
+        try await failure("cancelled") { _ = try await nextReply.value }
+        try expect(reasoning.closeCount == 1 && bundledEngine.closeCount == 1, "Both engines must close after settlement")
         print("PASS: native runtime import/checksum, catalog/settings persistence, local results, warm reuse, observations, busy/cancel/close settlement, corrupt-model and sandbox recovery")
+        print("PASS: bundled ASR/reasoning paths, shared admission, cancellation history and dual-engine lifetime")
     }
 }

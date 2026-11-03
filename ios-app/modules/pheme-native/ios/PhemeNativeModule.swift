@@ -8,7 +8,8 @@ private enum PhemeHost {
     static let lifecycleQueue = DispatchQueue(label: "org.agenticlab.pheme.lifecycle", qos: .userInitiated)
     static let owner = PhemeRuntimeOwner {
         let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0].appendingPathComponent("PhemeModels", isDirectory: true)
-        return PhemeRuntime(engine: try NativeBridge(), directory: directory,
+        return PhemeRuntime(engine: try NativeBridge(), reasoning: try ReasoningBridge(),
+            bundled: .application, directory: directory,
             appRoot: URL(fileURLWithPath: NSHomeDirectory()),
             decodeAudio: { url, limit in try PhemeAudio.decode(url, maxSeconds: limit) })
     }
@@ -56,6 +57,27 @@ public final class PhemeNativeModule: Module {
         }
         AsyncFunction("transcribeFile") { [owner, contextID] (uri: String) async -> String in
             await owner.respond(contextID: contextID) { try await $0.transcribeFile(uri: uri) }
+        }
+        AsyncFunction("listReasoningModels") { [owner, contextID] () async -> String in
+            await owner.respond(contextID: contextID) { runtime in
+                let models = try await runtime.listReasoningModels()
+                return try json(encodedObject(models))
+            }
+        }
+        AsyncFunction("configureReasoning") { [owner, contextID] (modelID: String, threads: Int) async -> String in
+            await owner.respond(contextID: contextID) { runtime in
+                let snapshot = try await runtime.configureReasoning(modelID: modelID, threads: threads)
+                return try json(encodedObject(snapshot))
+            }
+        }
+        AsyncFunction("respond") { [owner, contextID] (text: String, requestID: String) async -> String in
+            await owner.respond(contextID: contextID) { try await $0.respond(text: text, requestID: requestID) }
+        }
+        AsyncFunction("resetConversation") { [owner, contextID] () async -> String in
+            await owner.respond(contextID: contextID) { runtime in
+                let snapshot = try await runtime.resetConversation()
+                return try json(encodedObject(snapshot))
+            }
         }
         AsyncFunction("poll") { [owner, contextID] () async -> String in await owner.respond(contextID: contextID) { try $0.pollJSON() } }
         AsyncFunction("cancel") { [owner, contextID] () -> Void in owner.cancel(contextID: contextID) }
