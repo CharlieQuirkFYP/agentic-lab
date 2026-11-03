@@ -72,7 +72,12 @@ final class NativeBridge: @unchecked Sendable {
     private let observer: OpaquePointer
     private let executor = NativeExecution.queue
 
-    init(handle: OpaquePointer? = pheme_va_create()) throws {
+    convenience init() throws {
+        guard pheme_va_abi_version() == 1 else { throw BridgeFailure(code: 5, message: "Unsupported Pheme ABI version.", run_id: nil) }
+        try self.init(handle: pheme_va_create())
+    }
+
+    init(handle: OpaquePointer?) throws {
         guard let handle else { throw BridgeFailure(code: 4, message: "Could not allocate the engine.", run_id: nil) }
         guard let observer = pheme_va_observer_new(handle) else {
             pheme_va_free(handle)
@@ -106,6 +111,12 @@ final class NativeBridge: @unchecked Sendable {
 
     func inspect() throws -> BridgeSnapshot {
         try decode { pheme_va_inspect(handle, $0) }
+    }
+
+    // Admission is already stopped by the host. close does not free the handle;
+    // ARC releases it only after all retained native calls have returned.
+    func close() throws {
+        _ = try raw { pheme_va_close(handle, $0) }
     }
 
     /// Called by exactly one service poller, independently of the inference queue.

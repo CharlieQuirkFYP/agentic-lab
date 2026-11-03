@@ -2,6 +2,12 @@
 
 Separate Expo/React Native implementation of the web voice-console flow. The existing `../web` app is untouched.
 
+## On-device transcription
+
+The app now includes a separate **On-device transcription** route with a local Expo Swift module linking Pheme. It imports/verifies a model, transcribes saved WAVs or microphone recordings, and saves editable local transcripts. It requires a native development build. Full Expo native linking and physical-device acceptance remain pending; see [build and test instructions](NATIVE_TESTING.md). Local reasoning and durable benchmark metric uploads remain later work.
+
+The existing remote chat flow below remains available for development.
+
 ## Current implementation
 
 - Chat-style incident-reporting screen with a large centered microphone action.
