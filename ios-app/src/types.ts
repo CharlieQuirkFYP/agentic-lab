@@ -20,6 +20,7 @@ export type Turn = {
 export type Readiness = {
   stt: { name: string; ready: boolean };
   reply: { name: string; ready: boolean };
+  maxAudioSeconds?: number;
   current_turn?: {
     turn_id: string;
     status: Status;

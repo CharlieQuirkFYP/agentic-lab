@@ -204,4 +204,7 @@ The native host owns one drain consumer and distributes each original payload to
 
 Collection is configured for future operations. Whisper-enabled builds also retain legacy `pheme_va_metrics_set_enabled` and `pheme_va_metrics_drain`; the legacy drain competes for the same queue and must not run beside another drain owner.
 
-The [native host guide](../../pheme-va/hosts/ios/README.md) describes setup and the optional paired desktop monitor. The host does not yet upload batches to Go or collect device resource/energy measurements. Platform measurements remain host responsibilities and unavailable values must remain unavailable.
+The [Expo native guide](../../ios-app/NATIVE_TESTING.md) describes the app-owned
+bridge and local diagnostic metrics. The standalone SwiftUI host and its paired
+monitor transport have been removed. Expo does not yet upload batches to Go or
+collect device resource/energy measurements. Unavailable values remain unavailable.

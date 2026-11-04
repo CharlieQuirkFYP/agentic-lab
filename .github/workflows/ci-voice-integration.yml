@@ -1,4 +1,4 @@
-name: Voice Stack CI
+name: CI / Voice Integration
 
 on:
   pull_request:
@@ -9,10 +9,15 @@ on:
       - "pheme-va/**"
       - "web/src/lib/voice/**"
       - "tests/**"
-      - ".github/workflows/voice-stack-ci.yml"
+      - ".github/workflows/ci-voice-integration.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   voice-stack:
@@ -27,7 +32,7 @@ jobs:
         uses: dtolnay/rust-toolchain@stable
 
       - name: Set up Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@v7
         with:
           go-version-file: api/go.mod
           cache-dependency-path: api/go.sum

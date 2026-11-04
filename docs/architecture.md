@@ -9,7 +9,7 @@ This document separates the implemented foundation from the target architecture.
 - `pheme-va/crates/cli/`: manifest-driven model selection, the one-shot WAV `transcribe` command, and a Ratatui TUI with onboarding, WAV browsing, microphone capture, worker-owned model switching, telemetry, structured logs, automatic allowlisted model downloads, adapter preparation, and bounded persistent run history.
 - `pheme-va/crates/runtime/`: shared Rust conversation state, bounded typed event channels, snapshots, admission/idempotency, inference serialization, cancellation/timeouts, title generation and retained metrics. CLI and HTTP hosts construct separate instances from the same library.
 - `pheme-va/crates/server/`: an Axum adapter with stateless STT/deterministic extraction plus web-owned review/approval, request-scoped reply SSE, recovery/inspection, cancellation/reset, and isolated reply tests. It loads manifest-selected Whisper/Zipformer and reply weights once; bounded web history remains in memory.
-- `pheme-va/crates/ffi/`: a versioned configurable C ABI with responsive status, structured transcription results, and bounded live metrics output. The Swift development host under `pheme-va/hosts/ios/` owns saved setup, audio capture, and lifecycle; iOS/device acceptance remains pending.
+- `pheme-va/crates/ffi/`: versioned transcription C ABI, responsive status and bounded metrics. `crates/reply-ffi/` exposes in-process reasoning with Pheme-owned bounded history. Expo owns all iPhone UI and Swift bridges under `ios-app/modules/pheme-native/ios/`. It links static PhemeVA plus dynamic PhemeReasoning to isolate GGML symbols; the standalone SwiftUI host has been removed.
 - `pheme-va/crates/models/reasoning/`: a normal stdio conversation adapter and `reply-native` llama.cpp worker, separate from Whisper/cleanup. Each local/HTTP host owns its persistent child, isolating incompatible GGML symbols; no extra HTTP service, reply feature flag or runtime build/download endpoint exists. Include its PID in inference resource accounting; child-specific CPU/RAM remain unavailable with the current sampler.
 - `web/`: React/TypeScript/Vite/Tailwind voice console with WAV capture, transcript review, streamed answers, cancellation/reset/recovery and local-service voice playback. The benchmark page is a placeholder for the still-planned real dashboard.
 
@@ -168,7 +168,12 @@ For report queries, the Voice Agent validates model-proposed parameters, execute
 - Speech synthesis runs client-side: browser-reported local-service voices and optional TUI `espeak`. Verify real playback and offline execution before including them in local-inference/energy claims; native mobile synthesis remains planned.
 - MERaLiON and fine-tuning remain evaluation options if measured local-speech errors justify them.
 
-A mobile phone remains the preferred eventual platform, with iOS or NVIDIA Jetson still pending confirmation. The current Linux build, CLI HTTP server, or a remote call is not evidence of on-device iOS inference. The Swift development host and iOS build/package/link/simulator workflow are implemented but still require their first successful iOS CI run and physical-device acceptance. Signing, Metal validation, and measured device performance remain pending. The optional paired CLI monitor controls that same phone engine without starting desktop inference; transport stays in the hosts.
+A mobile phone remains the preferred platform; physical-device suitability is
+not yet established. Expo chat calls its local Swift module for ASR/reasoning,
+without Go or desktop inference. All models run inside the app process, not a
+cross-app background service. Full Expo/device acceptance and measured performance
+remain required. The CLI monitor is retained, but its former SwiftUI phone-side
+transport is not exposed by Expo. See [native testing](../ios-app/NATIVE_TESTING.md).
 
 Upstream references for future evaluation include [whisper.cpp](https://github.com/ggml-org/whisper.cpp), [LiteRT](https://ai.google.dev/edge/litert), and [Apple speech synthesis](https://developer.apple.com/documentation/avfaudio/avspeechsynthesizer). Pin and record versions during implementation.
 

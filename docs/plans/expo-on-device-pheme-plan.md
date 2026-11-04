@@ -2,6 +2,12 @@
 
 Status: implementation started, 28 October 2026. The native module, local transcription route, model import, recovery storage and automated tests are implemented. Full Expo native linking and physical-device acceptance remain pending. See [build/testing instructions](../../ios-app/NATIVE_TESTING.md).
 
+Consolidation update: Expo is now the only iPhone frontend. Its module owns the
+Swift bridges; the standalone SwiftUI host was removed. Chat calls local ASR and
+reasoning, with opt-in bundled weights. The historical transcription-only scope
+and source paths below describe the earlier milestone, not current build commands.
+Device acceptance, incident workflow and durable metric uploads remain separate.
+
 ## Deployment target
 
 The user confirmed an iPhone 18 Pro as the target. Its exact iOS version, available storage and signing setup remain to be recorded. Do not infer memory capacity, usable model size or performance from the device name.
@@ -45,10 +51,10 @@ Later milestones add durable benchmark-run storage/upload and local reasoning. T
 | --- | --- |
 | `ios-app/` | Product interface, Expo configuration, PCM/WAV recording, recording recovery and SQLite |
 | `pheme-va/include/pheme_va.h` | Versioned engine/configuration/transcription/observer API |
-| `pheme-va/hosts/ios/Sources/NativeBridge.swift` | FFI ownership, serial inference queue, typed results/errors and independent observation |
-| `pheme-va/hosts/ios/Sources/PhemeService.swift` | Reference behavior for model import, saved setup, busy state, observation and memory pressure |
+| `ios-app/modules/pheme-native/ios/NativeBridge.swift` | FFI ownership, serial inference queue and independent observation |
+| `ios-app/modules/pheme-native/ios/PhemeRuntime.swift` | Model import, bundled models, shared admission and dual-engine lifetime |
 | `pheme-va/scripts/build-ios.sh` | Device/simulator CPU Whisper XCFramework and build metadata |
-| `pheme-va/hosts/ios/Tests/` | Existing fake-backed bridge and lifecycle checks |
+| `ios-app/tests/` | Fake-backed native runtime and C bridge checks |
 | `pheme-va/scripts/ios-model-fixture.sh` | Pinned small model/audio smoke-test assets; optional, externally downloaded |
 | Go experiment/metric APIs and SQLite | Later upload destination and dashboard queries |
 
@@ -75,7 +81,7 @@ Create the app-specific module under `ios-app/modules/pheme-native/` using the E
 - Keep generated native projects and binary/model artifacts out of Git. Check in module sources, configuration, artifact preparation instructions and build validation.
 - Make a missing/mismatched XCFramework fail with an actionable setup error. It must not silently link a test or feature-disabled build as production inference.
 - Reuse `NativeBridge.swift` through a shared source location or an explicit shared-source packaging rule. Keep it Foundation/FFI based and independent of Expo and SwiftUI; avoid two diverging copies.
-- Verify both the Expo module and the standalone Swift host still resolve that shared bridge. Run the existing project path checks after any relocation.
+- Compile the single module-owned bridge in Expo and the retained C smoke test. There is no longer a standalone Swift app to maintain.
 
 **Acceptance:** a native smoke call returns ABI/capability information through JavaScript on simulator and device. Production archives contain no fake/test symbols.
 
@@ -195,5 +201,5 @@ No deployment performance, power, endurance or full on-device conversation claim
 - [Expo: local native modules](https://docs.expo.dev/modules/get-started/).
 - [Expo: development builds and custom native code](https://docs.expo.dev/develop/development-builds/introduction/).
 - [Expo: native-module registration](https://docs.expo.dev/modules/module-config/).
-- [Existing native Pheme iOS setup and acceptance gates](../../pheme-va/hosts/ios/README.md).
+- [Current Expo native setup and acceptance gates](../../ios-app/NATIVE_TESTING.md).
 - [Existing dashboard API contract](../api/benchmark-ui.md).

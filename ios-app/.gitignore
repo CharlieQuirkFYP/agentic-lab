@@ -8,3 +8,4 @@ node_modules/
 !/.env.example
 /modules/pheme-native/ios/Frameworks/
 /modules/pheme-native/ios/Generated/
+/modules/pheme-native/ios/Resources/

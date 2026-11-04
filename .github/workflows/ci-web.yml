@@ -1,4 +1,4 @@
-name: Web CI
+name: CI / Web
 
 on:
   pull_request:
@@ -6,10 +6,15 @@ on:
       - main
     paths:
       - "web/**"
-      - ".github/workflows/web-ci.yml"
+      - ".github/workflows/ci-web.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   web:

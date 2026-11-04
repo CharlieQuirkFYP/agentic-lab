@@ -47,6 +47,8 @@ protocol PhemeEngine: Sendable {
 /// when JavaScript reloads or its promise is abandoned. No network calls exist here.
 final class PhemeRuntime: @unchecked Sendable {
     private let engine: any PhemeEngine
+    private let reasoning: (any PhemeReasoningEngine)?
+    private let bundled: BundledModels
     private let directory: URL
     private let appRoot: URL
     private let decodeAudio: @Sendable (URL, Int) throws -> CapturedAudio
@@ -57,11 +59,15 @@ final class PhemeRuntime: @unchecked Sendable {
     private var closed = false
     private var generation = 0
     private var currentModel: PhemeModel?
+    private var currentReasoningModel: PhemeModel?
     private var settings: PhemeSettings?
 
-    init(engine: any PhemeEngine, directory: URL, appRoot: URL,
+    init(engine: any PhemeEngine, reasoning: (any PhemeReasoningEngine)? = nil,
+         bundled: BundledModels = BundledModels(root: nil), directory: URL, appRoot: URL,
          decodeAudio: @escaping @Sendable (URL, Int) throws -> CapturedAudio) {
         self.engine = engine
+        self.reasoning = reasoning
+        self.bundled = bundled
         self.directory = directory
         self.appRoot = appRoot.resolvingSymlinksInPath().standardizedFileURL
         self.decodeAudio = decodeAudio
@@ -87,11 +93,12 @@ final class PhemeRuntime: @unchecked Sendable {
             busy = false
             return false
         }
-        if shouldClose { try? engine.close(); lock.withLock { busy = false } }
+        if shouldClose { try? engine.close(); reasoning?.close(); lock.withLock { busy = false } }
     }
 
     func cancel() {
         lock.withLock { generation += 1 }
+        reasoning?.cancel()
     }
 
     func shutdown() {
@@ -103,7 +110,8 @@ final class PhemeRuntime: @unchecked Sendable {
             busy = true
             return true
         }
-        if shouldClose { try? engine.close(); lock.withLock { busy = false } }
+        reasoning?.cancel()
+        if shouldClose { try? engine.close(); reasoning?.close(); lock.withLock { busy = false } }
     }
 
     private func checkGeneration(_ admitted: Int) throws {
@@ -139,7 +147,11 @@ final class PhemeRuntime: @unchecked Sendable {
     func listModels() async throws -> [PhemeModel] {
         _ = try admit(); defer { finish() }
         return try await fileWork { [self] in
-            try catalog().filter { FileManager.default.fileExists(atPath: directory.appendingPathComponent($0.id + ".bin").path) }
+            let packaged = try bundled.entries(purpose: "transcription").map(\.model)
+            return packaged + (try catalog().filter { model in
+                !packaged.contains(where: { $0.id == model.id }) &&
+                    FileManager.default.fileExists(atPath: directory.appendingPathComponent(model.id + ".bin").path)
+            })
         }
     }
 
@@ -199,32 +211,100 @@ final class PhemeRuntime: @unchecked Sendable {
               (1...16).contains(selected.threads), (1...120).contains(selected.maxAudioSeconds) else {
             throw PhemeLocalFailure(code: "invalid_configuration", message: "Choose an imported model, 1–16 threads and an audio limit of 1–120 seconds.")
         }
-        let model = try await fileWork { [self] in
-            guard let model = try catalog().first(where: { $0.id == selected.modelID }),
-                  FileManager.default.fileExists(atPath: directory.appendingPathComponent(model.id + ".bin").path) else {
-                throw PhemeLocalFailure(code: "missing_model", message: "Import the selected model again.")
+        let (model, path) = try await fileWork { [self] in
+            let model: PhemeModel
+            let path: URL
+            if let entry = try bundled.entries(purpose: "transcription").first(where: { $0.model.id == selected.modelID }) {
+                model = entry.model
+                path = try bundled.url(for: entry)
+            } else {
+                guard let imported = try catalog().first(where: { $0.id == selected.modelID }) else {
+                    throw PhemeLocalFailure(code: "missing_model", message: "Import the selected model again.")
+                }
+                model = imported
+                path = directory.appendingPathComponent(model.id + ".bin")
             }
-            let input = try FileHandle(forReadingFrom: directory.appendingPathComponent(model.id + ".bin"))
-            defer { try? input.close() }
-            var hash = SHA256()
-            while let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty { try checkGeneration(admitted); hash.update(data: chunk) }
-            guard hash.finalize().map({ String(format: "%02x", $0) }).joined() == model.sha256 else {
-                throw PhemeLocalFailure(code: "checksum", message: "Stored model is damaged. Import the trusted artifact again.")
-            }
-            return model
+            try verify(model: model, path: path, admitted: admitted)
+            return (model, path)
         }
-        let configuration = BridgeConfiguration(model_path: directory.appendingPathComponent(model.id + ".bin").path,
+        let configuration = BridgeConfiguration(model_path: path.path,
             language: selected.language, dictionary: selected.dictionary, threads: selected.threads,
             max_audio_seconds: selected.maxAudioSeconds, metrics_enabled: selected.metricsEnabled)
         try checkGeneration(admitted)
+        lock.withLock { currentModel = nil; settings = nil }
         let snapshot = try await engine.configure(configuration)
         try checkGeneration(admitted)
         lock.withLock { currentModel = model; settings = selected }
         try await fileWork { [self] in
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
             try JSONEncoder().encode(selected).write(to: directory.appendingPathComponent("settings.json"), options: .atomic)
         }
         try checkGeneration(admitted)
         return snapshot
+    }
+
+    private func verify(model: PhemeModel, path: URL, admitted: Int) throws {
+        let input = try FileHandle(forReadingFrom: path)
+        defer { try? input.close() }
+        var hash = SHA256()
+        var bytes: UInt64 = 0
+        while let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+            try checkGeneration(admitted)
+            hash.update(data: chunk)
+            bytes += UInt64(chunk.count)
+        }
+        guard bytes == model.bytes, hash.finalize().map({ String(format: "%02x", $0) }).joined() == model.sha256 else {
+            throw PhemeLocalFailure(code: "checksum", message: "Model is damaged. Reimport it or rebuild the bundled app.")
+        }
+    }
+
+    func listReasoningModels() async throws -> [PhemeModel] {
+        _ = try admit(); defer { finish() }
+        return try await fileWork { [self] in try bundled.entries(purpose: "reasoning").map(\.model) }
+    }
+
+    func configureReasoning(modelID: String, threads: Int) async throws -> ReasoningSnapshot {
+        let admitted = try admit(); defer { finish() }
+        guard let reasoning else { throw PhemeLocalFailure(code: "not_available", message: "Reasoning runtime is not linked.") }
+        guard (1...16).contains(threads) else { throw PhemeLocalFailure(code: "invalid_configuration", message: "Choose 1-16 reasoning threads.") }
+        let (model, path, prompt) = try await fileWork { [self] in
+            guard let entry = try bundled.entries(purpose: "reasoning").first(where: { $0.model.id == modelID }) else {
+                throw PhemeLocalFailure(code: "missing_model", message: "Choose a bundled reasoning model.")
+            }
+            let path = try bundled.url(for: entry)
+            try verify(model: entry.model, path: path, admitted: admitted)
+            return (entry.model, path, try bundled.prompt())
+        }
+        try checkGeneration(admitted)
+        lock.withLock { currentReasoningModel = nil }
+        let snapshot = try await reasoning.load(path: path.path, prompt: prompt, threads: threads)
+        try checkGeneration(admitted)
+        lock.withLock { currentReasoningModel = model }
+        return snapshot
+    }
+
+    func respond(text: String, requestID: String) async throws -> String {
+        let admitted = try admit(); defer { finish() }
+        guard let reasoning, let model = lock.withLock({ currentReasoningModel }), try reasoning.inspect().ready else {
+            throw PhemeLocalFailure(code: "not_ready", message: "Load the local reasoning model first.")
+        }
+        try checkGeneration(admitted)
+        do {
+            let reply = try await reasoning.respond(text: text, requestID: requestID)
+            try checkGeneration(admitted)
+            return try json(["reply": encodedObject(reply), "model": encodedObject(model), "execution_location": "device"])
+        } catch {
+            // A cancellation can race successful native completion. Do not retain
+            // an unseen answer in the next turn's model context.
+            if lock.withLock({ closed || generation != admitted }) { _ = try? await reasoning.reset() }
+            throw error
+        }
+    }
+
+    func resetConversation() async throws -> ReasoningSnapshot {
+        _ = try admit(); defer { finish() }
+        guard let reasoning else { throw PhemeLocalFailure(code: "not_available", message: "Reasoning runtime is not linked.") }
+        return try await reasoning.reset()
     }
 
     func transcribeFile(uri: String) async throws -> String {
@@ -242,9 +322,11 @@ final class PhemeRuntime: @unchecked Sendable {
     }
 
     func inspectJSON() throws -> String {
-        let state = lock.withLock { (busy, closed, currentModel, settings) }
+        let state = lock.withLock { (busy, closed, currentModel, settings, currentReasoningModel) }
         return try json(["snapshot": encodedObject(engine.inspect()), "busy": state.0, "closed": state.1,
-                         "model": try state.2.map(encodedObject) ?? NSNull(), "settings": try state.3.map(encodedObject) ?? NSNull()])
+                         "model": try state.2.map(encodedObject) ?? NSNull(), "settings": try state.3.map(encodedObject) ?? NSNull(),
+                         "reasoning": try (try? reasoning?.inspect()).map(encodedObject) ?? NSNull(),
+                         "reasoningModel": try state.4.map(encodedObject) ?? NSNull()])
     }
 
     func pollJSON() throws -> String {

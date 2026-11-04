@@ -7,11 +7,11 @@ trap 'rm -rf "$TEST_DIR"' EXIT
 export FAKE_ROOT="$TEST_DIR/workspace with spaces"
 export FAKE_SYSROOT="$TEST_DIR/rust toolchain"
 export FAKE_LOG="$TEST_DIR/commands.log"
-mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/include" "$TEST_DIR/bin" \
+mkdir -p "$FAKE_ROOT/scripts" "$FAKE_ROOT/include" "$FAKE_ROOT/crates" "$TEST_DIR/bin" \
     "$FAKE_SYSROOT/lib/rustlib/aarch64-apple-darwin/bin"
 cp "$ROOT/scripts/build-ios.sh" "$FAKE_ROOT/scripts/"
 cp "$ROOT/include/pheme_va.h" "$ROOT/include/module.modulemap" "$FAKE_ROOT/include/"
-cp "$ROOT/Cargo.lock" "$FAKE_ROOT/"
+cp "$ROOT/Cargo.lock" "$ROOT/Cargo.toml" "$FAKE_ROOT/"
 
 cat > "$TEST_DIR/bin/fake-tool" <<'EOF'
 #!/usr/bin/env bash
@@ -20,7 +20,21 @@ tool=${0##*/}
 printf '%s %s\n' "$tool" "$*" >> "$FAKE_LOG"
 case "$tool" in
     uname) echo arm64 ;;
-    rustup) ;;
+    rustup)
+        case "$*" in
+            "run ${PHEME_IOS_RUST_TOOLCHAIN:-1.99.0} rustc --version")
+                exit "${FAKE_TOOLCHAIN_MISSING:-0}" ;;
+            "toolchain install ${PHEME_IOS_RUST_TOOLCHAIN:-1.99.0} --profile minimal")
+                exit "${FAKE_INSTALL_STATUS:-0}" ;;
+            "target list --installed")
+                printf '%s\n' "${FAKE_TARGETS:-}" ;;
+            "component list --installed")
+                printf '%s\n' "${FAKE_COMPONENTS:-}" ;;
+            "target add aarch64-apple-ios"|"target add aarch64-apple-ios-sim"|"component add llvm-tools-preview")
+                exit "${FAKE_ADD_STATUS:-0}" ;;
+            *) exit 93 ;;
+        esac
+        ;;
     rustc)
         case "$*" in
             "--print sysroot") echo "$FAKE_SYSROOT" ;;
@@ -36,7 +50,7 @@ case "$tool" in
                 ;;
             build)
                 [[ "$2" == --frozen ]]
-                [[ "$RUSTUP_TOOLCHAIN" == 1.99.0 ]]
+                [[ "$RUSTUP_TOOLCHAIN" == "${PHEME_IOS_RUST_TOOLCHAIN:-1.99.0}" ]]
                 [[ -z "${CARGO_ENCODED_RUSTFLAGS+x}" ]]
                 printf 'rustflags=%s\n' "$RUSTFLAGS" >> "$FAKE_LOG"
                 target=${!#}
@@ -87,6 +101,8 @@ reset_case() {
     rm -rf "$FAKE_ROOT/target"
     : > "$FAKE_LOG"
     unset FAKE_FETCH_STATUS FAKE_NM_STATUS FAKE_MISSING_ABI FAKE_LEAK FAKE_LEGACY
+    unset FAKE_TOOLCHAIN_MISSING FAKE_INSTALL_STATUS FAKE_TARGETS FAKE_COMPONENTS FAKE_ADD_STATUS
+    unset PHEME_IOS_RUST_TOOLCHAIN
 }
 run_build() {
     local variant=$1 expected=$2 status=0
@@ -110,6 +126,7 @@ for variant in whisper disabled test; do
     [[ $(grep -c '^cargo build --frozen ' "$FAKE_LOG") == 2 ]] || fail 'expected two frozen builds'
     [[ $(grep -c '^llvm-nm --extern-only --defined-only ' "$FAKE_LOG") == 2 ]] || fail 'both slices must be inspected'
     grep -q '^rustup component add llvm-tools-preview$' "$FAKE_LOG"
+    ! grep -q '^rustup toolchain install ' "$FAKE_LOG" || fail 'reinstalled existing toolchain'
     grep -q 'LLVM version 23' "$out/build-metadata.txt"
     grep -q 'aarch64-apple-ios/release/libffi.a' "$out/build-metadata.txt"
     grep -q 'aarch64-apple-ios-sim/release/libffi.a' "$out/build-metadata.txt"
@@ -126,6 +143,43 @@ for variant in whisper disabled test; do
         ! grep -q '^cargo build .*--features' "$FAKE_LOG"
     fi
 done
+
+reset_case
+export FAKE_TARGETS=$'aarch64-apple-ios\naarch64-apple-ios-sim'
+export FAKE_COMPONENTS='llvm-tools-aarch64-apple-darwin'
+run_build whisper 0
+! grep -Eq '^rustup (toolchain install|target add|component add) ' "$FAKE_LOG" || fail 'installed existing prerequisites'
+
+reset_case
+export FAKE_TARGETS='aarch64-apple-ios'
+export FAKE_COMPONENTS='llvm-tools-aarch64-apple-darwin'
+run_build whisper 0
+grep -q '^rustup target add aarch64-apple-ios-sim$' "$FAKE_LOG"
+! grep -q '^rustup target add aarch64-apple-ios$' "$FAKE_LOG" || fail 'reinstalled device target'
+! grep -q '^rustup component add ' "$FAKE_LOG" || fail 'reinstalled LLVM tools'
+
+reset_case
+export FAKE_TOOLCHAIN_MISSING=1
+run_build whisper 0
+[[ $(grep -c '^rustup toolchain install 1.99.0 --profile minimal$' "$FAKE_LOG") == 1 ]] || fail 'missing toolchain not installed once'
+
+reset_case
+export PHEME_IOS_RUST_TOOLCHAIN=stable
+run_build whisper 0
+grep -q '^rustup run stable rustc --version$' "$FAKE_LOG"
+! grep -q '^rustup toolchain install ' "$FAKE_LOG" || fail 'reinstalled selected toolchain'
+
+reset_case
+export FAKE_TOOLCHAIN_MISSING=1 FAKE_INSTALL_STATUS=17
+run_build whisper 17
+assert_not_packaged whisper
+! grep -q '^cargo ' "$FAKE_LOG" || fail 'cargo ran after failed toolchain install'
+
+reset_case
+export FAKE_ADD_STATUS=18
+run_build whisper 18
+assert_not_packaged whisper
+! grep -q '^cargo fetch ' "$FAKE_LOG" || fail 'fetch ran after failed prerequisite install'
 
 reset_case
 export FAKE_FETCH_STATUS=101

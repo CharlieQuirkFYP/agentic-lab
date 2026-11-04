@@ -25,7 +25,8 @@ for VARIANT in "${VARIANTS[@]}"; do
     fi
     cargo build --locked -p ffi --lib --target-dir "$OUT/cargo" "${CARGO_FLAGS[@]}"
     swiftc -parse-as-library -I "$OUT/include" -module-cache-path "$OUT/module-cache" \
-        "${FLAGS[@]}" hosts/ios/Sources/BridgeTypes.swift hosts/ios/Sources/NativeBridge.swift hosts/ios/Tests/FFISmoke.swift \
+        "${FLAGS[@]}" ../ios-app/modules/pheme-native/ios/BridgeTypes.swift \
+        ../ios-app/modules/pheme-native/ios/NativeBridge.swift ../ios-app/tests/FFISmoke.swift \
         "$OUT/cargo/debug/libffi.a" -framework Accelerate -framework Security \
         -framework SystemConfiguration -lc++ -lresolv -o "$OUT/smoke"
     "$OUT/smoke"

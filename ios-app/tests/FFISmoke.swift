@@ -9,6 +9,19 @@ struct FFISmoke {
         let unloaded = try NativeBridge()
         let initial = try unloaded.inspect()
         precondition(initial.state == "unavailable")
+        precondition(!initial.ready && initial.configuration == nil)
+        let emptyPoll = try unloaded.poll()
+        precondition(emptyPoll.batchesJSON == "[]")
+        do {
+            _ = try await unloaded.configure(BridgeConfiguration(model_path: "missing", threads: 0))
+            fatalError("Invalid thread count accepted")
+        } catch let error as BridgeFailure { precondition(error.code == 1) }
+        var output: UnsafeMutablePointer<CChar>?
+        precondition(pheme_va_inspect(nil, &output) == 1 && output != nil)
+        pheme_va_string_free(output)
+        pheme_va_string_free(nil)
+        pheme_va_free(nil)
+        pheme_va_observer_free(nil)
         do {
             _ = try await unloaded.configure(BridgeConfiguration(model_path: "/missing/model.bin"))
             fatalError("Missing model unexpectedly loaded")
@@ -35,6 +48,14 @@ struct FFISmoke {
         precondition(batches.first?["run_id"] as? String == result.run_id)
         let empty = try bridge.poll()
         precondition(empty.batchesJSON == "[]")
+        let handle = pheme_va_test_new()
+        let observer = pheme_va_observer_new(handle)
+        pheme_va_free(handle)
+        output = nil
+        precondition(pheme_va_observer_drain(observer, &output) == 0)
+        precondition(output.map { String(cString: $0) } == "[]")
+        pheme_va_string_free(output)
+        pheme_va_observer_free(observer)
         #endif
         print("Swift FFI smoke test passed")
     }

@@ -195,17 +195,28 @@ Do not move normal Go unit tests into a central test directory.
 
 ## CI Guidance
 
-GitHub Actions PR CI runs separate Go backend, web frontend, and Pheme VA workflows.
+GitHub Actions CI uses `ci-<scope>.yml` filenames and `CI / <Scope>` display names.
+The five scopes are API, Web, Pheme, Voice Integration, and iOS. Each runs on
+path-filtered pull requests to `main` or manual dispatch, with superseded runs
+cancelled per workflow/ref. See [.github/README.md](.github/README.md) for ownership
+and required-check migration notes.
 
 The Go backend workflow checks formatting with `gofmt -l .`, runs `go vet ./...`, and runs `go test ./...` from `api/`.
 
 The frontend workflow installs npm dependencies, runs Node fixture tests, lint and the production build from `web/`.
 
-Pheme VA CI uses stable Rust, formatting/lint checks, workspace tests, combined Whisper/reply-worker build checks and offline downloader tests without weights. A separate fake-backed voice stack workflow exercises the actual Go/Pheme HTTP boundary. Native reply-worker builds require CMake, a C/C++ compiler and libclang; Node tests require 22.18+.
+Pheme VA CI uses stable Rust, formatting/lint checks, workspace tests, combined Whisper/reply-worker build checks and offline downloader/packaging tests without weights. The offline iOS packaging suite runs only here. A separate fake-backed Voice Integration workflow exercises the actual Go/Pheme HTTP boundary. Native reply-worker builds require CMake, a C/C++ compiler and libclang; Node tests require 22.18+.
 
-The iOS FFI workflow builds CPU Whisper and feature-disabled device/simulator libraries, checks isolated fake-backed Swift operations, and packages a production XCFramework. Its first successful iOS run and physical-device acceptance remain required; see `pheme-va/hosts/ios/README.md`.
+The consolidated iOS workflow checks TypeScript/SQLite/native-chat contracts,
+fake-backed dual-engine Swift lifecycle/WAV tests and JS bundling. Its
+`native-link` job builds both production XCFrameworks once, checks the real
+Whisper Swift C bridge on macOS, uploads both libraries and links them into Expo.
+A separate disabled/test matrix retains device/simulator packaging and Swift
+C-ABI coverage without rebuilding production Whisper.
 
-The Expo app workflow adds locked dependency installation, TypeScript/SQLite/native-client tests, fake-backed Swift runtime/WAV tests, JS bundling and production XCFramework-to-Expo simulator linking. Full native-link CI and physical-phone acceptance remain gates; see `ios-app/NATIVE_TESTING.md`.
+Physical-phone acceptance remains a gate; see `ios-app/NATIVE_TESTING.md`.
+All iPhone Swift host code belongs in `ios-app/modules/pheme-native/ios/`;
+do not recreate a separate frontend under `pheme-va/hosts/ios/`.
 
 Expand CI incrementally as new components or requirements are introduced.
 
@@ -236,8 +247,9 @@ Currently implemented:
 - replaceable transcription, cleanup, and language-model adapter traits
 - optional in-process `whisper-rs`/whisper.cpp backend with a prewarmed model
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
-- versioned FFI configuration/status/results, safe shared lifecycle and bounded live metrics observation; Swift iPhone setup/audio host, paired desktop monitor, and iOS CI packaging/link/simulator workflow implemented with iOS/device acceptance pending
-- Expo local native module and separate on-device transcription route with checksum-verified model import, WAV/microphone inputs, local transcript recovery, JS-context-safe lifecycle and automated tests; full Expo native linking and physical-device acceptance pending
+- versioned FFI configuration/status/results, safe lifecycle and bounded metrics; desktop CLI monitor retained, but the removed SwiftUI host's phone-side monitor transport is not exposed in Expo
+- Expo-only iPhone frontend with module-owned Swift bridges to static PhemeVA and isolated dynamic PhemeReasoning, bundled checksum-verified Whisper/Qwen weights and separate ASR/Reasoning settings; no copied Swift sources or standalone XcodeGen frontend
+- existing Expo chat connected to native ASR/reasoning, reviewed transcripts, local recording recovery, Rust-owned bounded reply history, shared dual-engine admission and JS-context-safe lifetime; physical-device dual-model acceptance remains required
 - conservative deterministic incident-field extraction for offline development
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag

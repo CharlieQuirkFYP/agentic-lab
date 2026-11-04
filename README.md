@@ -21,7 +21,7 @@ The Go API remains the application-facing backend and benchmark coordinator. The
 
 ## Local Development
 
-The active components are the Go API, the Pheme VA Rust workspace, the web voice consoles, and the separate Expo/React Native iOS client in `ios-app/`. The iOS client retains remote development chat and now has a separate local-transcription route/native module, with native-link and device acceptance pending. It does not run the GGUF reply model on-device. Both listeners default to loopback; protect them with HTTPS and access controls before network exposure.
+The active components are the Go API, the Pheme VA Rust workspace, the web voice consoles, and the Expo/React Native iPhone app in `ios-app/`. Expo chat calls its embedded Swift/Rust transcription and reasoning engines; it does not use desktop inference. The separate SwiftUI host has been removed. Device acceptance remains required. Desktop listeners default to loopback; protect them before network exposure.
 
 ### Go API
 
@@ -201,17 +201,28 @@ The Vite development server runs at `http://localhost:5173`. Open `/voice` for m
 
 ### iOS Client
 
-For the on-device Pheme transcription build and automated/device tests, see [`ios-app/NATIVE_TESTING.md`](ios-app/NATIVE_TESTING.md). This uses a custom native development build, not Expo Go. The following instructions launch the retained remote development chat.
+For the on-device Pheme build and automated/device tests, see [`ios-app/NATIVE_TESTING.md`](ios-app/NATIVE_TESTING.md). This requires a custom native build, not Expo Go.
 
-`ios-app/` is the separate Expo/React Native mobile client. It provides a centered microphone action, mono 16 kHz WAV capture, transcription-model and reply-model readiness, input-bar transcript editing/approval, streamed replies, pending-turn recovery, and automatic native TTS. The composer hides while a reply is generating and returns after completion; user bubbles appear only after approval. Start it with:
+`ios-app/` owns the iPhone UI and Swift native module. It provides microphone/WAV capture, separate ASR and Reasoning model readiness, input-bar review, native local replies and system speech playback. Build it with:
 
 ```bash
 cd ios-app
-npm install
-EXPO_PUBLIC_API_BASE_URL=http://YOUR_COMPUTER_IP:8080/api/v1 npx expo start --lan -c
+npm ci
+PHEME_IOS_RUST_TOOLCHAIN=stable npm run native:build
+npm run native:bundle
+npx expo prebuild --platform ios
+npm run ios
 ```
 
-For a physical phone, replace `YOUR_COMPUTER_IP` with the computer's LAN IP (for example `192.168.3.83`), use the same Wi-Fi network, and bind the Go API to `0.0.0.0:8080`. The app restores a pending server turn after reload; finish it from the input bar before starting another recording. Native TTS requires an installed system voice; on iPhone, silent mode can prevent speech. Attachments are currently staged locally because the Go voice API accepts JSON text or complete WAV audio, not multipart files. See [`ios-app/README.md`](ios-app/README.md) and [`docs/plans/ios-app-draft.md`](docs/plans/ios-app-draft.md).
+No desktop API is required. Configure signing and bundle ID for the phone. Native
+TTS needs an installed system voice. Attachments are staged only, and replies do
+not finalize incident reports. Use `npm run ios:release` for embedded JavaScript
+and offline testing. See [`ios-app/README.md`](ios-app/README.md).
+
+For a native app with Whisper, local reasoning, and both models bundled on the
+phone, use the [iPhone deployment guide](docs/iphone-deployment.md). It covers
+simulator runs, signed device installation, and development IPA export without
+the desktop API or Expo Go.
 
 ### Voice Agent Web Frontend
 
@@ -243,7 +254,7 @@ Microphone access requires browser permission and, on a physical device, an HTTP
 
 Whisper/whisper.cpp is the current speech-recognition baseline. Pheme keeps transcription and language-model inference behind replaceable boundaries so alternative local models can be evaluated. A concrete llama.cpp-compatible language-model adapter for structured incident extraction is still planned; the current rule-based extractor is deliberately conservative and does not invent facts.
 
-An initial API-backed Expo/React Native iOS client now lives in `ios-app/`; it uses the Go API and does not imply on-device model inference. An eventual embedded iOS target or NVIDIA Jetson deployment still requires native builds, device validation, and performance measurements. Linux builds and local HTTP calls are not evidence of successful on-device deployment. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
+The Expo app in `ios-app/` embeds Pheme through its local native module. Physical-device validation and performance measurements remain required; library or simulator builds do not establish them. Record model identity, checksum, runtime revision, quantization, device, timings, and measurement method for every evaluation.
 
 ## Tech Stack and Frameworks Utilised
 
@@ -268,4 +279,3 @@ An initial API-backed Expo/React Native iOS client now lives in `ios-app/`; it u
 <i>Golang · Rust</i>
 </p>
 <br>
-

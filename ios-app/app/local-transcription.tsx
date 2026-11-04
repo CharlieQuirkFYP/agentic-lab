@@ -18,6 +18,8 @@ const TINY_CHECKSUM = '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac7528
 export default function LocalTranscriptionScreen() {
   const [inspection, setInspection] = useState<Inspection | null>(null);
   const [models, setModels] = useState<Model[]>([]);
+  const [reasoningModels, setReasoningModels] = useState<Model[]>([]);
+  const [reasoningModel, setReasoningModel] = useState('');
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
   const [checksum, setChecksum] = useState(TINY_CHECKSUM);
   const [modelName, setModelName] = useState('Whisper tiny.en test model');
@@ -71,13 +73,14 @@ export default function LocalTranscriptionScreen() {
     };
     if (Pheme.available) void (async () => {
       try {
-        await Pheme.close();
-        if (stopped) return;
         const state = await Pheme.open();
         const imported = await Pheme.listModels();
+        const replies = await Pheme.listReasoningModels();
         const saved = await Pheme.savedSettings();
         if (stopped) return;
         setInspection(state); setModels(imported);
+        setReasoningModels(replies);
+        setReasoningModel(state.reasoningModel?.id ?? replies[0]?.id ?? '');
         if (saved && imported.some(item => item.id === saved.modelID)) setSettings(saved);
         else if (imported[0]) setSettings(current => ({ ...current, modelID: imported[0].id }));
         void poll();
@@ -88,7 +91,7 @@ export default function LocalTranscriptionScreen() {
       if (timer) clearTimeout(timer);
       try { audio.stream.stop(); } catch { /* Already stopped. */ }
       void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
-      void Pheme.close();
+      void Pheme.cancel().catch(() => {});
     };
   }, [setupAttempt]);
 
@@ -184,14 +187,14 @@ export default function LocalTranscriptionScreen() {
   const pending = readPendingRecording('local');
   const disabled = busy || recording || !Pheme.available;
   return <SafeAreaView style={styles.safe}><ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
-    <Link href="/" style={styles.link}>← Remote development chat</Link>
-    <Text style={styles.title}>On-device transcription</Text>
-    <Text style={styles.body}>Pheme runs inside this app. Laptop services are not used for transcription. Local reply generation and benchmark uploads are later milestones.</Text>
+    <Link href="/" disabled={busy || recording} style={styles.link}>← On-device chat</Link>
+    <Text style={styles.title}>On-device model settings</Text>
+    <Text style={styles.body}>Expo is the app frontend. Both models run through Pheme inside this app. No laptop inference service is used.</Text>
     {!Pheme.available && <Text style={styles.error}>Install the custom iOS development build to use Pheme. This feature is unavailable in Expo Go.</Text>}
     {!!error && <Text accessibilityRole="alert" style={styles.error}>{error}</Text>}
     {!!error && Pheme.available && <Action title="Reopen local setup" disabled={busy || recording} onPress={() => { setError(''); setSetupAttempt(current => current + 1); }} />}
     <Text style={styles.status}>{busy && <ActivityIndicator />} {message}</Text>
-    <View style={styles.card}><Text style={styles.heading}>Local model</Text>
+    <View style={styles.card}><Text style={styles.heading}>ASR Model (Whisper)</Text>
       <TextInput accessibilityLabel="Model name" style={styles.input} value={modelName} onChangeText={setModelName} editable={!disabled} />
       <TextInput accessibilityLabel="Trusted SHA-256" style={styles.input} value={checksum} onChangeText={setChecksum} autoCapitalize="none" autoCorrect={false} editable={!disabled} />
       <Action title="Import model file" disabled={disabled} onPress={() => void importModel().catch(e => setError(String(e)))} />
@@ -203,6 +206,18 @@ export default function LocalTranscriptionScreen() {
       <Text style={styles.body}>Maximum recording seconds (1–120)</Text><TextInput accessibilityLabel="Audio limit" style={styles.input} keyboardType="number-pad" value={String(settings.maxAudioSeconds)} onChangeText={value => setSettings(current => ({ ...current, maxAudioSeconds: Number(value) }))} editable={!disabled} />
       <Action title="Load model / apply settings" disabled={disabled || !settings.modelID} onPress={() => void operation(async () => { await Pheme.configure(settings); setMessage('Local model is ready.'); })} />
       <Text style={styles.body}>Engine: {ready ? 'ready' : 'not loaded'} · model SHA: {inspection?.model?.sha256 ?? '—'}</Text>
+    </View>
+    <View style={styles.card}><Text style={styles.heading}>Reasoning Model</Text>
+      {reasoningModels.map(model => <Action key={model.id} title={`${reasoningModel === model.id ? 'Selected: ' : ''}${model.name}`} disabled={disabled} onPress={() => setReasoningModel(model.id)} />)}
+      {!reasoningModels.length && <Text style={styles.body}>No bundled reasoning model. Rebuild the Expo app with npm run native:bundle.</Text>}
+      <Action title="Load reasoning model" disabled={disabled || !reasoningModel} onPress={() => void operation(async () => {
+        await Pheme.configureReasoning(reasoningModel);
+        setMessage('Local reasoning ready. Return to chat to send reviewed text.');
+      })} />
+      <Action title="Reset local conversation" disabled={disabled} onPress={() => void operation(async () => {
+        await Pheme.resetConversation(); setMessage('Pheme conversation history cleared; models remain loaded.');
+      })} />
+      <Text style={styles.body}>State: {inspection?.reasoning?.state ?? 'not loaded'}</Text>
     </View>
     <View style={styles.card}><Text style={styles.heading}>Record or select a WAV</Text>
       <Action title={recording ? `Stop and transcribe · ${seconds}s` : 'Record on this iPhone'} disabled={busy || !ready} onPress={() => void (recording ? stopRecording() : startRecording())} />

@@ -55,7 +55,7 @@ Model weights are not committed. The local `models/` directory contains the chec
 - A separate local GGUF reply runtime with native cancellation, fresh per-call KV state, and a registry-bound incident role. Qwen2.5-1.5B-Instruct Q4_K_M is the starter model, not a validated deployment choice.
 - A TUI workspace with alphabetic Chat/Web/Tests/Models/Telemetry navigation, turn-bound transcript editing, one manifest-backed Models page, inline local downloads, automatic model-selection persistence, reply role choices, combined prompt preview/hash, and remembered automatic voice replies with playback status.
 - A Go-delegated React voice console with complete-turn WAV capture, explicit review, real reply streaming, and local-voice-only browser speech synthesis.
-- A separate Expo/React Native mobile client with a centered microphone action, native PCM/WAV input, transcription/reply readiness labels, input-bar transcript editing and approval, streamed replies with generating dots, pending-turn recovery, automatic native reply speech, and staged file selection; multipart upload remains backend work.
+- An Expo/React Native iPhone app with native PCM/WAV input, local ASR/reasoning readiness, transcript review, on-device replies and system speech playback. Its native bridges live in `ios-app/modules/pheme-native/ios/`; no separate SwiftUI app is maintained.
 - A portable `metrics` crate with synchronous pub/sub, per-run filtering, application timings/status events, resource snapshots, explicit unavailable values, and batched export data.
 - Linux/macOS/Windows process/system CPU and RAM sampling through `sysinfo`, with extension points for native mobile sensors and device power/thermal providers.
 - Core and incident-analysis instrumentation that keeps pure text analysis separate from transcription.
@@ -282,18 +282,31 @@ iOS AVAudioEngine / Android AudioRecord
         core + selected STT adapter
 ```
 
-The native [iPhone development host](hosts/ios/README.md) owns saved setup, model import, microphone capture, lifecycle, and one engine instance. The versioned FFI exposes configuration, responsive status, structured transcription results, and a separate bounded metrics observer. Metrics flow out; native measurements are not ingested. Legacy Whisper C symbols retain their signatures.
+The [Expo iPhone app](../ios-app/NATIVE_TESTING.md) owns UI, audio capture, model
+provisioning and native lifecycle. All Swift integration lives in its local
+module. Pheme keeps the Rust core, C ABIs and model adapters here. The former
+`hosts/ios/` SwiftUI app has been removed.
 
-The [iOS CI workflow](../.github/workflows/pheme-va-ios-ci.yml) builds ARM64 device/simulator libraries, packages an XCFramework, and links/tests the Swift host with production, feature-disabled, and isolated fake variants. The initial build is CPU Whisper. From this directory on an Apple Silicon Mac with full Xcode:
+The [iOS CI workflow](../.github/workflows/ci-ios.yml) builds both production
+ARM64 device/simulator libraries once, tests the Expo-owned Swift bridge on macOS
+and checks the complete app's simulator linkage. Separate disabled/fake variants
+retain C-ABI coverage. To build libraries:
 
 ```sh
 bash scripts/build-ios.sh whisper
-bash scripts/test-ios.sh whisper
+bash scripts/build-ios-reply.sh
 ```
 
-For optional observation/configuration of the same phone engine, run `cargo run -p cli -- monitor --bind 0.0.0.0:8765` on a trusted development LAN and pair from the phone. This path does not start local inference. See the host guide for setup, ownership, transport bounds, and acceptance checks.
+The desktop CLI monitor is retained, but the removed SwiftUI host's paired
+transport is not exposed by Expo. Native metrics are currently local diagnostics.
 
-The first successful iOS CI run and physical iPhone acceptance are still required. Simulator/macOS checks do not establish device inference, memory/thermal performance, or continuous background execution. Metal/Core ML and full conversational mobile embedding remain separate work. Android can reuse the same core/C ABI after an Android host is implemented.
+From `../ios-app/`, run `npm run native:bundle`, `npx expo prebuild --platform ios`,
+then `npm run ios` to package local Whisper/Qwen weights with Expo.
+Qwen uses a separate dynamic Rust framework
+with private GGML symbols, not the desktop child-process worker. Model files
+remain ignored. See the [deployment guide](../docs/iphone-deployment.md).
+
+Physical iPhone acceptance is still required. Simulator/macOS checks do not establish device memory/thermal performance or continuous background execution. Metal/Core ML, spoken replies and full incident-report persistence remain separate work. Android can reuse the core/C ABI after an Android host is implemented.
 
 ## Design notes
 

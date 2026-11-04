@@ -24,6 +24,13 @@ if [[ "$VARIANT" == test ]]; then
 fi
 
 cd "$ROOT"
+# Unlike the rustc proxy, rustup run does not auto-install a missing toolchain.
+if rustup run "$RUSTUP_TOOLCHAIN" rustc --version >/dev/null 2>&1; then
+    echo "Using installed Rust toolchain: $RUSTUP_TOOLCHAIN"
+else
+    echo "Installing Rust toolchain: $RUSTUP_TOOLCHAIN"
+    rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+fi
 {
     printf 'variant=%s\nminimum_ios=%s\n' "$VARIANT" "$IPHONEOS_DEPLOYMENT_TARGET"
     printf 'features=%s\nrustflags=%s\nggml_native=OFF\nggml_cpu_arm_arch=armv8-a\n' "${FEATURES[*]}" "$RUSTFLAGS"
@@ -34,16 +41,24 @@ cd "$ROOT"
     xcrun swift --version
     xcrun --sdk iphoneos --show-sdk-version
     xcrun --sdk iphonesimulator --show-sdk-version
-    xcodegen --version
     cmake --version
-    shasum -a 256 Cargo.lock include/pheme_va.h
+    shasum -a 256 Cargo.lock Cargo.toml include/pheme_va.h
+    find crates -type f \( -name '*.rs' -o -name Cargo.toml \) -exec shasum -a 256 {} + | LC_ALL=C sort
 } > "$OUT/build-metadata.txt"
 
-rustup target add aarch64-apple-ios aarch64-apple-ios-sim
-rustup component add llvm-tools-preview
+INSTALLED_TARGETS=$(rustup target list --installed)
+for TARGET in aarch64-apple-ios aarch64-apple-ios-sim; do
+    if ! grep -Fxq "$TARGET" <<< "$INSTALLED_TARGETS"; then
+        rustup target add "$TARGET"
+    fi
+done
 # Apple nm may not understand LLVM bitcode bundled with Rust's standard library.
 # Inspect with the tools from the exact Rust toolchain that builds this archive.
 RUST_HOST=$(rustc -vV | sed -n 's/^host: //p')
+INSTALLED_COMPONENTS=$(rustup component list --installed)
+if ! grep -Fxq "llvm-tools-$RUST_HOST" <<< "$INSTALLED_COMPONENTS"; then
+    rustup component add llvm-tools-preview
+fi
 LLVM_NM="$(rustc --print sysroot)/lib/rustlib/$RUST_HOST/bin/llvm-nm"
 [[ -x "$LLVM_NM" ]] || { echo "Missing Rust llvm-nm: $LLVM_NM" >&2; exit 1; }
 "$LLVM_NM" --version >> "$OUT/build-metadata.txt"

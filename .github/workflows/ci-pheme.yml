@@ -1,4 +1,4 @@
-name: Pheme VA CI
+name: CI / Pheme
 
 on:
   pull_request:
@@ -6,10 +6,15 @@ on:
       - main
     paths:
       - "pheme-va/**"
-      - ".github/workflows/pheme-va-ci.yml"
+      - ".github/workflows/ci-pheme.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   pheme-va:

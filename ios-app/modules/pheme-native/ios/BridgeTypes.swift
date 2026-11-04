@@ -57,3 +57,28 @@ struct BridgePoll: Sendable {
     // Keep this exact payload for fan-out/retry. Do not re-drain for each consumer.
     let batchesJSON: String
 }
+
+struct ReasoningSnapshot: Codable, Sendable {
+    let ready: Bool
+    let state: String
+    let model_path: String?
+    let threads: Int?
+    let active_run: String?
+    let history_turns: Int
+    let load_time_ms: UInt64
+}
+
+struct ReasoningResult: Codable, Sendable {
+    let run_id: String
+    let text: String
+    let processing_time_ms: UInt64
+}
+
+protocol PhemeReasoningEngine: Sendable {
+    func inspect() throws -> ReasoningSnapshot
+    func load(path: String, prompt: String, threads: Int) async throws -> ReasoningSnapshot
+    func respond(text: String, requestID: String) async throws -> ReasoningResult
+    func reset() async throws -> ReasoningSnapshot
+    func cancel()
+    func close()
+}

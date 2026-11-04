@@ -1,10 +1,18 @@
 # Pheme VA iOS FFI Implementation Plan
 
+Historical plan: the standalone SwiftUI host described below was removed during
+the Expo consolidation. Swift bridges and app lifecycle now belong to
+`ios-app/modules/pheme-native/ios/`. Use the [current native guide](../../ios-app/NATIVE_TESTING.md);
+historical validation below applies only to the builds/dates recorded. The former
+dedicated FFI workflow is now part of [CI / iOS](../../.github/workflows/ci-ios.yml).
+
 ## Status
 
 Implementation started 2026-10-21; implementation status updated 2026-10-22.
 
-The five implementation stages now have code in the worktree: iOS CI/packaging, the versioned configurable FFI, bounded live metrics, the Swift development host, and a paired desktop monitor. See the [native host guide](../../pheme-va/hosts/ios/README.md) for commands and ownership contracts.
+At that time, the five stages had code: iOS packaging, configurable FFI, bounded
+metrics, a Swift development host and a paired monitor. Current commands and
+ownership are in the [Expo native guide](../../ios-app/NATIVE_TESTING.md).
 
 Implementation does not mean deployment acceptance. Local validation is complete as recorded below. The first iOS CI run, simulator execution, and physical-device acceptance remain pending because the implementation machine has no full Xcode/iOS SDK. CPU Whisper is the packaging baseline. No background-service or device-performance claim is made.
 
@@ -59,7 +67,7 @@ Relevant existing sources:
 - [Core engine configuration](../../pheme-va/crates/core/src/engine.rs)
 - [Metrics batcher](../../pheme-va/crates/metrics/src/batch.rs) and [metrics contract](../api/metrics.md)
 - [CLI entry point](../../pheme-va/crates/cli/src/main.rs) and [TUI startup](../../pheme-va/crates/cli/src/tui/mod.rs)
-- [Existing Rust CI](../../.github/workflows/pheme-va-ci.yml)
+- [Existing Rust CI](../../.github/workflows/ci-pheme.yml)
 
 ## Intended ownership
 
