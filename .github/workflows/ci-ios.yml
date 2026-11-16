@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - "ios-app/**"
+      - "shared/phone-benchmarks/**"
       - "pheme-va/**"
       - ".github/workflows/ci-ios.yml"
   workflow_dispatch:
@@ -39,6 +40,8 @@ jobs:
         run: npm run typecheck
       - name: Test native client, persistence and artifact preparation
         run: npm test
+      - name: Test shared phone benchmark reports
+        run: node --test ../shared/phone-benchmarks/tests/*.test.ts
       - name: Test Swift host lifecycle and WAV decoding without model weights
         run: npm run test:native
       - name: Bundle the actual iOS routes

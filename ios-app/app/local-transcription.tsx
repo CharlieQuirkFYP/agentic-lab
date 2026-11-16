@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useRef, useState, useSyncExternalStore } from 'react';
 import { ActivityIndicator, AppState, Pressable, ScrollView, StyleSheet, Text, TextInput, View } from 'react-native';
 import { Link } from 'expo-router';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -6,11 +6,13 @@ import * as DocumentPicker from 'expo-document-picker';
 import { requestRecordingPermissionsAsync, setAudioModeAsync, useAudioStream, type AudioStreamBuffer } from 'expo-audio';
 import Pheme from '../modules/pheme-native/src/PhemeNativeModule';
 import { sameSettings } from '../modules/pheme-native/src/client';
-import type { Inspection, LocalResult, Model, Observation, Settings } from '../modules/pheme-native/src/PhemeNative.types';
+import type { Inspection, LocalResult, Model, Settings } from '../modules/pheme-native/src/PhemeNative.types';
 import { latestLocalTranscript, saveLocalTranscript, updateLocalDraft } from '../src/localTranscriptStore';
 import { transcribeLocally } from '../src/localWorkflow';
 import { readPendingRecording, removePendingRecording, saveRecording } from '../src/recordingStore';
 import { pcm16ToWav } from '../src/wav';
+import { Benchmark, Metrics } from '../src/phoneMetrics';
+import { parseVocabularyHints } from '../src/asrSettings';
 
 const DEFAULTS: Settings = { modelID: '', language: 'en', dictionary: [], threads: 4, maxAudioSeconds: 120, metricsEnabled: true };
 const TINY_CHECKSUM = '921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f';
@@ -21,6 +23,7 @@ export default function LocalTranscriptionScreen() {
   const [reasoningModels, setReasoningModels] = useState<Model[]>([]);
   const [reasoningModel, setReasoningModel] = useState('');
   const [settings, setSettings] = useState<Settings>(DEFAULTS);
+  const [dictionaryText, setDictionaryText] = useState('');
   const [checksum, setChecksum] = useState(TINY_CHECKSUM);
   const [modelName, setModelName] = useState('Whisper tiny.en test model');
   const [message, setMessage] = useState('Import and load a local model to begin.');
@@ -30,8 +33,9 @@ export default function LocalTranscriptionScreen() {
   const [seconds, setSeconds] = useState(0);
   const [result, setResult] = useState<LocalResult | null>(null);
   const [draft, setDraft] = useState('');
-  const [observation, setObservation] = useState<Observation | null>(null);
-  const [batches, setBatches] = useState<string[]>([]);
+  const sync = useSyncExternalStore(Metrics.subscribe, Metrics.getSnapshot);
+  const [metricsURL, setMetricsURL] = useState(sync.url);
+  const [syncConfigError, setSyncConfigError] = useState('');
   const [setupAttempt, setSetupAttempt] = useState(0);
   const mounted = useRef(true);
   const recordingRef = useRef(false);
@@ -53,24 +57,8 @@ export default function LocalTranscriptionScreen() {
   useEffect(() => {
     mounted.current = true;
     let stopped = false;
-    let timer: ReturnType<typeof setTimeout> | undefined;
     const restore = latestLocalTranscript();
     if (restore) { setResult(restore.result); setDraft(restore.draft); }
-    const poll = async () => {
-      if (stopped) return;
-      try {
-        const update = await Pheme.poll();
-        if (!stopped) {
-          setObservation(update);
-          if (update.batchesJSON !== '[]') setBatches(current => {
-            const next = [...current, update.batchesJSON];
-            while (next.length > 20 || next.reduce((n, value) => n + value.length * 2, 0) > 4 * 1024 * 1024) next.shift();
-            return next;
-          });
-        }
-      } catch (e) { if (!stopped) setError(e instanceof Error ? e.message : 'Local observation failed.'); }
-      if (!stopped) timer = setTimeout(() => void poll(), 250);
-    };
     if (Pheme.available) void (async () => {
       try {
         const state = await Pheme.open();
@@ -81,17 +69,18 @@ export default function LocalTranscriptionScreen() {
         setInspection(state); setModels(imported);
         setReasoningModels(replies);
         setReasoningModel(state.reasoningModel?.id ?? replies[0]?.id ?? '');
-        if (saved && imported.some(item => item.id === saved.modelID)) setSettings(saved);
+        if (saved && imported.some(item => item.id === saved.modelID)) {
+          setSettings(saved);
+          setDictionaryText(saved.dictionary.join(', '));
+        }
         else if (imported[0]) setSettings(current => ({ ...current, modelID: imported[0].id }));
-        void poll();
       } catch (e) { if (!stopped) setError(e instanceof Error ? e.message : 'Could not open native Pheme.'); }
     })();
     return () => {
       stopped = true; mounted.current = false; recordingRef.current = false;
-      if (timer) clearTimeout(timer);
       try { audio.stream.stop(); } catch { /* Already stopped. */ }
       void setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true }).catch(() => {});
-      void Pheme.cancel().catch(() => {});
+      void Benchmark.interrupt().catch(() => {});
     };
   }, [setupAttempt]);
 
@@ -103,7 +92,7 @@ export default function LocalTranscriptionScreen() {
         try { audio.stream.stop(); } catch { /* Already stopped. */ }
         setRecording(false); setMessage('Recording interrupted. Record again when the app is active.');
       }
-      void Pheme.cancel().catch(() => {});
+      void Benchmark.interrupt().catch(() => {});
     });
     return () => subscription.remove();
   }, [audio.stream]);
@@ -119,7 +108,7 @@ export default function LocalTranscriptionScreen() {
   async function operation(work: () => Promise<void>) {
     if (busyRef.current || recordingRef.current) return;
     busyRef.current = true; setBusy(true); setError('');
-    try { await work(); }
+    try { await Benchmark.withOwnership('manual', work); }
     catch (e) { if (mounted.current) setError(e instanceof Error ? e.message : 'Local operation failed.'); }
     finally {
       busyRef.current = false;
@@ -143,11 +132,32 @@ export default function LocalTranscriptionScreen() {
 
   async function transcribe(uri: string, recoveryRecording: boolean) {
     setMessage('Transcribing on this iPhone…');
+    const configurationID = await Benchmark.configuration();
+    const context = { configuration_id: configurationID, runtime_session_id: Benchmark.runtimeSessionID() };
+    const conversationID = Benchmark.store.registerConversation(context, { source: 'manual', input_kind: 'audio', collection_scope: 'transcription_test' });
+    const turnID = Benchmark.store.registerTurn({ ...context, conversation_id: conversationID }, { status: 'running', source: 'manual', input_kind: 'audio', turn_index: 0, started_at_ms: Date.now() });
+    const attemptID = Benchmark.store.registerAttempt({ ...context, conversation_id: conversationID, turn_id: turnID }, { source: 'manual', stage: 'transcription' });
+    try {
     const completed = await transcribeLocally(uri, {
-      transcribeFile: Pheme.transcribeFile, persist: saveLocalTranscript,
+      transcribeFile: uri => Benchmark.runOperation({ owner: 'manual', attemptID, stage: 'transcription' }, id => Pheme.transcribeFile(uri, id)), persist: result => saveLocalTranscript(result, turnID),
       releaseRecording: () => { if (recoveryRecording && readPendingRecording('local')?.uri === uri) removePendingRecording('local'); },
     });
     if (mounted.current) { setResult(completed); setDraft(completed.transcription.result.text); setMessage('Local transcript saved. Review or edit it below.'); }
+    Benchmark.store.completeTurn(turnID, 'succeeded');
+    Benchmark.store.completeConversation(conversationID, 'succeeded');
+    } catch (cause) {
+      const status = Benchmark.store.latest('attempt', attemptID)?.data.status;
+      const outcome = status === 'cancelled' || status === 'interrupted' ? status : 'failed';
+      Benchmark.store.completeTurn(turnID, outcome);
+      Benchmark.store.completeConversation(conversationID, outcome);
+      throw cause;
+    } finally {
+      const evidence = Benchmark.store.snapshot().filter(item => item.record.entity_id === conversationID || item.record.context.conversation_id === conversationID).filter(item => item.record.kind !== 'finalization');
+      const finalization = Benchmark.store.latest('finalization', attemptID);
+      Benchmark.store.finalize({ ...context, conversation_id: conversationID }, { status: finalization?.data.status === 'complete' ? 'complete' : 'partial',
+        target_revision: Benchmark.store.latest('conversation', conversationID)!.revision, required_record_ids: evidence.map(item => item.record.record_id), record_count: evidence.length,
+        event_count: Number(finalization?.data.event_count ?? 0), dropped_events: Number(finalization?.data.dropped_events ?? 0) });
+    }
   }
 
   async function startRecording() {
@@ -200,8 +210,13 @@ export default function LocalTranscriptionScreen() {
       <Action title="Import model file" disabled={disabled} onPress={() => void importModel().catch(e => setError(String(e)))} />
       {models.map(model => <Action key={model.id} title={`${settings.modelID === model.id ? '✓ ' : ''}${model.name} · ${(model.bytes / 1048576).toFixed(1)} MiB`} disabled={disabled} onPress={() => setSettings(current => ({ ...current, modelID: model.id }))} />)}
       <Text style={styles.body}>The default checksum is for the pinned tiny.en smoke-test model. Supply the trusted checksum for any other artifact.</Text>
-      <TextInput accessibilityLabel="Language code" style={styles.input} value={settings.language ?? ''} onChangeText={language => setSettings(current => ({ ...current, language: language || null }))} editable={!disabled} placeholder="en (empty for automatic)" />
-      <TextInput accessibilityLabel="Vocabulary hints" style={styles.input} value={settings.dictionary.join(', ')} onChangeText={value => setSettings(current => ({ ...current, dictionary: value.split(',') }))} editable={!disabled} placeholder="KLASS, west entrance" />
+      <TextInput accessibilityLabel="Language code" style={styles.input} value={settings.language ?? ''} onChangeText={language => setSettings(current => ({ ...current, language: language.trim() || null }))} autoCapitalize="none" autoCorrect={false} editable={!disabled} placeholder="en (empty for automatic)" />
+      <Text style={styles.body}>Vocabulary hints (comma separated)</Text>
+      <TextInput accessibilityLabel="Vocabulary hints" style={styles.input} value={dictionaryText} onChangeText={value => {
+        setDictionaryText(value);
+        setSettings(current => ({ ...current, dictionary: parseVocabularyHints(value) }));
+      }} autoCorrect={false} editable={!disabled} placeholder="KLASS, Bukit Panjang, west entrance" />
+      <Text style={styles.body}>Add rare place names and local terms using their verified spelling. Hints guide recognition; review the transcript for errors. Tap Load model / apply settings to use them.</Text>
       <Text style={styles.body}>Threads (1–16)</Text><TextInput accessibilityLabel="Thread count" style={styles.input} keyboardType="number-pad" value={String(settings.threads)} onChangeText={value => setSettings(current => ({ ...current, threads: Number(value) }))} editable={!disabled} />
       <Text style={styles.body}>Maximum recording seconds (1–120)</Text><TextInput accessibilityLabel="Audio limit" style={styles.input} keyboardType="number-pad" value={String(settings.maxAudioSeconds)} onChangeText={value => setSettings(current => ({ ...current, maxAudioSeconds: Number(value) }))} editable={!disabled} />
       <Action title="Load model / apply settings" disabled={disabled || !settings.modelID} onPress={() => void operation(async () => { await Pheme.configure(settings); setMessage('Local model is ready.'); })} />
@@ -211,11 +226,11 @@ export default function LocalTranscriptionScreen() {
       {reasoningModels.map(model => <Action key={model.id} title={`${reasoningModel === model.id ? 'Selected: ' : ''}${model.name}`} disabled={disabled} onPress={() => setReasoningModel(model.id)} />)}
       {!reasoningModels.length && <Text style={styles.body}>No bundled reasoning model. Rebuild the Expo app with npm run native:bundle.</Text>}
       <Action title="Load reasoning model" disabled={disabled || !reasoningModel} onPress={() => void operation(async () => {
-        await Pheme.configureReasoning(reasoningModel);
+        await Pheme.configureReasoning(reasoningModel); Benchmark.closeManualConversation('reasoning_reconfigured');
         setMessage('Local reasoning ready. Return to chat to send reviewed text.');
       })} />
       <Action title="Reset local conversation" disabled={disabled} onPress={() => void operation(async () => {
-        await Pheme.resetConversation(); setMessage('Pheme conversation history cleared; models remain loaded.');
+        await Pheme.resetConversation(); Benchmark.closeManualConversation('new_chat'); setMessage('Pheme conversation history cleared; models remain loaded.');
       })} />
       <Text style={styles.body}>State: {inspection?.reasoning?.state ?? 'not loaded'}</Text>
     </View>
@@ -226,17 +241,33 @@ export default function LocalTranscriptionScreen() {
         if (!picked.canceled) await operation(() => transcribe(picked.assets[0].uri, false));
       })().catch(e => setError(String(e)))} />
       {pending && <Action title="Retry saved local recording" disabled={disabled || !ready} onPress={() => void operation(() => transcribe(pending.uri, true))} />}
-      {busy && <Action title="Discard result; wait for native work to finish" onPress={() => { setMessage('Discarding the result. Waiting for native work to settle…'); void Pheme.cancel(); }} />}
+      {busy && <Action title="Discard result; wait for native work to finish" onPress={() => { setMessage('Discarding the result. Waiting for native work to settle…'); void Benchmark.interrupt('user_cancelled'); }} />}
     </View>
     {result && <View style={styles.card}><Text style={styles.heading}>Review transcript</Text>
       <TextInput accessibilityLabel="Local transcript draft" style={[styles.input, styles.draft]} multiline value={draft} onChangeText={value => { setDraft(value); updateLocalDraft(result.transcription.run_id, value); }} />
       <Text style={styles.body}>Run: {result.transcription.run_id}{'\n'}Processing: {result.transcription.result.processing_time_ms.toFixed(1)} ms · {result.transcription.result.status}{'\n'}Artifact: {result.model.sha256}</Text>
       <Text style={styles.body}>This editable transcript is stored on the phone. It has not been finalised as an incident report.</Text>
     </View>}
+    <View style={styles.card}><Text style={styles.heading}>Metrics Sync</Text>
+      <Text style={styles.body}>Inference stays on this iPhone. Only metrics and model/device metadata are sent; recordings, transcripts and replies stay local.</Text>
+      <TextInput accessibilityLabel="Metrics server URL" style={styles.input} value={metricsURL}
+        onChangeText={setMetricsURL} autoCapitalize="none" autoCorrect={false} keyboardType="url"
+        placeholder="http://YOUR_MAC_IP:8080" editable={!sync.uploading} />
+      <Action title={sync.uploading ? 'Uploading metrics...' : 'Save server and sync'} disabled={sync.uploading} onPress={() => {
+        try { Metrics.configure(metricsURL, true); setSyncConfigError(''); void Benchmark.flush(); }
+        catch (error) { setSyncConfigError(error instanceof Error ? error.message : String(error)); }
+      }} />
+      {sync.enabled && <Action title="Pause uploads (keep collecting locally)" disabled={sync.uploading} onPress={() => {
+        Metrics.configure(sync.url, false);
+      }} />}
+      <Text style={styles.body}>Uploads: {sync.enabled ? 'enabled' : 'paused'} · Pending: {sync.pending} · Blocked: {sync.blocked} · Acknowledged: {sync.acknowledged}</Text>
+      <Text style={styles.body}>Last upload: {sync.lastUpload ? new Date(sync.lastUpload).toLocaleString() : 'None yet'}</Text>
+      {!!(syncConfigError || sync.error) && <Text accessibilityRole="alert" style={styles.error}>{syncConfigError || sync.error}</Text>}
+      <Text style={styles.body}>Pending batches survive app restarts. Sync resumes while this app is open. Power/energy and device resource sampling remain unavailable.</Text>
+    </View>
     <View style={styles.card}><Text style={styles.heading}>Live diagnostic metrics</Text>
-      <Text style={styles.body}>Dropped events: {observation?.observer.dropped_events ?? '—'} · retained drain payloads: {batches.length}</Text>
-      <Text style={styles.body}>Metrics below are temporary diagnostics. They are not yet a durable upload queue. Power and energy are unavailable.</Text>
-      <Text selectable style={styles.code}>{batches.at(-1)?.slice(0, 12000) ?? 'No measurements yet.'}</Text>
+      <Text style={styles.body}>Dropped native events: {sync.observation?.observer.dropped_events ?? 'Not observed yet'} · Dropped host batches: {sync.droppedHostBatches}</Text>
+      <Text selectable style={styles.code}>{sync.latestJSON || 'No native measurements yet.'}</Text>
     </View>
   </ScrollView></SafeAreaView>;
 }
