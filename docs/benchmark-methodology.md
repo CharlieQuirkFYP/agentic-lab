@@ -1,6 +1,14 @@
 # Benchmark Methodology Plan
 
-This is a proposed evaluation protocol. The current runner returns hardcoded values and implements none of the measurements below. Acceptance thresholds and device-specific instrumentation remain pending.
+This document defines the research evaluation protocol. The generic Go experiment
+runner still returns labelled mock values. Separately, the iPhone conversation
+sweep runner now executes the real local ASR/reasoning pipeline, persists
+conversation/turn/attempt observations, and exports timings and native process
+CPU/memory plus device battery/thermal observations. Go receives those phone
+records without performing inference. See the [phone benchmark plan](plans/phone-conversation-benchmarks-plan.md)
+and [observation API](api/phone-observations-api.md). Quality scoring, independently
+validated power/energy instrumentation, controlled performance comparisons and
+sustained-workload acceptance remain separate gates.
 
 ## Evaluation Questions
 

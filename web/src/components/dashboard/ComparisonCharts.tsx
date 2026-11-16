@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState } from "react"
-import { getMetrics, type Experiment, type MetricBatch } from "@/lib/benchmarkApi"
+import { getSummary, type Experiment } from "@/lib/benchmarkApi"
 import { useMetricFilter } from "@/hooks/useMetricFilter"
 import MetricFilter from "./MetricFilter"
 
 type Point = { label: string; value: number }
-type Series = { name: string; unit: string; points: Point[] }
+type Series = { name: string; unit: string; scope: string; source: string; points: Point[] }
 
 export default function ComparisonCharts({ experiments }: { experiments: Experiment[] }) {
   const [series, setSeries] = useState<Series[]>([])
@@ -14,23 +14,17 @@ export default function ComparisonCharts({ experiments }: { experiments: Experim
   useEffect(() => {
     let active = true
     if (!loadedRef.current) setLoading(true)
-    void Promise.all(experiments.map(async experiment => ({ experiment, metrics: await getMetrics(experiment.id) })))
+    void Promise.all(experiments.filter(experiment => experiment.result_source === "device_reported")
+      .map(async experiment => ({ experiment, summary: await getSummary(experiment.id) })))
       .then(results => {
         if (!active) return
         const grouped = new Map<string, Series>()
-        results.forEach(({ experiment, metrics }) => {
-          const perExperiment = new Map<string, { name: string; unit: string; values: number[] }>()
-          metrics.batches.forEach((batch: MetricBatch) => batch.events.forEach(event => {
-            if (typeof event.value !== "number") return
-            const key = `${event.name}|${event.unit}`
-            const current = perExperiment.get(key) ?? { name: event.name, unit: event.unit, values: [] }
-            current.values.push(event.value)
-            perExperiment.set(key, current)
-          }))
-          perExperiment.forEach(metric => {
-            const key = `${metric.name}|${metric.unit}`
-            const current = grouped.get(key) ?? { name: metric.name, unit: metric.unit, points: [] }
-            current.points.push({ label: `${experiment.model_config.name ?? "Experiment"} · ${experiment.id.slice(-6)}`, value: metric.values.reduce((sum, value) => sum + value, 0) / metric.values.length })
+        results.forEach(({ experiment, summary }) => {
+          summary.metrics.forEach(metric => {
+            if (metric.mean === null) return
+            const key = JSON.stringify([metric.name, metric.unit, metric.scope, metric.source])
+            const current = grouped.get(key) ?? { name: metric.name, unit: metric.unit, scope: metric.scope, source: metric.source, points: [] }
+            current.points.push({ label: `${experiment.device?.hardware ?? experiment.model_config.name ?? "Experiment"} · ${experiment.id.slice(-6)}`, value: metric.mean })
             grouped.set(key, current)
           })
         })
@@ -51,7 +45,7 @@ export default function ComparisonCharts({ experiments }: { experiments: Experim
 
   return <div>
     <div className="mb-5 flex flex-wrap items-center justify-between gap-3"><p className="text-sm text-muted-foreground">Each point is the average for one experiment.</p><MetricFilter metricNames={metricNames} {...filter} /></div>
-    {visible.length ? <div className="mt-5 grid gap-4 lg:grid-cols-2">{visible.map(item => <MetricChart key={`${item.name}-${item.unit}`} {...item} />)}</div> : <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}
+    {visible.length ? <div className="mt-5 grid gap-4 lg:grid-cols-2">{visible.map(item => <div key={JSON.stringify([item.name, item.unit, item.scope, item.source])}><p className="mb-2 text-xs text-muted-foreground">{item.scope} · {item.source}</p><MetricChart {...item} /></div>)}</div> : <p className="rounded-xl border border-dashed p-8 text-center text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}
   </div>
 }
 

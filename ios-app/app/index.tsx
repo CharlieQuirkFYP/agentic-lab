@@ -8,7 +8,7 @@ import * as Speech from "expo-speech";
 import MaterialIcons from "@expo/vector-icons/MaterialIcons";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { cancelTurn, getReadiness, getTurn, startTurn, submitTurn, resetChat } from "../src/onDeviceChat";
-import Pheme from "../modules/pheme-native/src/PhemeNativeModule";
+import { Benchmark } from "../src/phoneMetrics";
 import type { Attachment, Readiness, Turn } from "../src/types";
 import { pcm16ToWav } from "../src/wav";
 import { pendingFile, purgeExpiredRecording, readPendingRecording, removePendingRecording, saveRecording, updatePendingRecording, type PendingRecording } from "../src/recordingStore";
@@ -94,12 +94,13 @@ export default function ChatScreen() {
   }, []);
   useFocusEffect(useCallback(() => {
     let stopped = false;
-    setError(""); setBusy(true); busyRef.current = true;
+    // Returning from Results refreshes readiness without clearing the active
+    // turn's busy state. The turn promise continues to own that state.
+    setError("");
     getReadiness().then(value => {
       if (!stopped) { setReadiness(value); recordingLimit.current = value.maxAudioSeconds ?? 120; }
     })
-      .catch(e => { if (!stopped) setError(e.message); })
-      .finally(() => { busyRef.current = false; if (!stopped) setBusy(false); });
+      .catch(e => { if (!stopped) setError(e.message); });
     return () => { stopped = true; };
   }, []));
   useEffect(() => {
@@ -114,7 +115,7 @@ export default function ChatScreen() {
         setError('Recording interrupted. Record again when the app is active.');
       }
       void Speech.stop();
-      void Pheme.cancel().catch(() => {});
+      void Benchmark.interrupt().catch(() => {});
     });
     return () => { subscription.remove(); audio.stream.stop(); void Speech.stop(); };
   }, [audio.stream]);
@@ -168,14 +169,16 @@ export default function ChatScreen() {
   function updateFromEvent(event: { event: string; data: Record<string, unknown> }) {
     const pending = pendingRecordingRef.current;
     if (pending && event.data.turn_id) updatePendingRecording({ turnId: String(event.data.turn_id), status: "saved" }, 'local');
+    if (event.event === "transcript.ready") setDraft(String(event.data.text ?? ""));
+    if (event.event === "question.approved") setDraft("");
     setActive((current) => {
       // Keep the local turn ID across progress events. Later events may omit it;
       // falling back to the render-time `active` value can restore the temporary ID
       // and make the approval request target a nonexistent turn.
       const id = String(event.data.turn_id ?? current?.id ?? "");
       const next = { ...(current ?? { id, status: "transcribing" as const, transcript: "", approvedText: null, reply: "", attachments }), id: id || current?.id || "" };
-      if (event.event === "transcript.ready") { setBusy(false); setPendingRecovery(false); if (pending) { removePendingRecording('local'); pendingRecordingRef.current = null; } setDraft(String(event.data.text ?? "")); return { ...next, status: "awaiting_review", transcript: String(event.data.text ?? "") }; }
-      if (event.event === "question.approved") { setBusy(true); setDraft(""); return { ...next, status: "generating", approvedText: String(event.data.text ?? "") }; }
+      if (event.event === "transcript.ready") { setBusy(false); setPendingRecovery(false); if (pending) { removePendingRecording('local'); pendingRecordingRef.current = null; } return { ...next, status: "awaiting_review", transcript: String(event.data.text ?? "") }; }
+      if (event.event === "question.approved") { setBusy(true); return { ...next, status: "generating", approvedText: String(event.data.text ?? "") }; }
       if (event.event === "reply.started") return { ...next, status: "generating" };
       if (event.event === "reply.delta") return { ...next, status: "generating", reply: next.reply + String(event.data.text ?? "") };
       if (event.event === "reply.completed") { setBusy(false); return { ...next, status: "completed", reply: String(event.data.text ?? next.reply) }; }
@@ -301,14 +304,15 @@ export default function ChatScreen() {
   }
 
   async function approve() {
-    if (busyRef.current || !active || active.status !== "awaiting_review" || !draft.trim()) return;
+    const text = draft.trim();
+    if (busyRef.current || !active || active.status !== "awaiting_review" || !text) return;
     if (!active.id || active.id.startsWith("pending-")) { setError("The local turn is not ready. Please wait and try again."); return; }
     const turnID = active.id;
     busyRef.current = true;
     setBusy(true); setError("");
-    setActive((current) => current?.id === turnID ? { ...current, status: "generating", transcript: "", approvedText: draft.trim() } : current);
-    try { await submitTurn(turnID, draft.trim()); await pollTurn(turnID); }
+    try { await submitTurn(turnID, text, updateFromEvent); await pollTurn(turnID); }
     catch (e) {
+      setDraft(text);
       setBusy(false);
       const message = e instanceof Error ? e.message : "Could not approve question.";
       setError(message.toLowerCase().includes("inference") ? "Another report is still processing. Check the input bar and try again when it finishes." : message);
@@ -397,6 +401,8 @@ export default function ChatScreen() {
       <View style={styles.headerCopy}>
         <Text style={styles.title}>Incident Reporting Agent</Text>
         <Link href="/local-transcription" disabled={busy || recording} style={styles.action}>On-device model settings</Link>
+        <Link href="/metrics" disabled={recording} style={styles.action}>Results</Link>
+        <Link href="/benchmark" disabled={busy || recording} style={styles.action}>Run phone benchmarks</Link>
         <Text style={styles.subtitle}>{readiness?.stt.ready ? `ASR: ${readiness.stt.name}` : "Loading local ASR model..."}</Text>
         <Text style={styles.subtitle}>{readiness?.reply.ready ? `Reasoning: ${readiness.reply.name}` : "Loading local reasoning model..."}</Text>
         <Text style={styles.subtitle}>Inference runs on this iPhone. Replies are not saved incident reports.</Text>
@@ -412,7 +418,7 @@ export default function ChatScreen() {
     {busy && active?.status === "transcribing" ? <View style={styles.processing}><ActivityIndicator color={colors.accent} /><Text style={styles.statusText}>Processing your report…</Text></View> : null}
     <Text style={styles.footnote}>{recording ? "Speak clearly, then tap the button again to review the transcription." : active?.status === "awaiting_review" ? "Check the input bar, edit the transcript, then tap ↑ to send." : active?.status === "generating" ? "Incident agent is responding…" : "Start an incident report · Ask by typing or speaking"}</Text>
     {!active || active.status === "awaiting_review" || active.status === "completed" || active.status === "failed" || active.status === "cancelled" ? <View style={styles.composer}><Pressable onPress={pickFile} style={styles.icon}><Text>＋</Text></Pressable><Pressable accessibilityLabel={recording ? "Stop speaking" : "Speak"} onPress={recording ? stopRecording : startRecording} style={[styles.icon, styles.speakButton]} disabled={busy && !recording}><MaterialIcons name={recording ? "stop" : "mic"} size={21} color={recording ? "#b54708" : colors.accent} /></Pressable><TextInput value={draft} onChangeText={setDraft} placeholder={active?.status === "awaiting_review" ? "Edit the transcript, then tap ↑ to send…" : "Or type an incident question…"} placeholderTextColor="#98a2b3" multiline style={styles.input} editable={!busy || active?.status === "awaiting_review"} /><Pressable onPress={active?.status === "awaiting_review" ? approve : busy ? stop : send} style={[styles.send, !draft.trim() && !busy && styles.disabled]}><MaterialIcons name={busy ? "stop" : "arrow-upward"} size={22} color="#fff" /></Pressable></View> : null}
-  </KeyboardAvoidingView><View {...edgePanResponder.panHandlers} style={styles.edgeSwipe} /><View pointerEvents={menuOpen ? "auto" : "none"} style={styles.drawerLayer}><Animated.View style={[styles.scrim, { opacity: drawerX.interpolate({ inputRange: [-DRAWER_WIDTH, 0], outputRange: [0, 1], extrapolate: "clamp" }) }]}><Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} /></Animated.View><Animated.View {...drawerPanResponder.panHandlers} style={[styles.drawer, { transform: [{ translateX: drawerX }] }]}><View style={styles.drawerHeader}><Text style={styles.drawerTitle}>Recent chats</Text><Pressable onPress={closeDrawer}><MaterialIcons name="close" size={24} color={colors.ink} /></Pressable></View><Pressable style={styles.newChat} onPress={startNewChat}><MaterialIcons name="add" size={20} color="#fff" /><Text style={styles.newChatText}>New chat</Text></Pressable><FlatList data={recentChats} keyExtractor={(item) => item.id} ListEmptyComponent={<Text style={styles.emptyChats}>No recent chats yet.</Text>} renderItem={({ item }) => <Pressable style={styles.chatRow} onPress={() => openRecentChat(item)}><Text numberOfLines={1} style={styles.chatTitle}>{item.approvedText || item.transcript || "Untitled voice report"}</Text><Text style={styles.chatStatus}>{item.status === "completed" ? "Completed" : item.status === "awaiting_review" ? "Needs review" : item.status}</Text></Pressable>} /></Animated.View></View></SafeAreaView>;
+  </KeyboardAvoidingView><View {...edgePanResponder.panHandlers} style={styles.edgeSwipe} /><View pointerEvents={menuOpen ? "auto" : "none"} style={styles.drawerLayer}><Animated.View style={[styles.scrim, { opacity: drawerX.interpolate({ inputRange: [-DRAWER_WIDTH, 0], outputRange: [0, 1], extrapolate: "clamp" }) }]}><Pressable style={StyleSheet.absoluteFill} onPress={closeDrawer} /></Animated.View><Animated.View {...drawerPanResponder.panHandlers} style={[styles.drawer, { transform: [{ translateX: drawerX }] }]}><View style={styles.drawerHeader}><Text style={styles.drawerTitle}>Recent chats</Text><Pressable onPress={closeDrawer}><MaterialIcons name="close" size={24} color={colors.ink} /></Pressable></View><Pressable style={styles.newChat} onPress={startNewChat}><MaterialIcons name="add" size={20} color="#fff" /><Text style={styles.newChatText}>New chat</Text></Pressable><View style={{ flexDirection: "row", gap: 16, marginBottom: 12 }}><Link href="/metrics" disabled={recording} onPress={closeDrawer} style={styles.action}>Results</Link><Link href="/benchmark" onPress={closeDrawer} style={styles.action}>Benchmarks</Link></View><FlatList data={recentChats} keyExtractor={(item) => item.id} ListEmptyComponent={<Text style={styles.emptyChats}>No recent chats yet.</Text>} renderItem={({ item }) => <Pressable style={styles.chatRow} onPress={() => openRecentChat(item)}><Text numberOfLines={1} style={styles.chatTitle}>{item.approvedText || item.transcript || "Untitled voice report"}</Text><Text style={styles.chatStatus}>{item.status === "completed" ? "Completed" : item.status === "awaiting_review" ? "Needs review" : item.status}</Text></Pressable>} /></Animated.View></View></SafeAreaView>;
 }
 
 const styles = StyleSheet.create({ safe: { flex: 1, backgroundColor: "#fff" }, screen: { flex: 1 }, header: { padding: 16, borderBottomWidth: 1, borderBottomColor: colors.line, flexDirection: "row", alignItems: "center", gap: 12 }, menuButton: { width: 38, height: 38, alignItems: "center", justifyContent: "center" }, headerCopy: { flex: 1 }, title: { fontSize: 21, fontWeight: "700", color: colors.ink }, subtitle: { fontSize: 12, color: colors.muted, marginTop: 4 }, dot: { width: 10, height: 10, borderRadius: 5 }, messages: { padding: 16, gap: 14, flexGrow: 1 }, turn: { gap: 8 }, bubble: { borderRadius: 18, padding: 14, maxWidth: "90%" }, userBubble: { alignSelf: "flex-end", backgroundColor: colors.user }, assistantBubble: { alignSelf: "flex-start", backgroundColor: colors.panel }, transcriptBubble: { alignSelf: "flex-end", backgroundColor: colors.panel }, failureBubble: { alignSelf: "flex-start", backgroundColor: "#fff4ed" }, label: { fontSize: 11, fontWeight: "700", color: colors.muted, marginBottom: 5 }, body: { fontSize: 16, lineHeight: 23, color: colors.ink }, failureText: { color: "#b54708", fontSize: 15, lineHeight: 21, marginBottom: 6 }, action: { color: colors.accent, fontWeight: "700", marginTop: 10 }, empty: { alignItems: "center", justifyContent: "center", flex: 1, minHeight: 260 }, emptyChats: { color: colors.muted, padding: 16 }, emptyTitle: { fontSize: 18, fontWeight: "700", color: colors.ink, marginBottom: 5 }, recording: { margin: 12, padding: 14, borderRadius: 16, backgroundColor: "#fff4ed", gap: 10 }, recordingText: { color: "#b54708", fontWeight: "700", textAlign: "center" }, processing: { flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8, paddingVertical: 6 }, statusBubble: { flexDirection: "row", alignItems: "center", gap: 8 }, statusText: { color: colors.muted, fontSize: 13 }, typing: { color: colors.muted, fontSize: 26, letterSpacing: 3, lineHeight: 30 }, review: { margin: 12, padding: 14, borderRadius: 16, borderWidth: 1, borderColor: "#b7dfd4", backgroundColor: "#f4fbf9" }, reviewInput: { minHeight: 70, maxHeight: 130, fontSize: 16, color: colors.ink, paddingVertical: 8 }, primary: { backgroundColor: colors.accent, padding: 13, alignItems: "center", borderRadius: 12 }, primaryText: { color: "#fff", fontWeight: "700" }, chips: { flexDirection: "row", flexWrap: "wrap", gap: 8, paddingHorizontal: 12 }, chip: { backgroundColor: colors.panel, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 8, maxWidth: "90%" }, chipText: { color: colors.ink, fontSize: 12 }, error: { margin: 12, padding: 10, borderRadius: 10, backgroundColor: "#fff4ed" }, errorText: { color: "#b54708", fontSize: 13 }, recovery: { margin: 12, padding: 10, borderRadius: 10, backgroundColor: "#f4fbf9", borderWidth: 1, borderColor: "#b7dfd4" }, recoveryText: { color: colors.ink, fontSize: 13 }, micButton: { alignSelf: "center", width: 150, height: 150, borderRadius: 75, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center", marginVertical: 8, shadowColor: colors.accent, shadowOpacity: 0.2, shadowRadius: 10, elevation: 4 }, micButtonRecording: { backgroundColor: "#b54708" }, composer: { margin: 12, borderWidth: 1, borderColor: colors.line, borderRadius: 20, minHeight: 54, flexDirection: "row", alignItems: "center", padding: 7, gap: 6 }, icon: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.panel, alignItems: "center", justifyContent: "center" }, speakButton: { borderWidth: 1, borderColor: colors.line }, input: { flex: 1, maxHeight: 110, fontSize: 16, color: colors.ink, paddingHorizontal: 6, paddingVertical: 9 }, send: { width: 38, height: 38, borderRadius: 19, backgroundColor: colors.accent, alignItems: "center", justifyContent: "center" }, disabled: { opacity: 0.4 }, footnote: { fontSize: 13, color: colors.muted, textAlign: "center", marginTop: 2, marginBottom: 2, paddingHorizontal: 12 }, edgeSwipe: { position: "absolute", left: 0, top: 0, bottom: 0, width: 24, zIndex: 20 }, drawerLayer: { ...StyleSheet.absoluteFill, zIndex: 30, elevation: 30 }, scrim: { ...StyleSheet.absoluteFill, backgroundColor: "rgba(0,0,0,0.35)" }, drawer: { position: "absolute", left: 0, top: 0, bottom: 0, width: DRAWER_WIDTH, backgroundColor: "#fff", paddingTop: 58, paddingHorizontal: 18, shadowColor: "#000", shadowOpacity: 0.18, shadowOffset: { width: 5, height: 0 }, shadowRadius: 12, elevation: 12 }, drawerHeader: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingBottom: 18, borderBottomWidth: 1, borderBottomColor: colors.line }, drawerTitle: { fontSize: 22, fontWeight: "700", color: colors.ink }, newChat: { marginVertical: 16, borderRadius: 12, backgroundColor: colors.accent, padding: 13, flexDirection: "row", alignItems: "center", justifyContent: "center", gap: 8 }, newChatText: { color: "#fff", fontWeight: "700" }, chatRow: { paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: colors.line }, chatTitle: { color: colors.ink, fontSize: 15, fontWeight: "600" }, chatStatus: { color: colors.muted, fontSize: 12, marginTop: 5, textTransform: "capitalize" } });

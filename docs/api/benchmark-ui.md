@@ -33,6 +33,8 @@ The default address is `http://127.0.0.1:8080`. Pheme does not need to be runnin
 | POST | `/api/v1/experiments/:id/metrics` | `202` after a validated batch is stored |
 | GET | `/api/v1/experiments/:id/export?format=json` | Experiment, summary, runs and raw batches |
 | GET | `/api/v1/experiments/:id/export?format=csv` | One row per metric observation with experiment metadata |
+| POST | `/api/v1/phone/metrics` | Atomic phone observation registration and batch ingestion |
+| GET | `/api/v1/phone/metrics` | Paginated batches from device-reported experiments only |
 
 All routes below `:id` return `404 {"error":"experiment not found"}` if that experiment does not exist, including metric ingestion. Invalid queries return `400 {"error":"invalid query parameters"}`. Internal errors return a simple error message without storage details. Validation errors from creation/ingestion retain the [experiment](experiments.md) and [metrics](metrics.md) contracts. Successful collections always use arrays, including `[]` for no matches.
 
@@ -115,7 +117,15 @@ A completed experiment without uploaded metric batches currently returns:
 }
 ```
 
-`result_source` describes only the generic `result`: `mock`, `measured`, or `unavailable`. Show the source label next to the result and do not treat unavailable values as measurements. Summary `result` is null while no result exists; the existing experiment detail omits `result` in that case. Interruption results contain `success: false` and an explanation; their legacy numeric zero fields are not measurements.
+For benchmark executions, `result_source` describes the generic `result`:
+`mock`, `measured`, or `unavailable`. Phone observation containers instead record
+`device_reported` with no generic result; desktop voice containers use
+`host_voice` for new registrations. Show the source label and do not treat
+unavailable values or device-reported attribution as independently verified
+measurements. Summary `result` is null while no result exists; the existing
+experiment detail omits `result` in that case. Interruption results contain
+`success: false` and an explanation; their legacy numeric zero fields are not
+measurements.
 
 Metric observations are reported separately by their producers. Each summary group has this shape:
 
@@ -140,6 +150,34 @@ Only identical `(name, unit, scope, source)` tuples aggregate together. Numeric 
 Render empty `metrics` as “No measurements uploaded”. Render null values as unavailable with their reason; a valid numeric zero remains zero. Power/energy require a verified provider. A `completed` mock experiment can have zero metric runs.
 
 To compare experiments, fetch their details and summaries separately. Show configuration differences and flag differing datasets, model revisions, environments, measurement sources and scopes. No comparison/ranking endpoint currently asserts that experiments are compatible.
+
+### Phone observations
+
+The phone's conversation archive uploads to `/api/v1/phone/observations`.
+Already queued legacy batches continue through `/api/v1/phone/metrics`.
+Neither path runs desktop Pheme or a benchmark worker. See the
+[canonical observation contract](phone-observations-api.md),
+[legacy phone contract](metrics.md#phone-origin-ingestion) and
+[app setup](../../ios-app/README.md#connect-metrics-over-wi-fi).
+
+The dashboard adds current/latest work first while retaining the Metrics overview
+and experiment browser. Overall counts and series cover the complete retained
+filtered dataset, independently of visible history pages. Sweep, conversation,
+device, configuration, date, source, stage and outcome filters apply to details
+and exports. Canonical conversation/turn/attempt identities replace inferred
+grouping for new data; historical boundaries remain explicitly unknown where
+not reported. Models, hashes, device/build, dataset/protocol and measurement
+source/scope remain separate. JSON/CSV/Markdown use a pinned server snapshot.
+
+Execution outcome and telemetry completeness are separate. A completed legacy
+observation container does not establish a successful incident task. Canonical
+setup failures, cancellations and interruptions remain visible alongside
+successful executions, and unavailable measurements remain unavailable.
+
+The dashboard must not infer phone origin from the legacy
+`/api/v1/voice/metrics` label: that route drains the configured desktop Pheme
+host, and historical records are not relabelled. Upload notifications arrive
+through `/api/v1/dashboard/events`.
 
 ### Run and metric drill-down
 
@@ -204,6 +242,10 @@ This is integration fixture data, not a measurement. The route supplies `experim
 ### Export
 
 `format` defaults to `json`. JSON has `schema_version: 1`, `experiment`, `summary`, `runs` and `batches`, preserving raw unavailable reasons and submitted configuration. CSV repeats experiment/model/environment metadata and the clearly sourced generic result alongside each event; unavailable event values are blank with a reason. If there are no events, CSV still includes one experiment metadata row. Raw event numeric types/values are preserved in JSON; string values in CSV have no additional type column. Text beginning with spreadsheet formula characters is prefixed with an apostrophe in CSV; JSON preserves original text.
+
+Phone device attribution is included in JSON as `experiment.device`. The current
+CSV contract has no dedicated device-attribution columns; use JSON when preserving
+installation/hardware/OS/app/build provenance.
 
 ```js
 const response = await fetch(`/api/v1/experiments/${created.id}/export?format=csv`);

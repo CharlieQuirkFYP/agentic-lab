@@ -53,8 +53,8 @@ config/plugin changes, including when migrating an older generated `ios/`
 directory. Native host files are generated, not a second source frontend.
 
 The current weights are Whisper large-v3-turbo, 1,624,555,275 bytes, and
-Qwen2.5-1.5B-Instruct Q4_K_M, 1,117,320,736 bytes. The model payload alone is
-2,741,876,011 bytes. Downloading, staging, copying into build products, signing,
+Qwen3-4B-Instruct-2507 Q4_K_M, 2,497,281,120 bytes (Unsloth GGUF). The model payload alone is
+4,121,836,395 bytes. Downloading, staging, copying into build products, signing,
 and installing take time and require additional disk space. These are
 development baselines, not validated latency/memory/thermal choices.
 

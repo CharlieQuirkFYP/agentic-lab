@@ -57,7 +57,7 @@ export default function ExperimentDetailsPage() {
   const visibleMetrics = allMetrics.filter(metric => filter.activeNames.has(metric.name))
   const chartMetrics = visibleMetrics.filter(metric => metric.numeric_count > 0).map(metric => ({
     ...metric,
-    points: batches.flatMap(batch => batch.events.filter(event => event.name === metric.name && typeof event.value === "number").map(event => ({ label: `${batch.run_id} · ${event.sequence}`, value: event.value as number, timestamp: event.timestamp_ms }))),
+    points: batches.flatMap(batch => batch.events.filter(event => event.name === metric.name && event.unit === metric.unit && event.scope === metric.scope && event.source === metric.source && typeof event.value === "number").map(event => ({ label: `${batch.run_id} · ${event.sequence}`, value: event.value as number, timestamp: event.timestamp_ms }))),
   }))
 
   return <main className="min-h-screen bg-[#f8fafc] text-foreground"><div className="mx-auto grid min-h-screen max-w-360 lg:grid-cols-[232px_1fr]">
@@ -65,6 +65,17 @@ export default function ExperimentDetailsPage() {
     <div className="min-w-0"><header className="flex flex-wrap items-center justify-between gap-3 border-b bg-card px-5 py-4 sm:px-8"><div><Link to="/dashboard" className="flex items-center gap-1 text-sm text-blue-700"><ArrowLeft className="size-4" /> Back to dashboard</Link><h1 className="mt-2 text-xl font-semibold">Experiment details</h1><p className="mt-1 font-mono text-xs text-muted-foreground">{id}</p></div><div className="flex gap-2"><Button variant="outline" onClick={() => void load()}><RefreshCw /> Refresh</Button><Button variant="outline" onClick={() => void download()}><Download /> JSON export</Button></div></header>
       <div className="space-y-6 px-5 py-7 sm:px-8">{error && <p className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">{error}</p>}{experiment && <>
         <section className="grid gap-4 sm:grid-cols-4"><Card label="Status" value={experiment.status} /><Card label="Result source" value={experiment.result_source} /><Card label="Runs" value={String(summary?.run_count ?? 0)} /><Card label="Metric batches" value={String(batches.length)} /></section>
+        {experiment.device && <section className="rounded-xl border bg-card p-5 shadow-sm">
+          <h2 className="font-semibold">Phone Attribution</h2>
+          <p className="mt-1 text-sm text-muted-foreground">Reported by the native app, not independently verified device measurements. Uploaded metrics do not imply a completed incident report.</p>
+          <dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3">
+            <Entry label="Hardware identifier" value={experiment.device.hardware} />
+            <Entry label="iOS version" value={experiment.device.os_version} />
+            <Entry label="App version / build" value={`${experiment.device.app_version} / ${experiment.device.build}`} />
+            <Entry label="Execution location" value={experiment.device.execution_location} />
+            <Entry label="Installation" value={experiment.device.installation_id} />
+          </dl>
+        </section>}
         <section className="rounded-xl border bg-card p-5 shadow-sm"><h2 className="font-semibold">Configuration</h2><dl className="mt-4 grid gap-4 text-sm sm:grid-cols-2 lg:grid-cols-3"><Entry label="Use case" value={experiment.use_case} /><Entry label="Dataset" value={experiment.dataset} /><Entry label="Model" value={experiment.model_config.name} /><Entry label="Quantization" value={experiment.model_config.quantization} /><Entry label="Runtime" value={experiment.model_config.runtime} /><Entry label="Environment" value={experiment.environment_profile.name} /><Entry label="Created" value={date(experiment.created_at)} /><Entry label="Started" value={date(experiment.started_at)} /><Entry label="Completed" value={date(experiment.completed_at)} /></dl></section>
         <section className="rounded-xl border bg-card p-5 shadow-sm"><div className="flex flex-wrap items-center justify-between gap-3"><div><h2 className="font-semibold">Metrics and timeline</h2><p className="mt-1 text-sm text-muted-foreground">The filter is shared with the dashboard.</p></div><MetricFilter metricNames={allMetrics.map(metric => metric.name)} {...filter} /></div>{visibleMetrics.length ? <div className="mt-4 grid gap-3 sm:grid-cols-2">{visibleMetrics.map(metric => <SummaryCard key={`${metric.name}-${metric.unit}-${metric.source}`} metric={metric} />)}</div> : <p className="mt-4 text-sm text-muted-foreground">No metrics selected. Use the filter to select metrics.</p>}</section>
         <section className="rounded-xl border bg-card p-5 shadow-sm"><h2 className="font-semibold">Metric charts over time</h2>{chartMetrics.length ? <div className="mt-4 grid gap-4 lg:grid-cols-2">{chartMetrics.map(metric => <MetricChart key={`${metric.name}-${metric.unit}`} name={metric.name} unit={metric.unit} points={metric.points} />)}</div> : <p className="mt-4 text-sm text-muted-foreground">No numeric metric data available.</p>}</section>

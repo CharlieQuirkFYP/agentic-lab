@@ -43,10 +43,15 @@ final class NativeBridge: @unchecked Sendable {
         }
     }
 
-    func transcribe(_ audio: CapturedAudio) async throws -> Transcription {
+    func transcribe(_ audio: CapturedAudio, attemptID: String? = nil) async throws -> Transcription {
         try await execute { [self] in
             try audio.samples.withUnsafeBufferPointer { samples in
-                try decode { pheme_va_transcribe_v1(handle, samples.baseAddress, samples.count, audio.sampleRate, audio.channels, $0) }
+                if let attemptID {
+                    return try Array(attemptID.utf8).withUnsafeBufferPointer { identity in
+                        try decode { pheme_va_transcribe_v2(handle, samples.baseAddress, samples.count, audio.sampleRate, audio.channels, identity.baseAddress, identity.count, $0) }
+                    }
+                }
+                return try decode { pheme_va_transcribe_v1(handle, samples.baseAddress, samples.count, audio.sampleRate, audio.channels, $0) }
             }
         }
     }

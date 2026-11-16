@@ -46,8 +46,8 @@ func (h *VoiceMetricsHandler) Collect(ctx context.Context) error {
 				return err
 			}
 			if err := h.experiments.Create(ctx, benchmark.Experiment{
-				ID: experimentID, ResultSource: "phone_voice", UseCase: benchmark.UseCaseIncidentReporting,
-				Dataset: "phone", ModelConfig: benchmark.ModelConfig{Name: "Pheme voice"},
+				ID: experimentID, ResultSource: "host_voice", UseCase: benchmark.UseCaseIncidentReporting,
+				Dataset: "host", ModelConfig: benchmark.ModelConfig{Name: "Pheme host voice"},
 				Status: benchmark.ExperimentStatusCompleted, CreatedAt: time.Now().UTC(),
 			}); err != nil {
 				return err

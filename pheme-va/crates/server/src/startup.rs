@@ -34,9 +34,13 @@ pub fn load(args: &Args) -> Result<Runtimes> {
         max_output_tokens: args.max_output_tokens,
         context_size: args.context_size,
         temperature: args.temperature,
+        top_k: args.top_k,
+        top_p: args.top_p,
+        min_p: args.min_p,
+        seed: args.seed,
     };
     conversation.validate()?;
-    println!("reply settings: llama.cpp bindings 0.1.158; threads {}; context {}; max output {} tokens / {} characters; temperature {}; GPU layers {}", args.threads, conversation.context_size, conversation.max_output_tokens, conversation.max_output_chars, conversation.temperature, args.gpu_layers);
+    println!("reply settings: llama.cpp bindings 0.1.158; threads {}; context {}; max output {} tokens / {} characters; temperature {}; top-k {}; top-p {}; min-p {}; seed {:?}; GPU layers {}", args.threads, conversation.context_size, conversation.max_output_tokens, conversation.max_output_chars, conversation.temperature, conversation.top_k, conversation.top_p, conversation.min_p, conversation.seed, args.gpu_layers);
     let saved = saved_choices(args.startup_choices.as_deref())?;
     let (stt_id, reply_id) = effective_choices(args, &saved)?;
     let manifest = if stt_id.is_some() || reply_id.is_some() {

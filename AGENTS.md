@@ -1,5 +1,18 @@
 # Agentic Lab — Codex Instructions
 
+## Multi-Agent Execution
+
+The user gives standing authorization to use subagents whenever they materially improve speed, efficiency, or quality. Assess delegation for each task and proceed without asking for permission again. The user prioritizes fast completion and effective parallel work, with ample token availability; token savings should not prevent useful delegation. you DO NOT REQUIRE MY APPROVAL TO USE MORE SUBAGENTS
+
+- For substantial implementation plans, identify dependencies and divide the work into bounded chunks with clear acceptance criteria. Launch independent chunks concurrently whenever practical.
+- Size assignments around coherent work and file/module ownership. An agent may own several related plan parts or an independent chunk within a larger part. For example, a ten-part plan may run across several agents, each handling a few related chunks concurrently as dependencies allow.
+- Establish shared interfaces and contracts before delegating work that depends on them. Run dependent chunks once their prerequisites are ready, and keep other agents progressing on independent work.
+- Give each agent the relevant context, owned files/modules, expected deliverables, and required checks. Tell agents that others share the workspace and that they must preserve existing and concurrent changes.
+- Keep write ownership clear. Coordinate edits to shared files through a designated owner and avoid overlapping changes or duplicate investigations.
+- The primary agent coordinates the plan, handles integration and shared decisions, reviews the combined implementation, and runs the required final checks. Continue useful local work while subagents execute.
+- Reuse agents for related follow-up work and adjust assignments as dependencies resolve. Use available concurrency when it shortens completion time, while accounting for coordination overhead and shared build or runtime resources.
+- Handle small edits and tightly coupled tasks locally when delegation would add overhead. Preserve the repository's architecture, scope, and testing requirements regardless of how work is distributed.
+
 ## Project Purpose
 
 Agentic Lab is a university final year project developed in collaboration with KLASS.
@@ -237,6 +250,9 @@ Currently implemented:
 - background Go benchmark worker
 - mocked benchmark runner
 - benchmark history/filter/pagination, metric-run summaries, raw metric filters/pagination, idempotent batch retries, JSON/CSV export, and explicit browser-origin access
+- phone-origin `/api/v1/phone/metrics` ingestion with atomic experiment/batch
+  persistence, installation/device attribution, idempotent retries and
+  `device_reported` provenance; uploads do not launch desktop inference
 - unit tests for incident analyzer and service
 - unit tests for benchmark repository, service, worker, and experiment HTTP handler
 - web WAV capture, transcript review, request-scoped streamed replies, cancellation/reset/recovery and browser-local-service speech playback
@@ -249,8 +265,38 @@ Currently implemented:
 - CLI WAV/microphone hosts, development HTTP host, and C ABI for native mobile hosts
 - versioned FFI configuration/status/results, safe lifecycle and bounded metrics; desktop CLI monitor retained, but the removed SwiftUI host's phone-side monitor transport is not exposed in Expo
 - Expo-only iPhone frontend with module-owned Swift bridges to static PhemeVA and isolated dynamic PhemeReasoning, bundled checksum-verified Whisper/Qwen weights and separate ASR/Reasoning settings; no copied Swift sources or standalone XcodeGen frontend
-- existing Expo chat connected to native ASR/reasoning, reviewed transcripts, local recording recovery, Rust-owned bounded reply history, shared dual-engine admission and JS-context-safe lifetime; physical-device dual-model acceptance remains required
+- existing Expo chat connected to native ASR/reasoning, reviewed transcripts, local recording recovery, Rust-owned bounded reply history, shared dual-engine admission and JS-context-safe lifetime; physical dual-model sweep execution verified, with configuration failures retained in the acceptance record
+- one root-owned Expo foreground metrics collector, bounded SQLite outbox,
+  unchanged upload retries, server/pause/status controls and model/device
+  metadata without audio/transcript/reply content; foreground ASR/reply uploads
+  verified on the paired iPhone; forced app restart during a real Go outage
+  preserved observations and resumed unfinished work. Network-disabled launch
+  acceptance remains separate
+- dashboard phone observations and attributed details, source/scope-separated
+  numeric comparisons and unavailable values; JSON preserves device provenance,
+  while CSV has no dedicated device-attribution columns
+- canonical phone observation archive and `/api/v1/phone/observations` ingestion,
+  explicit conversation/turn/attempt identities, revision-bound finalization,
+  protected pending delivery, capacity admission, and unchanged legacy retries
+- phone WAV dataset recording/import with pinned revisions, manifest-selected
+  multi-model bundles, persisted sequential model sweeps, context reset between
+  cases, separate warmup/loading, pause/recovery and local report export
+- native 500 ms CPU/memory/battery/thermal sampling with source/scope metadata;
+  GPU, watts and joules remain unavailable. The physical matrix and outage/restart
+  records reconcile exactly with Go; low-load CPU/memory were compared with
+  Instruments. See `docs/testing/phone-benchmark-acceptance-2026-11-11.md` for
+  observed failures and remaining calibration/quality gates
+- additive current/latest-run view above the retained web Metrics overview,
+  full-scope totals, model-attributed history and shared JSON/CSV/Markdown reports
+  under `shared/phone-benchmarks/`; canonical CSV includes device attribution
+- native Results overview and per-metric graphs, saved conversation history,
+  turn/operation drill-down, compatible sweep comparison bars and snapshot-based
+  sharing on `/metrics`; scoped SQLite reads and visible-only refresh retain one
+  root collector. Automated and native build checks pass; physical interaction,
+  VoiceOver and rendering-overhead acceptance remain separate. See
+  `docs/testing/phone-results-acceptance-2026-11-13.md`
 - conservative deterministic incident-field extraction for offline development
+- opt-in bundled-role incident intake in Pheme, with conservative copied evidence, fixed question selection, per-conversation state/reset, revision-bound wording review, and buffered allowlist validation of exactly two sentences/at most 45 words with deterministic fallback; backend failures/cancellation remain errors and no save/dispatch is performed; custom roles, isolated Tests and title generation retain generic behavior
 - extended existing model manifest with transcript/reply purposes, pinned Qwen reply baseline and startup-loaded incident role
 - normal reply dependency with a host-owned persistent stdio llama.cpp worker isolating incompatible Whisper/llama GGML symbols; no extra HTTP service or reply feature flag
 - dedicated Go Pheme client/service/handlers for `/api/v1/voice/`, separate from the mock incident analyzer
@@ -269,12 +315,18 @@ Planned but not yet implemented:
 
 - model-backed structured extraction and Go `PhemeVAIncidentAnalyzer` (conversational reply adapter is implemented separately)
 - structured model-backed incident extraction with validated output and cancellation/timeouts
-- persistent Pheme-owned incident sessions, structured clarification/corrections, and revision-bound report confirmation (development conversation context is implemented)
+- persistent Pheme-owned incident sessions, model-backed structured clarification/corrections, and revision-bound report finalization (in-memory deterministic intake and wording review are implemented; wording review does not save a report)
 - Pheme-owned SQLite session/report storage and incident retrieval
 - native mobile speech synthesis/audio workflow; live browser/TUI microphone/TTS acceptance and offline behavior still require validation
-- real benchmark runner, evaluation dataset, and resource/energy measurements
-- complete confirmation/report workflow in the voice console and real benchmark dashboard, comparisons, and export
-- target-device deployment and power/thermal/endurance evaluation
+- real Go benchmark worker, representative human-speech evaluation dataset,
+  automated quality scoring and validated energy measurements (the phone sweep
+  runner and recorded/imported dataset tooling are implemented separately)
+- complete incident confirmation/storage workflow in the voice console
+- controlled target-device power/thermal/endurance evaluation (physical iPhone
+  deployment and pilot matrix execution are verified)
+- verified GPU/power/energy instrumentation, active-load sensor checks and collector
+  overhead characterization; available native CPU/RAM/battery/thermal samples
+  must not be described as whole-device power or per-engine resource usage
 
 The pinned Qwen GGUF reply and client-side local speech adapters are development baselines, not validated target-device selections. Reply-model quality/latency, live audio/playback and target-device specifications remain pending. MERaLiON is an optional candidate for local speech understanding, not a required dependency. LangGraph and fine-tuning are not baseline prerequisites. Interview development is deferred; vision workflows and KLASS adapters are out of scope. PostgreSQL, Redis, Kafka, and Docker are not implemented or required by the current plan.
 

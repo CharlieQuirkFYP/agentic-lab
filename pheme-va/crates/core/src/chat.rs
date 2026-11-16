@@ -33,9 +33,32 @@ impl ChatPhase {
 #[derive(Clone, Debug, Default)]
 pub struct ConversationState {
     pub history: Vec<ConversationMessage>,
+    pub intake: Option<crate::intake::IntakeState>,
 }
 
 impl ConversationState {
+    pub fn for_role(system: &str) -> Self {
+        Self {
+            history: Vec::new(),
+            intake: system
+                .lines()
+                .next()
+                .filter(|line| *line == crate::intake::ROLE_MARKER)
+                .map(|_| crate::intake::IntakeState::default()),
+        }
+    }
+
+    pub fn plan(&self, text: &str) -> Option<crate::intake::ReplyPlan> {
+        self.intake.as_ref().map(|state| state.plan(text))
+    }
+
+    pub fn reset(&mut self) {
+        self.history.clear();
+        if self.intake.is_some() {
+            self.intake = Some(Default::default());
+        }
+    }
+
     pub fn approve(
         &self,
         phase: ChatPhase,
@@ -48,7 +71,11 @@ impl ConversationState {
                 "turn is not awaiting review".into(),
             ));
         }
-        build_messages(system, &self.history, text, config)
+        let system = self.plan(text).map_or_else(
+            || system.to_owned(),
+            |plan| format!("{system}{}", plan.instruction()),
+        );
+        build_messages(&system, &self.history, text, config)
     }
 
     pub fn commit(
@@ -59,6 +86,14 @@ impl ConversationState {
     ) -> Result<(), ConversationError> {
         crate::validate_response(&reply, config)?;
         build_messages("_", &[], &approved, config)?;
+        if let Some(plan) = self.plan(&approved) {
+            if !plan.accepts(&reply) {
+                return Err(ConversationError::InvalidInput(
+                    "reply does not match the intake plan".into(),
+                ));
+            }
+            self.intake = Some(plan.next);
+        }
         self.history.push(ConversationMessage {
             role: ConversationRole::User,
             content: approved,

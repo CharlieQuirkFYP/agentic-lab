@@ -114,12 +114,20 @@ fn wav(silent: bool) -> Vec<u8> {
 }
 
 fn setup(audio: bool, reply: bool, limits: Limits) -> (AgentRuntime, Arc<Control>) {
+    setup_role(audio, reply, limits, "incident role")
+}
+fn setup_role(
+    audio: bool,
+    reply: bool,
+    limits: Limits,
+    role: &str,
+) -> (AgentRuntime, Arc<Control>) {
     let control = Arc::new(Control::default());
     let engine = audio.then(|| Engine::new(FakeTranscriber(control.clone())));
     let model = reply.then(|| Box::new(FakeModel(control.clone())) as Box<dyn ConversationModel>);
     let prompt = reply.then(|| LoadedPrompt {
         path: "fixture-role.txt".into(),
-        text: "incident role".into(),
+        text: role.into(),
         sha256: "f".repeat(64),
     });
     (
@@ -133,6 +141,81 @@ fn setup(audio: bool, reply: bool, limits: Limits) -> (AgentRuntime, Arc<Control
         ),
         control,
     )
+}
+
+#[tokio::test]
+async fn intake_policy_is_shared_by_child_conversations_and_never_streams_rejected_text() {
+    let (agent, control) = setup_role(
+        false,
+        true,
+        Limits::default(),
+        include_str!("../../../roles/incident-reporting.txt"),
+    );
+    let id = conversations::new_conversation(&agent)
+        .unwrap()
+        .conversation_id;
+    let text = "Smoke at the west entrance.";
+    let mut stream = send(&agent, &id, text, "incident-1").await;
+    let mut deltas = String::new();
+    while let Some(event) = stream.receiver.recv().await {
+        if let EventKind::ReplyDelta { text } = event.kind {
+            deltas.push_str(&text);
+        }
+    }
+    wait(|| agent.voice.idle()).await;
+    assert_eq!(deltas, "I have your account. Is anyone injured or trapped?");
+    let first = conversations::snapshot(&agent, &id, true).unwrap();
+    assert_eq!(first.turns[0].reply, deltas);
+    assert_eq!(first.turns[0].status, Status::Completed);
+    drop(send(&agent, &id, text, "incident-1").await);
+    assert_eq!(control.calls.lock().unwrap().len(), 1);
+    control.hold.store(true, Ordering::Release);
+    let cancelled = send(
+        &agent,
+        &id,
+        "Actually it is at the east entrance.",
+        "correction",
+    )
+    .await;
+    let turn = cancelled.turn.turn_id.clone();
+    drop(cancelled);
+    wait(|| control.calls.lock().unwrap().len() == 2).await;
+    conversations::stop_turn(&agent, &id, &turn).unwrap();
+    wait(|| agent.voice.idle()).await;
+    control.hold.store(false, Ordering::Release);
+    drop(send(&agent, &id, "Nobody is injured.", "incident-2").await);
+    wait(|| agent.voice.idle()).await;
+    let scoped = agent
+        .voice
+        .conversations
+        .lock()
+        .unwrap()
+        .get(&id)
+        .unwrap()
+        .voice
+        .clone();
+    assert!(scoped
+        .lock()
+        .conversation
+        .intake
+        .as_ref()
+        .unwrap()
+        .location
+        .as_ref()
+        .unwrap()
+        .contains("west entrance"));
+    let mut child_agent = agent.clone();
+    child_agent.voice = scoped.clone();
+    reset(&child_agent).await.unwrap();
+    assert!(scoped
+        .lock()
+        .conversation
+        .intake
+        .as_ref()
+        .unwrap()
+        .location
+        .is_none());
+    agent.shutdown().await;
 }
 async fn wait(mut ready: impl FnMut() -> bool) {
     tokio::time::timeout(Duration::from_secs(3), async {

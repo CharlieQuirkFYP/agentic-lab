@@ -8,6 +8,7 @@ swiftc -parse-as-library -swift-version 5 -strict-concurrency=complete -warnings
   -module-cache-path "$TASK_OUT/module-cache" \
   "$ROOT/modules/pheme-native/ios/BridgeTypes.swift" \
   "$ROOT/modules/pheme-native/ios/BundledModels.swift" \
+  "$ROOT/modules/pheme-native/ios/ResourceSampler.swift" \
   "$ROOT/modules/pheme-native/ios/PhemeRuntime.swift" \
   "$ROOT/modules/pheme-native/ios/PhemeAudio.swift" \
   "$ROOT/tests/NativeRuntimeTests.swift" -framework AVFoundation -o "$TASK_OUT/runtime-tests"

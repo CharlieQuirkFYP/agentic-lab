@@ -150,6 +150,7 @@ impl Operation {
 }
 
 struct Job {
+    plan: Option<va_core::intake::ReplyPlan>,
     messages: Vec<ConversationMessage>,
     permit: OwnedSemaphorePermit,
 }
@@ -298,7 +299,10 @@ impl Voice {
             ready: model.as_ref().is_some_and(|model| model.is_ready()) && prompt.is_some(),
         };
         Arc::new(Self {
-            inner: Mutex::new(Inner::default()),
+            inner: Mutex::new(Inner {
+                conversation: ConversationState::for_role(prompt.as_ref().map_or("", |p| &p.text)),
+                ..Default::default()
+            }),
             inference: Arc::new(Semaphore::new(1)),
             model: model.map(|model| Arc::new(Mutex::new(model))),
             prompt,
@@ -569,7 +573,11 @@ pub async fn create(
                 .clone()
                 .try_acquire_owned()
                 .map_err(|_| busy())?;
-            Some(Job { messages, permit })
+            Some(Job {
+                messages,
+                permit,
+                plan: inner.conversation.plan(text),
+            })
         } else {
             None
         };
@@ -871,13 +879,32 @@ async fn web_worker(
     }
     match result {
         Ok(text) if !op.cancelled.load(Ordering::Acquire) => {
-            record.turn.reply = text.clone();
             let approved = record.turn.approved_text.clone().expect("submitted turn");
-            record.terminal(Status::Completed, None);
-            let _ = inner
-                .conversation
-                .commit(approved, text, &state.voice.limits.conversation);
-            metrics.record_workflow_outcome(true);
+            let committed =
+                inner
+                    .conversation
+                    .commit(approved, text.clone(), &state.voice.limits.conversation);
+            let record = inner
+                .record(id)
+                .expect("record remains under the same lock");
+            match committed {
+                Ok(()) => {
+                    record.turn.reply = text;
+                    record.terminal(Status::Completed, None);
+                    metrics.record_workflow_outcome(true);
+                }
+                Err(_) => {
+                    record.turn.reply.clear();
+                    record.terminal(
+                        Status::Failed,
+                        Some(Failure::new(
+                            "invalid_model_response",
+                            "Reply did not match the current intake state.",
+                        )),
+                    );
+                    metrics.record_workflow_outcome(false);
+                }
+            }
         }
         Ok(_) => record.terminal(Status::Cancelled, None),
         Err(failure) if failure.code == "cancelled" => record.terminal(Status::Cancelled, None),
@@ -955,6 +982,7 @@ pub fn submit(state: &AgentRuntime, id: &str, text: String) -> Result<Turn, Runt
         .clone()
         .try_acquire_owned()
         .map_err(|_| busy())?;
+    let plan = inner.conversation.plan(&text);
     let history_turns = messages.len().saturating_sub(2) / 2;
     let removed_turns = (inner.conversation.history.len() / 2).saturating_sub(history_turns);
     let record = inner.record(id).expect("record exists under same lock");
@@ -983,7 +1011,11 @@ pub fn submit(state: &AgentRuntime, id: &str, text: String) -> Result<Turn, Runt
         text: text.to_owned(),
     });
     record.event(EventKind::ReplyStarted);
-    record.job = Some(Job { messages, permit });
+    record.job = Some(Job {
+        messages,
+        permit,
+        plan,
+    });
     record.op.approval.notify_one();
     Ok(record.turn.clone())
 }
@@ -1030,7 +1062,7 @@ pub async fn reset(state: &AgentRuntime) -> Result<(), RuntimeError> {
             op.wait().await;
         }
         let mut inner = voice.lock();
-        inner.conversation.history.clear();
+        inner.conversation.reset();
         inner.current = None;
         inner.records.clear();
         inner.resetting = false;
@@ -1064,6 +1096,7 @@ pub fn inspect(state: &AgentRuntime) -> Inspection {
         sha256: prompt.sha256.clone(),
     });
     Inspection {
+        conversation_config: voice.limits.conversation.clone(),
         history: inner.conversation.history.clone(),
         current_turn: turn.cloned(),
         stt: voice.stt_status(),
@@ -1110,7 +1143,11 @@ pub fn test_reply(
             &state,
             None,
             &op,
-            Job { messages, permit },
+            Job {
+                messages,
+                permit,
+                plan: None,
+            },
             metrics.clone(),
             Some(sender.clone()),
         );
@@ -1236,9 +1273,14 @@ async fn generate(
             }
         };
         let result = match model.lock() {
-            Ok(mut model) if model.is_ready() => {
-                model.respond_stream(&job.messages, &config, &cancelled, &mut emit)
-            }
+            Ok(mut model) if model.is_ready() => va_core::intake::respond_with_plan(
+                model.as_mut(),
+                &job.messages,
+                &config,
+                job.plan.as_ref(),
+                &cancelled,
+                &mut emit,
+            ),
             _ => Err(ConversationError::Backend("runtime unavailable".into())),
         }
         .and_then(|text| {
@@ -1376,6 +1418,7 @@ fn label_metrics(metrics: &MetricsContext, kind: &str, voice: &Voice) {
 
 #[derive(Clone, Serialize)]
 pub struct Inspection {
+    pub conversation_config: ConversationConfig,
     pub history: Vec<ConversationMessage>,
     pub current_turn: Option<Turn>,
     pub stt: RuntimeStatus,

@@ -1,0 +1,7 @@
+{
+  "name": "@agentic-lab/phone-benchmarks",
+  "private": true,
+  "type": "module",
+  "exports": "./index.ts",
+  "scripts": { "test": "node --test tests/*.test.ts" }
+}

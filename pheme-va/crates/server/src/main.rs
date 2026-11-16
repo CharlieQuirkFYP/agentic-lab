@@ -46,13 +46,21 @@ struct Args {
     gpu_layers: u32,
     #[arg(long, default_value_t = 4096)]
     context_size: u32,
-    #[arg(long, default_value_t = 512)]
+    #[arg(long, default_value_t = 128)]
     max_output_tokens: u32,
-    #[arg(long, default_value_t = 0.2)]
+    #[arg(long, default_value_t = 0.7)]
     temperature: f32,
+    #[arg(long, default_value_t = 20)]
+    top_k: i32,
+    #[arg(long, default_value_t = 0.8)]
+    top_p: f32,
+    #[arg(long, default_value_t = 0.0)]
+    min_p: f32,
+    #[arg(long)]
+    seed: Option<u32>,
     #[arg(long, default_value_t = 12000)]
     max_input_chars: usize,
-    #[arg(long, default_value_t = 4000)]
+    #[arg(long, default_value_t = 800)]
     max_output_chars: usize,
     #[arg(long, default_value_t = 6)]
     max_history_turns: usize,

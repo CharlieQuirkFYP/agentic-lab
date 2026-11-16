@@ -1,6 +1,6 @@
 # Development voice conversation API
 
-Implemented development flow: Web → Go → Pheme. One in-memory web conversation plus independent console conversations, with no join flow, global subscriptions, database or model-management HTTP routes. Local TUI Chat/Tests use `va_runtime` directly; only its optional Web inspector uses Go HTTP. HTTP isolated-test endpoints remain available to development clients. This does **not** implement confirmed incident report storage/retrieval or replace the existing structured incident analyzer.
+Implemented development flow: Web → Go → Pheme. One in-memory web conversation plus independent console conversations, with no join flow, global subscriptions, database or model-management HTTP routes. Local TUI Chat/Tests use `va_runtime` directly; only its optional Web inspector uses Go HTTP. HTTP isolated-test endpoints remain available to development clients. The bundled role enables Pheme-owned deterministic intake and revision-bound wording review. This does **not** implement confirmed incident report storage/retrieval or replace the existing structured incident analyzer. See [intake behavior and quality evaluation](../incident-intake-quality.md).
 
 ## Hosts and readiness
 
@@ -69,18 +69,17 @@ event: reply.started
 data: {"turn_id":"turn_example"}
 
 event: reply.delta
-data: {"turn_id":"turn_example","text":"Is anyone "}
-
-event: reply.delta
-data: {"turn_id":"turn_example","text":"in immediate danger?"}
+data: {"turn_id":"turn_example","text":"I have your account. Is anyone injured or trapped?"}
 
 event: reply.completed
-data: {"turn_id":"turn_example","text":"Is anyone in immediate danger?"}
+data: {"turn_id":"turn_example","text":"I have your account. Is anyone injured or trapped?"}
 ```
 
-Deltas come from actual native generation and are provisional. Completion supplies authoritative full text. `turn.failed` includes `{ "turn_id": "...", "error": { "code": "...", "message": "..." } }`; `turn.cancelled` terminates a cancelled turn. Failed/empty/cancelled answers commit no successful user/assistant history pair. Preserve partial text as diagnostic display, not a completed answer.
+With the bundled intake role, candidate native output is buffered and allowlist-validated before a delta is emitted. The delivered reply has exactly two sentences and at most 45 words; a rejected, empty or overlong candidate uses the deterministic planned response. Rejected text never enters the response stream or speech playback. Backend errors and cancellation still terminate the turn without a successful history/state commit.
 
-Isolated `/test/reply` accepts JSON `{ "text": "..." }` and emits the same reply events **without a web turn ID**. Its role is identical but its context starts fresh. Closing this test transport sends native cancellation to only that test. Closing TUI inspection affects no web work.
+Generic custom-role conversations and isolated Tests stream actual provisional native deltas. Completion supplies authoritative full text; failed/empty/cancelled generic answers commit no successful user/assistant history pair. Preserve their partial text as diagnostic display, not a completed answer. `turn.failed` includes `{ "turn_id": "...", "error": { "code": "...", "message": "..." } }`; `turn.cancelled` terminates a cancelled turn.
+
+Isolated `/test/reply` accepts JSON `{ "text": "..." }` and emits the same reply events **without a web turn ID**. It uses the bound role with fresh context and raw model output, without conversation intake planning or validation. Closing this test transport sends native cancellation to only that test. Closing TUI inspection affects no web work.
 
 ## Inspection and recovery
 
@@ -108,11 +107,23 @@ Isolated `/test/reply` accepts JSON `{ "text": "..." }` and emits the same reply
     "name": "<first bound role source path>",
     "sha256": "<exact-byte combined prompt hash>"
   },
-  "busy": true
+  "busy": true,
+  "conversation_config": {
+    "max_input_chars": 12000,
+    "max_output_chars": 800,
+    "max_history_turns": 6,
+    "max_output_tokens": 128,
+    "context_size": 4096,
+    "temperature": 0.7,
+    "top_k": 20,
+    "top_p": 0.8,
+    "min_p": 0.0,
+    "seed": null
+  }
 }
 ```
 
-`current_turn` is nullable. States: `transcribing`, `awaiting_review`, `generating`, `completed`, `failed`, `cancelled`. `GET /turns/:id` returns just the turn object. Timings become available as stages settle; absent values are unavailable, not zero. TUI replaces snapshots rather than appending the same partial answer; its local dirty editor stays bound to its original turn ID.
+`current_turn` is nullable. States: `transcribing`, `awaiting_review`, `generating`, `completed`, `failed`, `cancelled`. `GET /turns/:id` returns just the turn object. `conversation_config` is the actual configured generation budget and sampler, not a phone-performance guarantee. Timings become available as stages settle; absent values are unavailable, not zero. For buffered intake, first delivered text follows candidate validation rather than identifying the model's first generated token. TUI replaces snapshots rather than appending the same partial answer; its local dirty editor stays bound to its original turn ID.
 
 An accepted web inference may finish after browser transport loss; bounded snapshots/results remain recoverable. A slow browser does not block inference or create unbounded buffering: the stream closes and clients recover by GET. The web performs one recovery read, then offers explicit status reads/replay; it does not automatically reopen a global stream, regenerate a question or speak a recovered answer. A missing/expired/reset turn returns an explicit error. Restart loses in-memory context, and clients do not resend it silently.
 
@@ -122,8 +133,9 @@ Default Pheme limits (selected values configurable at startup):
 
 - 16 MiB body; JSON text bodies additionally limited to 64 KiB. Go's outer upload ceiling is 32 MiB; the stricter Pheme limit still applies.
 - 120-second audio cap; the current web client records at most 60 seconds.
-- 12,000 Unicode scalar values for aggregate system instruction + selected history + approved question; 4,000 reply characters.
-- 4,096 model context tokens and 512 maximum output tokens; actual token overflow is rejected by the adapter.
+- 12,000 Unicode scalar values for aggregate system instruction + selected history + approved question; 800 reply characters.
+- 4,096 model context tokens and 128 maximum output tokens; actual token overflow is rejected by the adapter.
+- Temperature `0.7`, top-k `20`, top-p `0.8`, min-p `0`; optional seed defaults to a native random seed. These follow the [official Qwen3-4B-Instruct-2507 sampling baseline](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507#best-practices). See [configuration and comparison limits](../incident-intake-quality.md#shared-generation-configuration).
 - Six successful history pairs, 32 retained turn results.
 - 300-second review, 120-second generation, 180-second transcription deadlines.
 - One active inference across STT/web replies/tests. Human review releases compute.
@@ -136,6 +148,8 @@ Custom failures use `{ "error": { "code": "...", "message": "..." } }`. Common s
 ## Models, roles, playback and metrics
 
 Local registry `pheme-va/models/manifest.toml` retains `[[models]]` entries. `purpose`, `download_id` and manifest-relative `system_prompt` distinguish ASR artifacts from instruction replies. The starter Qwen default is `../roles/incident-reporting.txt`, resolving to `pheme-va/roles/incident-reporting.txt`; approved text never goes back to Whisper for an answer.
+
+A combined role whose first line is exactly `Pheme incident intake v1` opts into deterministic intake. Each conversation keeps its own copied caller evidence, fixed question order and draft revision independently of the bounded model history. A wording check applies only to the delivered current excerpt; corrections invalidate it. Reset clears intake state and successful history. Roles without the marker retain generic behavior, and isolated Tests and finish-time title generation remain generic. Intake grants no save, retrieval or dispatch operations. See [the contract and evaluation commands](../incident-intake-quality.md).
 
 The single local TUI Models page (`m`) covers both manifest purposes and displays the remembered voice/reply pair. Enter confirms a network download for missing artifacts; available models prepare and select locally, with automatic persistence. A different reply selection verifies files/roles and automatically relaunches the TUI for activation. Chat requires both selected local models to be ready. `o` opens a reply-only `.txt` Roles picker, `p` previews the combined role/hash, and `g` shows an optional server command. Downloads remain inline below model information, including terminal status. These controls do not change the HTTP contract or an active server.
 
@@ -171,6 +185,6 @@ Series keys include metric name, unit, source and scope. Summary fields include 
 
 Metric pages contain at most 256 events and retain a 10,000-event conversation journal. `after` is an unsigned 64-bit cursor. Repeated reads do not drain other observers or the existing metrics batch exporter. When `truncated` is true, clients can retrieve each run's retained events independently; aggregates survive raw-event eviction. Source metadata may use `X-Audio-Source` (at most 512 bytes through Go). Start retries use the same `Idempotency-Key` semantics as web turns.
 
-Finish uses a trusted title instruction with bounded excerpts of **completed** exchanges, a maximum 32 output tokens and a 20-second deadline. Its `title` maintenance run and truncation counts stay separate from STT/reasoning runs. A failed/empty/invalid summary preserves the date/time placeholder; `title_status` records failure. Title generation grants no report tools or authorization. Active conversations accept at most 32 turns and cannot be reopened after finish. At most 100 server conversations are retained, evicting oldest finished entries; active entries are protected.
+Finish uses a trusted generic title instruction with bounded excerpts of **completed** exchanges, a maximum 32 output tokens and a 20-second deadline. It bypasses intake planning and the two-sentence reply contract. Its `title` maintenance run and truncation counts stay separate from STT/reasoning runs. A failed/empty/invalid summary preserves the date/time placeholder; `title_status` records failure. Title generation grants no report tools or authorization. Active conversations accept at most 32 turns and cannot be reopened after finish. At most 100 server conversations are retained, evicting oldest finished entries; active entries are protected.
 
 The TUI explicitly sends unchanged/edited transcript text with Enter; typed Enter sends and approves atomically through the local Rust runtime without STT or review. Local channel notifications and authoritative snapshots recover updates without regeneration. HTTP conversation endpoints remain compatible reviewed inputs for external clients. Quitting cancels only this console's pending turn. Local version 2 JSON archives preserve history for inspection, with whole-conversation eviction and legacy version 1 migration; they do not restore authoritative runtime sessions after restart. Incident report confirmation/storage/retrieval remains planned.

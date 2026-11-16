@@ -51,6 +51,54 @@ test('audio is persisted and reviewed before reasoning; reset calls Pheme', asyn
   await assert.rejects(chat.getTurn(id), /read-only/);
 });
 
+test('reviewed voice messages notify the composer when accepted and completed', async () => {
+  let release!: (value: string) => void;
+  const { chat, calls } = fixture({ respond: (text, id) => {
+    calls.push(`reply:${text}:${id}`);
+    return new Promise(resolve => { release = resolve; });
+  } });
+  let id = '';
+  await chat.startTurn({ uri: 'file:///app/audio.wav' }, event => { id = String(event.data.turn_id); });
+  const events: { event: string; data: Record<string, unknown> }[] = [];
+  const submission = chat.submitTurn(id, '  Smoke at west entrance  ', event => events.push(event));
+  assert.deepEqual(events, [{ event: 'question.approved', data: { turn_id: id, text: 'Smoke at west entrance' } }]);
+  const generating = await chat.getTurn(id);
+  assert.equal(generating.status, 'generating');
+  assert.equal(generating.approvedText, 'Smoke at west entrance');
+  release(ok({ execution_location: 'device', reply: { run_id: 'r2', text: 'Is anyone injured?' } }));
+  await submission;
+  assert.deepEqual(events[1], { event: 'reply.completed', data: { turn_id: id, text: 'Is anyone injured?', run_id: 'r2' } });
+  assert.equal(events.length, 2);
+  assert.equal((await chat.getTurn(id)).status, 'completed');
+  assert.deepEqual(calls, ['file:///app/audio.wav', 'persist', `reply:Smoke at west entrance:${id}`]);
+});
+
+test('rejected voice approval leaves the transcript awaiting review without acceptance events', async () => {
+  const { chat, calls } = fixture();
+  let id = '';
+  await chat.startTurn({ uri: 'file:///app/audio.wav' }, event => { id = String(event.data.turn_id); });
+  const events: string[] = [];
+  const listener = (event: { event: string }) => { events.push(event.event); };
+  await assert.rejects(chat.submitTurn('stale-turn', 'Edited transcript', listener), /no longer awaiting/);
+  await assert.rejects(chat.submitTurn(id, '   ', listener), /no longer awaiting/);
+  assert.deepEqual(events, []);
+  assert.equal((await chat.getTurn(id)).status, 'awaiting_review');
+  assert.equal((await chat.getTurn(id)).transcript, 'Smoke at entrance');
+  assert.deepEqual(calls, ['file:///app/audio.wav', 'persist']);
+});
+
+test('reviewed voice reply failures notify the screen and retain the submitted text', async () => {
+  const { chat } = fixture({ respond: async () => { throw new Error('Local inference failed.'); } });
+  let id = '';
+  await chat.startTurn({ uri: 'file:///app/audio.wav' }, event => { id = String(event.data.turn_id); });
+  const events: string[] = [];
+  await assert.rejects(chat.submitTurn(id, 'Smoke at west entrance', event => events.push(event.event)), /Local inference failed/);
+  assert.deepEqual(events, ['question.approved', 'turn.failed']);
+  const failed = await chat.getTurn(id);
+  assert.equal(failed.status, 'failed');
+  assert.equal(failed.approvedText, 'Smoke at west entrance');
+});
+
 test('typed messages invoke native reasoning directly, without an HTTP service', async () => {
   const { chat, calls } = fixture();
   const events: string[] = [];

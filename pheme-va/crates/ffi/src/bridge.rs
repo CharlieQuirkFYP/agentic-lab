@@ -156,14 +156,14 @@ impl PhemeVaHandle {
         }
     }
 
-    pub(crate) fn begin_run(&self) -> Result<Lease<'_>, BridgeError> {
+    pub(crate) fn begin_run(&self, request_id: Option<String>) -> Result<Lease<'_>, BridgeError> {
         let mut state = self.lock();
         ensure_idle(&state)?;
         let engine = state
             .engine
             .take()
             .ok_or_else(|| BridgeError::new(UNAVAILABLE, "configure and load a model first"))?;
-        let run_id = next_run_id();
+        let run_id = request_id.unwrap_or_else(next_run_id);
         state.phase = Phase::Running;
         state.active_run = Some(run_id.clone());
         state.last_failure = None;

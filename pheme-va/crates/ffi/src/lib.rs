@@ -125,13 +125,78 @@ pub unsafe extern "C" fn pheme_va_transcribe_v1(
     channels: u16,
     output: *mut *mut c_char,
 ) -> i32 {
+    transcribe_call(
+        handle,
+        samples,
+        sample_count,
+        sample_rate,
+        channels,
+        None,
+        output,
+    )
+}
+
+/// Additive admission API. The caller's unique attempt identifier is the run
+/// identity in status, results, failures and every event, from admission onward.
+/// # Safety
+/// Same requirements as v1; request_id must reference request_id_length readable
+/// bytes for the duration of the call. Identifiers are 1-128 ASCII letters,
+/// digits, underscores or hyphens. The host is responsible for uniqueness.
+#[no_mangle]
+pub unsafe extern "C" fn pheme_va_transcribe_v2(
+    handle: *mut PhemeVaHandle,
+    samples: *const f32,
+    sample_count: usize,
+    sample_rate: u32,
+    channels: u16,
+    request_id: *const u8,
+    request_id_length: usize,
+    output: *mut *mut c_char,
+) -> i32 {
+    let identity = if request_id.is_null() || !(1..=128).contains(&request_id_length) {
+        None
+    } else {
+        let bytes = std::slice::from_raw_parts(request_id, request_id_length);
+        bytes
+            .iter()
+            .all(|b| b.is_ascii_alphanumeric() || *b == b'_' || *b == b'-')
+            .then(|| String::from_utf8_lossy(bytes).into_owned())
+    };
+    match identity {
+        Some(identity) => transcribe_call(
+            handle,
+            samples,
+            sample_count,
+            sample_rate,
+            channels,
+            Some(identity),
+            output,
+        ),
+        None => json_call::<serde_json::Value>(output, || {
+            Err(BridgeError::new(
+                INVALID_ARGUMENT,
+                "request_id must contain 1-128 ASCII letters, digits, underscores or hyphens",
+            ))
+        }),
+    }
+}
+
+unsafe fn transcribe_call(
+    handle: *mut PhemeVaHandle,
+    samples: *const f32,
+    sample_count: usize,
+    sample_rate: u32,
+    channels: u16,
+    request_id: Option<String>,
+    output: *mut *mut c_char,
+) -> i32 {
     json_call(output, || {
         let handle = live_handle(handle)?;
         // Reject shape and absolute allocation limits before admitting or dereferencing audio.
         validate_audio_shape(samples, sample_count, sample_rate, channels, 120)?;
         let mut run_id = None;
         let operation = catch_unwind(AssertUnwindSafe(|| {
-            let mut lease = handle.begin_run()?;
+            let mut lease = handle.begin_run(request_id)?;
             run_id = lease.run_id();
             let operation = (|| {
                 validate_audio_shape(

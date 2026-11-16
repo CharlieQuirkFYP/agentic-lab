@@ -6,6 +6,7 @@ import { defineConfig } from "vite";
 export default defineConfig({
   plugins: [react(), tailwindcss()],
   server: {
+    fs: { allow: [".."] },
     proxy: {
       "/api/v1": { target: "http://127.0.0.1:8080", ws: true },
     },

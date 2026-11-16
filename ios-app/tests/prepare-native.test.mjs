@@ -45,16 +45,45 @@ test('Expo packages both production frameworks, rejects stale inputs, and bundle
     put('ios-app/modules/pheme-native/ios/Frameworks/PhemeVA.xcframework/ios-arm64/libffi.a', 'damaged');
     assert.throws(() => prepareNative(app, true), /stale/);
     prepareNative(app);
-    put('pheme-va/models/manifest.toml', [['whisper-large-v3-turbo', 'transcript/test.bin'], ['qwen2.5-1.5b-instruct-q4-k-m', 'reply/test.gguf']].map(([id, path]) =>
-      `[[models]]\nid = "${id}"\nmodel = "${path}"\nsha256 = "${sha('abc')}"\nmodel_size_bytes = 3\n`).join('\n'));
-    put('pheme-va/models/transcript/test.bin', 'abc'); put('pheme-va/models/reply/test.gguf', 'abc');
+    const models = [['whisper-large-v3-turbo', 'transcript/test.bin'], ['whisper-tiny.en', 'transcript/tiny.bin'], ['qwen2.5-1.5b-instruct-q4-k-m', 'reply/legacy.gguf'], ['qwen3-4b-instruct-2507-q4-k-m', 'reply/test.gguf']];
+    const manifest = models.map(([id, path]) => {
+      put(`pheme-va/models/${path}`, id);
+      return `[[models]]\nid = "${id}"\nmodel = "${path}"\nsha256 = "${sha(id)}"\nmodel_size_bytes = ${id.length}\n` +
+        `purpose = "${path.startsWith('transcript') ? 'transcript' : 'reply'}"\nruntime = "${path.startsWith('transcript') ? 'whispercpp' : 'llama.cpp'}"\n` +
+        `download_id = "${id}"\nrepository = "fixtures/models"\nrevision = "${'a'.repeat(40)}"\nlicense = "mit"\nlicense_file = "licenses/MIT.txt"\nlicense_sha256 = "${sha('fixture license')}"\nlicense_url = "https://example.test/license"\n`;
+    }).join('\n');
+    put('pheme-va/models/manifest.toml', manifest);
+    put('pheme-va/models/licenses/MIT.txt', 'fixture license');
     put('pheme-va/roles/incident-reporting.txt', 'Ask, do not invent.');
+    put('ios-app/modules/pheme-native/ios/Resources/PhemeModels/legacy.gguf', 'abc');
     prepareNative(app, false, true); prepareNative(app, true);
     const resource = 'ios-app/modules/pheme-native/ios/Resources/PhemeModels';
-    assert.equal(JSON.parse(readFileSync(join(root, resource, 'catalog.json'), 'utf8')).length, 2);
+    const catalog = JSON.parse(readFileSync(join(root, resource, 'catalog.json'), 'utf8'));
+    assert.deepEqual(catalog.map(entry => [entry.purpose, entry.relativePath]), [['transcription', 'test.bin'], ['reasoning', 'test.gguf']]);
+    assert.equal(existsSync(join(root, resource, 'legacy.gguf')), false);
+    assert.match(readFileSync(join(root, resource, 'MODEL-NOTICES.txt'), 'utf8'), /qwen3-4b-instruct-2507/);
+    put('pheme-va/models/manifest.toml', manifest.replace('id = "qwen3-4b-instruct-2507-q4-k-m"', 'id = "other-reply"'));
+    assert.throws(() => prepareNative(app, true), /Missing pinned model: qwen3/);
+    put('pheme-va/models/manifest.toml', manifest);
     put(`${resource}/test.gguf`, 'bad');
     assert.throws(() => prepareNative(app, true), /damaged/);
     prepareNative(app, false, true);
+    const selection = { transcription: ['whisper-large-v3-turbo', 'whisper-tiny.en'], reasoning: ['qwen3-4b-instruct-2507-q4-k-m', 'qwen2.5-1.5b-instruct-q4-k-m'] };
+    prepareNative(app, false, true, selection);
+    prepareNative(app); prepareNative(app, true);
+    const multiple = JSON.parse(readFileSync(join(root, resource, 'catalog.json'), 'utf8'));
+    assert.equal(multiple.filter(entry => entry.purpose === 'reasoning').length, 2);
+    assert.equal(multiple.filter(entry => entry.purpose === 'transcription').length, 2);
+    assert.deepEqual(JSON.parse(readFileSync(join(root, resource, 'selection.json'), 'utf8')), selection);
+    put(`${resource}/MIT.txt`, 'stale license');
+    assert.throws(() => prepareNative(app, true), /MIT.txt/);
+    prepareNative(app);
+    put(`${resource}/extra.gguf`, 'extra');
+    assert.throws(() => prepareNative(app, true), /Unexpected extra/);
+    prepareNative(app);
+    put('pheme-va/models/licenses/MIT.txt', 'changed source license');
+    assert.throws(() => prepareNative(app, true), /damaged model license/);
+    put('pheme-va/models/licenses/MIT.txt', 'fixture license');
     prepareNative(app, false, false); prepareNative(app, true);
     assert.equal(existsSync(join(root, resource)), false);
     const exports = readFileSync(join(root, reply, 'aarch64-apple-ios-exports.txt'), 'utf8');

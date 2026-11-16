@@ -40,17 +40,27 @@ pub struct ConversationConfig {
     pub max_output_tokens: u32,
     pub context_size: u32,
     pub temperature: f32,
+    pub top_k: i32,
+    pub top_p: f32,
+    pub min_p: f32,
+    /// None requests a native random seed; evaluations can pin it explicitly.
+    pub seed: Option<u32>,
 }
 
 impl Default for ConversationConfig {
     fn default() -> Self {
         Self {
             max_input_chars: 12_000,
-            max_output_chars: 4_000,
+            max_output_chars: 800,
             max_history_turns: 6,
-            max_output_tokens: 512,
+            max_output_tokens: 128,
             context_size: 4_096,
-            temperature: 0.2,
+            // Qwen3-4B-Instruct-2507's published non-thinking baseline.
+            temperature: 0.7,
+            top_k: 20,
+            top_p: 0.8,
+            min_p: 0.0,
+            seed: None,
         }
     }
 }
@@ -74,6 +84,17 @@ impl ConversationConfig {
         if !self.temperature.is_finite() || self.temperature < 0.0 {
             return Err(ConversationError::InvalidConfig(
                 "temperature must be finite and non-negative".into(),
+            ));
+        }
+        if self.top_k < 0
+            || !self.top_p.is_finite()
+            || !(0.0..=1.0).contains(&self.top_p)
+            || self.top_p == 0.0
+            || !self.min_p.is_finite()
+            || !(0.0..=1.0).contains(&self.min_p)
+        {
+            return Err(ConversationError::InvalidConfig(
+                "invalid top-k, top-p or min-p sampling parameters".into(),
             ));
         }
         Ok(())
@@ -234,6 +255,39 @@ pub fn validate_response(text: &str, config: &ConversationConfig) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sampling_defaults_and_legacy_config_are_valid_and_bad_probabilities_rejected() {
+        let legacy: ConversationConfig = serde_json::from_str("{\"temperature\":0.2}").unwrap();
+        assert_eq!(legacy.temperature, 0.2);
+        assert_eq!(legacy.top_k, 20);
+        assert_eq!(legacy.top_p, 0.8);
+        assert_eq!(legacy.min_p, 0.0);
+        assert_eq!(legacy.seed, None);
+        legacy.validate().unwrap();
+        for value in [0.0, f32::NAN, 1.1] {
+            assert!(ConversationConfig {
+                top_p: value,
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
+        for value in [f32::NAN, -0.1, 1.1] {
+            assert!(ConversationConfig {
+                min_p: value,
+                ..Default::default()
+            }
+            .validate()
+            .is_err());
+        }
+        assert!(ConversationConfig {
+            top_k: -1,
+            ..Default::default()
+        }
+        .validate()
+        .is_err());
+    }
     use std::sync::atomic::Ordering;
 
     fn message(role: ConversationRole, content: &str) -> ConversationMessage {

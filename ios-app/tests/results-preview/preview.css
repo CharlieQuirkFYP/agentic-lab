@@ -1,0 +1,5 @@
+html, body, #root { margin: 0; width: 100%; height: 100%; }
+body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f7f8fa; }
+#root { display: flex; flex-direction: column; }
+#fixture-banner { flex: 0 0 auto; box-sizing: border-box; padding: 7px 12px; color: #634714; background: #fff1c4; font-size: 10px; line-height: 15px; letter-spacing: .35px; text-align: center; }
+#screen { display: flex; flex: 1; min-height: 0; }

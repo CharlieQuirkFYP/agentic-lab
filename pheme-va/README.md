@@ -53,6 +53,7 @@ Model weights are not committed. The local `models/` directory contains the chec
 - A ratatui-based local TUI with remembered manifest model selection, worker-owned model switching, WAV browsing, live microphone capture, local voice/typed Chat, metrics graphs, and structured logs.
 - An HTTP host with stateless WAV transcription and web-owned reviewed turns, streamed replies, cancellation/reset, recovery/inspection, and isolated reply tests.
 - A separate local GGUF reply runtime with native cancellation, fresh per-call KV state, and a registry-bound incident role. Qwen2.5-1.5B-Instruct Q4_K_M is the starter model, not a validated deployment choice.
+- Opt-in deterministic incident intake through the bundled role's first-line marker `Pheme incident intake v1`, with copied caller evidence, fixed question selection, revision-bound wording review, and buffered/allowlist-validated two-sentence replies of at most 45 words. Rejected candidates use a deterministic fallback; backend failures/cancellation remain errors. Custom roles, isolated Tests and title generation retain generic behavior. See [intake behavior, configuration and quality checks](../docs/incident-intake-quality.md).
 - A TUI workspace with alphabetic Chat/Web/Tests/Models/Telemetry navigation, turn-bound transcript editing, one manifest-backed Models page, inline local downloads, automatic model-selection persistence, reply role choices, combined prompt preview/hash, and remembered automatic voice replies with playback status.
 - A Go-delegated React voice console with complete-turn WAV capture, explicit review, real reply streaming, and local-voice-only browser speech synthesis.
 - An Expo/React Native iPhone app with native PCM/WAV input, local ASR/reasoning readiness, transcript review, on-device replies and system speech playback. Its native bridges live in `ios-app/modules/pheme-native/ios/`; no separate SwiftUI app is maintained.
@@ -189,7 +190,9 @@ Press **v** in Chat to toggle **Voice replies ON/OFF**; the setting is remembere
 
 `--server-url` without a value uses Go on port 8080 for Web inspection/approval only; Chat and Tests stay local with or without it. Separate server and TUI processes do not share loaded weights or sessions. Remembered TUI selections live in its XDG config. The server reads the legacy `server_stt_model`/`server_reply_model` settings unless explicit model flags override each slot; local voice selection updates `selected_stt_model`. `--startup-choices <file>` supplies dedicated TOML choices, including optional ordered `reply_prompt_files`. Model-ID/path flags conflict rather than silently override one another. See [role composition and startup precedence](#reply-roles-and-startup-precedence); an active server must restart to apply model/prompt changes.
 
-Defaults: one active inference, one pending web turn, six successful history pairs, 32 retained turn results, 300-second review, 120-second reply generation, 180-second STT deadline. Failed/cancelled replies are not successful history. WAV/STT is complete-turn, not partial streaming; only reply text streams, with TTS after completion. The STT adapter has no native cancellation boundary yet: cancelled/timed-out STT keeps compute reserved until it settles. Restart loses web history; explicit Reset clears web history, not isolated tests. Retry protection retains at most 256 lifetime keys; a full ledger rejects new keys rather than duplicate inference.
+Defaults: one active inference, one pending web turn, six successful history pairs, 32 retained turn results, 300-second review, 120-second reply generation, 180-second STT deadline. Shared reasoning budgets are 4,096 context tokens, 128 output tokens, 800 output characters and 12,000 aggregate input characters. Qwen3 sampling defaults are temperature `0.7`, top-k `20`, top-p `0.8`, min-p `0`, with an optional seed. These are development settings; see [their source and evaluation limits](../docs/incident-intake-quality.md#shared-generation-configuration).
+
+Failed/cancelled replies are not successful history. WAV/STT is complete-turn, not partial streaming; generic reply text streams, while intake buffers candidate text until validation. TTS uses completed delivered text. The STT adapter has no native cancellation boundary yet: cancelled/timed-out STT keeps compute reserved until it settles. Restart loses web history; explicit Reset clears web history and intake state, not isolated tests. Retry protection retains at most 256 lifetime keys; a full ledger rejects new keys rather than duplicate inference.
 
 These are trusted development conversations with in-memory runtime context and read-only local archives. Confirmed incident reports and persistent resumable sessions remain planned. Both listeners default to loopback; network exposure needs HTTPS, explicit allowed origins and external authentication/access controls. Neither the web nor any HTTP readiness/inference endpoint downloads/selects models. See [voice API](../docs/api/voice.md) and [cross-service tests](../tests/README.md).
 
@@ -233,6 +236,11 @@ Relative paths in `reply_prompt_files` resolve from the choices file's directory
 3. The selected reply entry's manifest `system_prompt` when no applicable role choice exists.
 
 Raw **`--reply-path` requires explicit `--prompt-file` or `--system-prompt`** and never inherits saved/manifest roles. The server validates/loads the combined role once and reports ordered source paths and its hash at startup. Missing/invalid roles fail explicitly, never fall back to generic instructions. File edits and model/role choices require restart; restart loses in-memory web history. User requests cannot select paths, rewrite system instructions or authorize report tools.
+
+The bundled role opts into intake only when `Pheme incident intake v1` is the
+first line of the combined role. Roles without it keep generic conversation
+behavior. Intake review confirms the current wording; no report is saved or help
+dispatched. See [the intake contract](../docs/incident-intake-quality.md).
 
 ### Stateless development HTTP service
 
@@ -302,6 +310,8 @@ transport is not exposed by Expo. Native metrics are currently local diagnostics
 
 From `../ios-app/`, run `npm run native:bundle`, `npx expo prebuild --platform ios`,
 then `npm run ios` to package local Whisper/Qwen weights with Expo.
+After Rust changes, first rebuild both XCFrameworks with `npm run native:build`,
+then repeat bundled preparation and install the rebuilt app on the phone.
 Qwen uses a separate dynamic Rust framework
 with private GGML symbols, not the desktop child-process worker. Model files
 remain ignored. See the [deployment guide](../docs/iphone-deployment.md).

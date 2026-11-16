@@ -17,6 +17,8 @@ import (
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metrics"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/metricsbridge"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/pheme"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/phonemetrics"
+	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/phoneobservations"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/service"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/storage"
 	"github.com/CharlieQuirkFYP/agentic-lab/api/internal/voicehistory"
@@ -58,6 +60,13 @@ func run() error {
 
 	router := gin.Default()
 	dashboardEvents := handler.NewDashboardEventHub()
+	phoneMetricsHandler := handler.NewPhoneMetricsHandler(phonemetrics.NewStore(database),
+		func() { dashboardEvents.Publish("metrics.updated") })
+	phoneMetricsHandler.RegisterRoutes(router.Group("/api/v1/phone", benchmarkCORS))
+	phoneObservationsHandler := handler.NewPhoneObservationsHandler(
+		phoneobservations.NewService(phoneobservations.NewStore(database)),
+		func() { dashboardEvents.Publish("metrics.updated") })
+	phoneObservationsHandler.RegisterRoutes(router.Group("/api/v1/phone", benchmarkCORS))
 	voiceService := service.NewVoiceService(phemeClient)
 	voiceHandler := handler.NewVoiceHandler(voiceService)
 	voiceSessionStore := voicehistory.NewStore(database)

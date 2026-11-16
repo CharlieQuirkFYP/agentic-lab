@@ -1,15 +1,9 @@
-import { createHash } from 'node:crypto';
-import { closeSync, cpSync, existsSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { digest, parseModelOptions, preparedSelection, prepareModelResources } from './model-bundle.mjs';
 
 const app = resolve(dirname(fileURLToPath(import.meta.url)), '..');
-const digest = path => {
-  const hash = createHash('sha256'), buffer = Buffer.alloc(1024 * 1024), fd = openSync(path, 'r');
-  try { let size; while ((size = readSync(fd, buffer)) > 0) hash.update(buffer.subarray(0, size)); }
-  finally { closeSync(fd); }
-  return hash.digest('hex');
-};
 const slices = [['ios-arm64', 'aarch64-apple-ios'], ['ios-arm64-simulator', 'aarch64-apple-ios-sim']];
 
 function sourceFiles(root, directory = 'crates') {
@@ -27,7 +21,7 @@ function verifySources(root, metadata, header) {
   }
 }
 
-export function prepareNative(appRoot = app, check = false, bundleModels) {
+export function prepareNative(appRoot = app, check = false, bundleModels, modelSelection = preparedSelection(appRoot)) {
   const repo = resolve(appRoot, '..');
   const root = join(repo, 'pheme-va');
   const built = join(root, 'target/ios/whisper');
@@ -93,40 +87,7 @@ export function prepareNative(appRoot = app, check = false, bundleModels) {
   }
   const resource = join(output, 'Resources/PhemeModels');
   if (includeModels) {
-    const manifest = readFileSync(join(root, 'models/manifest.toml'), 'utf8').split(/^\[\[models\]\]\s*$/m);
-    const catalog = [];
-    const files = [];
-    for (const [id, purpose] of [['whisper-large-v3-turbo', 'transcription'], ['qwen2.5-1.5b-instruct-q4-k-m', 'reasoning']]) {
-      const block = manifest.find(text => text.includes(`id = "${id}"`));
-      if (!block) throw new Error(`Missing pinned model: ${id}`);
-      const filename = block.match(/^model = "([^"]+)"$/m)[1];
-      const sha256 = block.match(/^sha256 = "([a-f0-9]{64})"$/m)[1];
-      const bytes = Number(block.match(/^model_size_bytes = (\d+)$/m)[1]);
-      const source = join(root, 'models', filename);
-      const name = filename.split('/').at(-1);
-      const destination = join(resource, name);
-      const artifact = check ? destination : source;
-      if (!existsSync(artifact) || statSync(artifact).size !== bytes || digest(artifact) !== sha256) {
-        throw new Error(`Missing or damaged ${id}. Run npm run native:bundle to download/verify and package weights.`);
-      }
-      catalog.push({ model: { id: sha256, name, sha256, bytes }, purpose, relativePath: name });
-      files.push([source, destination]);
-    }
-    const role = readFileSync(join(root, 'roles/incident-reporting.txt'));
-    const catalogJSON = JSON.stringify(catalog, null, 2) + '\n';
-    if (check) {
-      if (readFileSync(join(resource, 'catalog.json'), 'utf8') !== catalogJSON ||
-          !readFileSync(join(resource, 'incident-reporting.txt')).equals(role)) throw new Error('Bundled catalog/role is stale.');
-      if (!existsSync(join(resource, 'MODEL-NOTICES.txt'))) throw new Error('Missing model notices.');
-    } else {
-      rmSync(resource, { recursive: true, force: true });
-      mkdirSync(resource, { recursive: true });
-      for (const [source, destination] of files) cpSync(source, destination);
-      writeFileSync(join(resource, 'catalog.json'), catalogJSON);
-      writeFileSync(join(resource, 'incident-reporting.txt'), role);
-      writeFileSync(join(resource, 'MODEL-NOTICES.txt'),
-        'Development baselines, not validated phone selections.\nWhisper: ggerganov/whisper.cpp, MIT.\nQwen2.5-1.5B-Instruct: Qwen, Apache-2.0.\nSee the repository model manifest for pinned source revisions and checksums.\nInclude full upstream licences before redistribution.\n');
-    }
+    prepareModelResources(root, resource, modelSelection, check);
   } else if (check && existsSync(resource)) {
     throw new Error('Unexpected model resources in a weight-free build.');
   } else if (!check) {
@@ -135,14 +96,15 @@ export function prepareNative(appRoot = app, check = false, bundleModels) {
   if (!check) {
     // Remove old copied Swift sources; only module-owned sources are compiled.
     rmSync(join(output, 'Generated'), { recursive: true, force: true });
-    writeFileSync(prepared, JSON.stringify({ bundledModels: includeModels }) + '\n');
+    writeFileSync(prepared, JSON.stringify({ bundledModels: includeModels, ...(includeModels ? { modelSelection } : {}) }) + '\n');
   }
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   try {
-    prepareNative(app, process.argv.includes('--check'),
-      process.argv.includes('--bundle-models') ? true : process.argv.includes('--without-models') ? false : undefined);
+    const options = parseModelOptions(process.argv.slice(2), process.env, preparedSelection(app));
+    if (options.download) throw new Error('Use npm run native:bundle to download models.');
+    prepareNative(app, options.check, options.bundleModels, options.selection);
     console.log('Expo Pheme transcription/reasoning frameworks and resource selection verified.');
   }
   catch (error) { console.error(error.message); process.exitCode = 1; }

@@ -75,6 +75,39 @@ CREATE TABLE IF NOT EXISTS voice_metric_batches (
  payload TEXT NOT NULL,
  PRIMARY KEY (run_id, sequence_number)
 );
+CREATE TABLE IF NOT EXISTS phone_observations (
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ installation_id TEXT NOT NULL,
+ record_id TEXT NOT NULL,
+ producer_stream_id TEXT NOT NULL,
+ record_sequence INTEGER NOT NULL,
+ kind TEXT NOT NULL,
+ entity_id TEXT NOT NULL,
+ revision INTEGER NOT NULL,
+ timestamp_ms INTEGER NOT NULL,
+ conversation_id TEXT NOT NULL,
+ sweep_id TEXT NOT NULL,
+ configuration_id TEXT NOT NULL,
+ received_at_ms INTEGER NOT NULL,
+ device TEXT NOT NULL,
+ payload TEXT NOT NULL,
+ UNIQUE(installation_id,record_id),
+ UNIQUE(installation_id,producer_stream_id,record_sequence),
+ UNIQUE(installation_id,kind,entity_id,revision)
+);
+CREATE INDEX IF NOT EXISTS phone_observations_conversation ON phone_observations(installation_id,conversation_id,id);
+CREATE INDEX IF NOT EXISTS phone_observations_sweep ON phone_observations(installation_id,sweep_id,id);
+CREATE INDEX IF NOT EXISTS phone_observations_configuration ON phone_observations(installation_id,configuration_id,id);
+CREATE INDEX IF NOT EXISTS phone_observations_time ON phone_observations(timestamp_ms,id);
+CREATE TABLE IF NOT EXISTS phone_observation_metric_identities (
+ installation_id TEXT NOT NULL,
+ attempt_id TEXT NOT NULL,
+ runtime_session_id TEXT NOT NULL,
+ run_id TEXT NOT NULL,
+ sequence_number INTEGER NOT NULL,
+ payload TEXT NOT NULL,
+ PRIMARY KEY(installation_id,attempt_id,runtime_session_id,run_id,sequence_number)
+);
 `)
 	if err != nil {
 		_ = db.Close()

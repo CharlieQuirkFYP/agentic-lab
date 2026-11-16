@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - "web/**"
+      - "shared/phone-benchmarks/**"
       - ".github/workflows/ci-web.yml"
   workflow_dispatch:
 
@@ -41,6 +42,9 @@ jobs:
 
       - name: Run tests
         run: npm test
+
+      - name: Test shared phone benchmark reports
+        run: node --test ../shared/phone-benchmarks/tests/*.test.ts
 
       - name: Run lint
         run: npm run lint

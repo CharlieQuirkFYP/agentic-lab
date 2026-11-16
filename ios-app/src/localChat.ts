@@ -1,14 +1,23 @@
 import type { createPhemeClient } from '../modules/pheme-native/src/client.ts';
-import type { LocalResult } from '../modules/pheme-native/src/PhemeNative.types.ts';
+import type { LocalReply, LocalResult } from '../modules/pheme-native/src/PhemeNative.types.ts';
 import type { Readiness, Turn } from './types.ts';
 
 type Client = ReturnType<typeof createPhemeClient>;
 type Event = { event: string; data: Record<string, unknown> };
 type Listener = (event: Event) => void;
+export interface LocalChatObservations {
+  beginManualTurn(inputKind: 'text' | 'audio'): Promise<string>;
+  manualAttempt<T>(turnID: string, stage: 'transcription' | 'reasoning', work: (attemptID: string) => Promise<T>, signal?: AbortSignal): Promise<T>;
+  finishManualTurn(turnID: string, status: 'succeeded' | 'failed' | 'cancelled' | 'interrupted'): void;
+  closeManualConversation(reason?: string): void;
+  interrupt(reason?: string): Promise<void>;
+  withOwnership<T>(owner: 'manual', work: () => Promise<T>): Promise<T>;
+}
 
 // UI turn state only. Successful reasoning history and response validation stay
 // in Pheme. No network transport or remote fallback exists in this adapter.
-export function createLocalChat(client: Client, persist: (result: LocalResult) => void) {
+export function createLocalChat(client: Client, persist: (result: LocalResult, turnID?: string) => void,
+  observeReply?: (result: LocalReply, turnID: string) => void, observations?: LocalChatObservations) {
   let current: Turn | null = null;
   let working = false;
   let cancelled = false;
@@ -28,11 +37,14 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
     if (!current) throw new Error('No local turn to approve.');
     current = { ...current, status: 'generating', approvedText: text };
     emit(listener, 'question.approved', { text });
-    const result = await client.respond(text, current.id);
+    const turnID = current.id;
+    const result = observations ? await observations.manualAttempt(turnID, 'reasoning', attemptID => client.respond(text, turnID, attemptID)) : await client.respond(text, turnID);
     if (cancelled) throw new Error('Local turn cancelled.');
     if (result.execution_location !== 'device' || !result.reply.run_id || !result.reply.text.trim()) {
       throw new Error('Invalid on-device reply.');
     }
+    observeReply?.(result, current.id);
+    observations?.finishManualTurn(current.id, 'succeeded');
     current = { ...current, status: 'completed', reply: result.reply.text };
     emit(listener, 'reply.completed', { text: result.reply.text, run_id: result.reply.run_id });
   }
@@ -40,10 +52,15 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
   async function run(work: () => Promise<void>, listener: Listener) {
     return exclusive(async () => {
       cancelled = false;
-      try { await work(); }
+      try { if (observations) await observations.withOwnership('manual', work); else await work(); }
       catch (error) {
         const message = error instanceof Error ? error.message : 'Local inference failed.';
-        if (current) current = { ...current, status: cancelled ? 'cancelled' : 'failed', error: message };
+        const code = (error as { code?: string }).code;
+        const interrupted = code === 'interrupted';
+        if (current) {
+          observations?.finishManualTurn(current.id, interrupted ? 'interrupted' : cancelled || code === 'cancelled' ? 'cancelled' : 'failed');
+          current = { ...current, status: cancelled || code === 'cancelled' || interrupted ? 'cancelled' : 'failed', error: message };
+        }
         emit(listener, cancelled ? 'turn.cancelled' : 'turn.failed', { error: { message } });
         if (!cancelled) throw error;
       }
@@ -52,7 +69,7 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
 
   return {
     async getReadiness(): Promise<Readiness> {
-      return exclusive(async () => {
+      const prepare = async () => {
         let state = await client.open();
         if (!state.snapshot.ready || !state.model) {
           const models = await client.listModels();
@@ -73,7 +90,8 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
           reply: { name: state.reasoningModel?.name ?? 'Reasoning', ready: state.reasoning?.ready === true && !!state.reasoningModel },
           maxAudioSeconds: state.settings?.maxAudioSeconds ?? 120,
         };
-      });
+      };
+      return exclusive(() => observations ? observations.withOwnership('manual', prepare) : prepare());
     },
     async startTurn(input: string | { uri: string }, listener: Listener, signal?: AbortSignal) {
       if (signal?.aborted) throw new Error('Local turn cancelled.');
@@ -82,15 +100,17 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
       }
       current = { id: `local-${Date.now()}-${++sequence}`, status: 'transcribing', transcript: '',
         approvedText: null, reply: '', attachments: [] };
-      const abort = () => { cancelled = true; void client.cancel(); };
+      const abort = () => { cancelled = true; void (observations ? observations.interrupt('user_cancelled') : client.cancel()); };
       signal?.addEventListener('abort', abort, { once: true });
       try {
         await run(async () => {
+          if (observations) current = { ...current!, id: await observations.beginManualTurn(typeof input === 'string' ? 'text' : 'audio') };
+          if (cancelled) throw new Error('Local turn cancelled.');
           if (typeof input === 'string') { await reply(input, listener); return; }
-          const result = await client.transcribeFile(input.uri);
+          const result = observations ? await observations.manualAttempt(current!.id, 'transcription', attemptID => client.transcribeFile(input.uri, attemptID), signal) : await client.transcribeFile(input.uri);
           if (cancelled) throw new Error('Local turn cancelled.');
           if (result.execution_location !== 'device' || !result.transcription.run_id) throw new Error('Invalid local transcript.');
-          persist(result);
+          persist(result, current!.id);
           const text = result.transcription.result.text;
           if (!text.trim()) throw new Error('No speech detected. Record again.');
           current = { ...current!, status: 'awaiting_review', transcript: text };
@@ -98,11 +118,11 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
         }, listener);
       } finally { signal?.removeEventListener('abort', abort); }
     },
-    async submitTurn(id: string, text: string) {
+    async submitTurn(id: string, text: string, listener: Listener = () => {}) {
       if (!current || current.id !== id || current.status !== 'awaiting_review' || !text.trim()) {
         throw new Error('This local transcript is no longer awaiting review.');
       }
-      await run(() => reply(text.trim(), () => {}), () => {});
+      await run(() => reply(text.trim(), listener), listener);
     },
     async getTurn(id: string): Promise<Turn> {
       if (!current || current.id !== id) throw new Error('This saved chat is read-only. Start a new local conversation.');
@@ -111,11 +131,14 @@ export function createLocalChat(client: Client, persist: (result: LocalResult) =
     async cancelTurn(id: string) {
       if (current?.id !== id) return;
       cancelled = true;
-      await client.cancel();
-      if (!working) current = { ...current, status: 'cancelled' };
+      await (observations ? observations.interrupt('user_cancelled') : client.cancel());
+      if (!working) { observations?.finishManualTurn(id, 'cancelled'); current = { ...current, status: 'cancelled' }; }
     },
     async resetChat() {
-      await exclusive(async () => { await client.resetConversation(); current = null; });
+      await exclusive(async () => {
+        const reset = async () => { await client.resetConversation(); observations?.closeManualConversation('new_chat'); current = null; };
+        if (observations) await observations.withOwnership('manual', reset); else await reset();
+      });
     },
   };
 }
