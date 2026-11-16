@@ -7,6 +7,13 @@ struct PhemeLocalFailure: Error, LocalizedError {
     var errorDescription: String? { message }
 }
 
+struct PhemeAttemptFailure: Error, LocalizedError {
+    let underlying: Error
+    let attemptID: String
+    let sessionID: String
+    var errorDescription: String? { underlying.localizedDescription }
+}
+
 struct PhemeModel: Codable, Sendable {
     let id: String
     let name: String
@@ -37,10 +44,13 @@ struct PhemeSettings: Codable, Sendable {
 
 protocol PhemeEngine: Sendable {
     func configure(_ configuration: BridgeConfiguration) async throws -> BridgeSnapshot
-    func transcribe(_ audio: CapturedAudio) async throws -> Transcription
+    func transcribe(_ audio: CapturedAudio, attemptID: String?) async throws -> Transcription
     func inspect() throws -> BridgeSnapshot
     func poll() throws -> BridgePoll
     func close() throws
+}
+extension PhemeEngine {
+    func transcribe(_ audio: CapturedAudio) async throws -> Transcription { try await transcribe(audio, attemptID: nil) }
 }
 
 /// App-owned admission/lifetime wrapper. Engine work retains this runtime even
@@ -61,6 +71,11 @@ final class PhemeRuntime: @unchecked Sendable {
     private var currentModel: PhemeModel?
     private var currentReasoningModel: PhemeModel?
     private var settings: PhemeSettings?
+    let runtimeSessionID = UUID().uuidString
+    private var sampler: NativeResourceSampler!
+    private let displayLease = BenchmarkDisplayLease()
+    private var activeAttempt: NativeAttempt?
+    private var reasoningPromptHash: String?
 
     init(engine: any PhemeEngine, reasoning: (any PhemeReasoningEngine)? = nil,
          bundled: BundledModels = BundledModels(root: nil), directory: URL, appRoot: URL,
@@ -71,6 +86,7 @@ final class PhemeRuntime: @unchecked Sendable {
         self.directory = directory
         self.appRoot = appRoot.resolvingSymlinksInPath().standardizedFileURL
         self.decodeAudio = decodeAudio
+        self.sampler = NativeResourceSampler(sessionID: runtimeSessionID)
     }
 
     deinit { shutdown() }
@@ -93,7 +109,7 @@ final class PhemeRuntime: @unchecked Sendable {
             busy = false
             return false
         }
-        if shouldClose { try? engine.close(); reasoning?.close(); lock.withLock { busy = false } }
+        if shouldClose { try? engine.close(); reasoning?.close(); sampler.stop(); lock.withLock { busy = false } }
     }
 
     func cancel() {
@@ -102,6 +118,7 @@ final class PhemeRuntime: @unchecked Sendable {
     }
 
     func shutdown() {
+        displayLease.set(false)
         let shouldClose = lock.withLock { () -> Bool in
             if closed { return false }
             closed = true
@@ -111,7 +128,40 @@ final class PhemeRuntime: @unchecked Sendable {
             return true
         }
         reasoning?.cancel()
-        if shouldClose { try? engine.close(); reasoning?.close(); lock.withLock { busy = false } }
+        if shouldClose { try? engine.close(); reasoning?.close(); sampler.stop(); lock.withLock { busy = false } }
+    }
+
+    func setBenchmarkActive(_ active: Bool) throws {
+        try lock.withLock {
+            guard !closed else { throw PhemeLocalFailure(code: "closed", message: "Open the engine before starting a benchmark.") }
+            displayLease.set(active)
+        }
+    }
+
+    func suspend() { displayLease.set(false); cancel() }
+
+    func setResourceSamplingEnabled(_ enabled: Bool) throws {
+        _ = try admit(); defer { finish() }
+        sampler.setEnabled(enabled)
+    }
+
+    private func validateAttempt(_ attemptID: String?) throws {
+        guard let attemptID else { return }
+        guard !attemptID.isEmpty, attemptID.utf8.count <= 128,
+              attemptID.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) || $0 == 45 || $0 == 95 }) else {
+            throw PhemeLocalFailure(code: "invalid_attempt", message: "Attempt identity must contain 1-128 ASCII letters, digits, underscores or hyphens.")
+        }
+    }
+
+    private func beginObservation(_ attemptID: String?, stage: String) {
+        let identity = attemptID.map { NativeAttempt(attempt_id: $0, stage: stage, native_run_id: $0) }
+        lock.withLock { activeAttempt = identity }
+        sampler.begin(attempt: identity, stage: stage)
+    }
+
+    private func finishObservation() {
+        sampler.finish()
+        lock.withLock { activeAttempt = nil }
     }
 
     private func checkGeneration(_ admitted: Int) throws {
@@ -234,10 +284,13 @@ final class PhemeRuntime: @unchecked Sendable {
         lock.withLock { currentModel = nil; settings = nil }
         let snapshot = try await engine.configure(configuration)
         try checkGeneration(admitted)
-        lock.withLock { currentModel = model; settings = selected }
+        guard let effective = snapshot.configuration else { throw PhemeLocalFailure(code: "invalid_response", message: "Native ASR did not report its effective configuration.") }
+        let applied = PhemeSettings(modelID: selected.modelID, language: effective.language, dictionary: effective.dictionary,
+            threads: effective.threads, maxAudioSeconds: effective.max_audio_seconds, metricsEnabled: effective.metrics_enabled)
+        lock.withLock { currentModel = model; settings = applied }
         try await fileWork { [self] in
             try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
-            try JSONEncoder().encode(selected).write(to: directory.appendingPathComponent("settings.json"), options: .atomic)
+            try JSONEncoder().encode(applied).write(to: directory.appendingPathComponent("settings.json"), options: .atomic)
         }
         try checkGeneration(admitted)
         return snapshot
@@ -248,11 +301,15 @@ final class PhemeRuntime: @unchecked Sendable {
         defer { try? input.close() }
         var hash = SHA256()
         var bytes: UInt64 = 0
-        while let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty {
+        // Foundation file reads may create autoreleased buffers. Drain them
+        // per chunk so hashing a multi-gigabyte model stays bounded on iPhone.
+        while try autoreleasepool(invoking: { () throws -> Bool in
             try checkGeneration(admitted)
+            guard let chunk = try input.read(upToCount: 1024 * 1024), !chunk.isEmpty else { return false }
             hash.update(data: chunk)
             bytes += UInt64(chunk.count)
-        }
+            return true
+        }) {}
         guard bytes == model.bytes, hash.finalize().map({ String(format: "%02x", $0) }).joined() == model.sha256 else {
             throw PhemeLocalFailure(code: "checksum", message: "Model is damaged. Reimport it or rebuild the bundled app.")
         }
@@ -276,23 +333,30 @@ final class PhemeRuntime: @unchecked Sendable {
             return (entry.model, path, try bundled.prompt())
         }
         try checkGeneration(admitted)
-        lock.withLock { currentReasoningModel = nil }
+        lock.withLock { currentReasoningModel = nil; reasoningPromptHash = nil }
         let snapshot = try await reasoning.load(path: path.path, prompt: prompt, threads: threads)
         try checkGeneration(admitted)
-        lock.withLock { currentReasoningModel = model }
+        lock.withLock { currentReasoningModel = model; reasoningPromptHash = Self.hash(Data(prompt.utf8)) }
         return snapshot
     }
 
-    func respond(text: String, requestID: String) async throws -> String {
+    func respond(text: String, requestID: String, attemptID: String? = nil) async throws -> String {
+        try validateAttempt(attemptID)
         let admitted = try admit(); defer { finish() }
+        beginObservation(attemptID, stage: "reasoning"); defer { finishObservation() }
+        do { return try await respondAdmitted(text: text, requestID: requestID, attemptID: attemptID, admitted: admitted) }
+        catch { if let attemptID { throw PhemeAttemptFailure(underlying: error, attemptID: attemptID, sessionID: runtimeSessionID) }; throw error }
+    }
+
+    private func respondAdmitted(text: String, requestID: String, attemptID: String?, admitted: Int) async throws -> String {
         guard let reasoning, let model = lock.withLock({ currentReasoningModel }), try reasoning.inspect().ready else {
             throw PhemeLocalFailure(code: "not_ready", message: "Load the local reasoning model first.")
         }
         try checkGeneration(admitted)
         do {
-            let reply = try await reasoning.respond(text: text, requestID: requestID)
+            let reply = try await reasoning.respond(text: text, requestID: requestID, attemptID: attemptID)
             try checkGeneration(admitted)
-            return try json(["reply": encodedObject(reply), "model": encodedObject(model), "execution_location": "device"])
+            return try json(["reply": encodedObject(reply), "model": encodedObject(model), "execution_location": "device", "runtime_session_id": runtimeSessionID, "attempt_id": attemptID as Any? ?? NSNull()])
         } catch {
             // A cancellation can race successful native completion. Do not retain
             // an unseen answer in the next turn's model context.
@@ -307,23 +371,55 @@ final class PhemeRuntime: @unchecked Sendable {
         return try await reasoning.reset()
     }
 
-    func transcribeFile(uri: String) async throws -> String {
+    func transcribeFile(uri: String, attemptID: String? = nil) async throws -> String {
+        try validateAttempt(attemptID)
         let admitted = try admit(); defer { finish() }
+        beginObservation(attemptID, stage: "transcription"); defer { finishObservation() }
+        do { return try await transcribeAdmitted(uri: uri, attemptID: attemptID, admitted: admitted) }
+        catch { if let attemptID { throw PhemeAttemptFailure(underlying: error, attemptID: attemptID, sessionID: runtimeSessionID) }; throw error }
+    }
+
+    private func transcribeAdmitted(uri: String, attemptID: String?, admitted: Int) async throws -> String {
         let selection = lock.withLock { (currentModel, settings) }
         guard let model = selection.0, let settings = selection.1, try engine.inspect().ready else {
             throw PhemeLocalFailure(code: "not_ready", message: "Load a local model first.")
         }
         let audio = try await fileWork { [self] in try decodeAudio(localFile(uri), settings.maxAudioSeconds) }
         try checkGeneration(admitted)
-        let result = try await engine.transcribe(audio)
+        let result = try await engine.transcribe(audio, attemptID: attemptID)
         try checkGeneration(admitted)
         // Return the versioned transcription contract plus verified artifact identity.
-        return try json(["transcription": encodedObject(result), "model": encodedObject(model), "settings": encodedObject(settings), "execution_location": "device"])
+        return try json(["transcription": encodedObject(result), "model": encodedObject(model), "settings": encodedObject(settings), "execution_location": "device", "runtime_session_id": runtimeSessionID, "attempt_id": attemptID as Any? ?? NSNull()])
+    }
+
+    private static func hash(_ data: Data) -> String { SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() }
+
+    private func effectiveConfiguration() throws -> Any {
+        let selection = lock.withLock { (currentModel, settings, currentReasoningModel, reasoningPromptHash) }
+        let asr = try engine.inspect()
+        let reply = try? reasoning?.inspect()
+        var result: [String: Any] = ["schema_version": 1, "asr": NSNull(), "reasoning": NSNull(),
+            "sampler": ["enabled": sampler.status().enabled, "interval_ms": NativeResourceSampler.intervalMS, "capacity_samples": 512, "cpu_percent_basis": "one_core", "scope": "whole_app_process", "cpu_min_interval_ms": 100],
+            "app_version": Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "unknown",
+            "app_build": Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "unknown"]
+        if let model = selection.0, let settings = selection.1, asr.configuration != nil {
+            result["asr"] = ["model": try encodedObject(model), "settings": try encodedObject(settings),
+                "dictionary_sha256": Self.hash(try JSONEncoder().encode(settings.dictionary)), "capabilities": try encodedObject(asr.capabilities), "runtime": "pheme-va-ffi-v1"]
+        }
+        if let model = selection.2, let reply {
+            result["reasoning"] = ["model": try encodedObject(model), "threads": reply.threads as Any? ?? NSNull(),
+                "prompt_sha256": selection.3 as Any? ?? NSNull(), "settings": try reply.conversation_config.map(encodedObject) ?? NSNull(),
+                "gpu_layers": reply.gpu_layers as Any? ?? NSNull(), "runtime": try reply.runtime.map(encodedObject) ?? NSNull()]
+        }
+        return result
     }
 
     func inspectJSON() throws -> String {
         let state = lock.withLock { (busy, closed, currentModel, settings, currentReasoningModel) }
         return try json(["snapshot": encodedObject(engine.inspect()), "busy": state.0, "closed": state.1,
+                         "runtime_session_id": runtimeSessionID, "effective_configuration": effectiveConfiguration(),
+                         "sampler": encodedObject(sampler.status()),
+                         "benchmark_active": displayLease.isActive, "active_attempt": try lock.withLock { try activeAttempt.map(encodedObject) } ?? NSNull(),
                          "model": try state.2.map(encodedObject) ?? NSNull(), "settings": try state.3.map(encodedObject) ?? NSNull(),
                          "reasoning": try (try? reasoning?.inspect()).map(encodedObject) ?? NSNull(),
                          "reasoningModel": try state.4.map(encodedObject) ?? NSNull()])
@@ -331,9 +427,13 @@ final class PhemeRuntime: @unchecked Sendable {
 
     func pollJSON() throws -> String {
         observerLock.lock(); defer { observerLock.unlock() }
-        guard !lock.withLock({ closed }) else { throw PhemeLocalFailure(code: "closed", message: "Local engine is closed.") }
+        // A closed runtime still owns its observer. Allow the owning JS context
+        // to drain final cancellation/settlement evidence; the owner rejects stale contexts.
         let poll = try engine.poll()
-        return try json(["snapshot": encodedObject(poll.snapshot), "observer": encodedObject(poll.observer), "batchesJSON": poll.batchesJSON])
+        let resources = sampler.drain()
+        return try json(["snapshot": encodedObject(poll.snapshot), "observer": encodedObject(poll.observer), "batchesJSON": poll.batchesJSON,
+            "runtime_session_id": runtimeSessionID, "resource_samples": encodedObject(resources.1), "resource_observer": encodedObject(resources.0),
+            "active_attempt": try lock.withLock { try activeAttempt.map(encodedObject) } ?? NSNull()])
     }
 }
 
@@ -372,6 +472,7 @@ final class PhemeRuntimeOwner: @unchecked Sendable {
     }
 
     func cancel(contextID: UUID) { lock.withLock { if context == contextID { current?.cancel() } } }
+    func suspend(contextID: UUID) { lock.withLock { if context == contextID { current?.suspend() } } }
     func close(contextID: UUID) { lock.withLock { if context == contextID { current?.shutdown() } } }
 
     func respond(contextID: UUID, reopen: Bool = false, _ work: @Sendable (PhemeRuntime) async throws -> String) async -> String {
@@ -379,13 +480,16 @@ final class PhemeRuntimeOwner: @unchecked Sendable {
             let payload = try await work(get(contextID: contextID, reopen: reopen))
             return try json(["ok": true, "value": JSONSerialization.jsonObject(with: Data(payload.utf8), options: [.fragmentsAllowed])])
         } catch {
+            let attempt = error as? PhemeAttemptFailure
+            let underlying = attempt?.underlying ?? error
             var code = "native_failure"
             var runID: String?
             var nativeCode: Int32?
-            if let local = error as? PhemeLocalFailure { code = local.code }
-            if let failure = error as? BridgeFailure { code = "native_\(failure.code)"; runID = failure.run_id; nativeCode = failure.code }
+            if let local = underlying as? PhemeLocalFailure { code = local.code }
+            if let failure = underlying as? BridgeFailure { code = "native_\(failure.code)"; runID = failure.run_id; nativeCode = failure.code }
             return (try? json(["ok": false, "error": ["code": code, "message": error.localizedDescription,
-                "run_id": runID as Any? ?? NSNull(), "native_code": nativeCode as Any? ?? NSNull()]]))
+                "run_id": runID as Any? ?? NSNull(), "native_code": nativeCode as Any? ?? NSNull(),
+                "attempt_id": attempt?.attemptID as Any? ?? NSNull(), "runtime_session_id": attempt?.sessionID as Any? ?? NSNull()]]))
                 ?? "{\"ok\":false,\"error\":{\"code\":\"serialization\",\"message\":\"Native error could not be encoded.\"}}"
         }
     }

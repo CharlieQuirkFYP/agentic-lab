@@ -30,8 +30,15 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.example.incidentreportingagent",
+      "appleTeamId": "4UDU99RT93",
+      "buildNumber": "8",
       "infoPlist": {
-        "NSMicrophoneUsageDescription": "Incident Reporting Agent uses the microphone to turn spoken reports into editable drafts."
+        "NSMicrophoneUsageDescription": "Incident Reporting Agent uses the microphone to turn spoken reports into editable drafts.",
+        "NSLocalNetworkUsageDescription": "Incident Reporting Agent sends diagnostic metrics to your research server on the local Wi-Fi network.",
+        "NSAppTransportSecurity": {
+          "NSAllowsArbitraryLoads": false,
+          "NSAllowsLocalNetworking": true
+        }
       }
     }
   }

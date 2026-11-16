@@ -8,6 +8,7 @@ WHISPER_REPO="ggerganov/whisper.cpp"
 WHISPER_REVISION="5359861c739e955e79d9a303bcbc70fb988958b1"
 WHISPER_URL="https://huggingface.co/$WHISPER_REPO/resolve/$WHISPER_REVISION/ggml-large-v3-turbo.bin"
 WHISPER_SHA256="1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69"
+WHISPER_TINY_EN_SHA256="921e4cf8686fdd993dcd081a5da5b6c365bfde1162e72b08d75ac75289920b1f"
 
 LITERT_REPO="litert-community/Zipformer-medium-CR-CTC-LiteRT"
 LITERT_REVISION="7732ad6c15ec43402968d5ae04acfa7a204027f5"
@@ -25,6 +26,13 @@ QWEN_URL="https://huggingface.co/$QWEN_REPO/resolve/$QWEN_REVISION/$QWEN_FILE"
 QWEN_SHA256="6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e"
 QWEN_SIZE_BYTES=1117320736
 
+QWEN3_REPO="unsloth/Qwen3-4B-Instruct-2507-GGUF"
+QWEN3_REVISION="a06e946bb6b655725eafa393f4a9745d460374c9"
+QWEN3_FILE="Qwen3-4B-Instruct-2507-Q4_K_M.gguf"
+QWEN3_URL="https://huggingface.co/$QWEN3_REPO/resolve/$QWEN3_REVISION/$QWEN3_FILE"
+QWEN3_SHA256="3605803b982cb64aead44f6c1b2ae36e3acdb41d8e46c8a94c6533bc4c67e597"
+QWEN3_SIZE_BYTES=2497281120
+
 SEALLMS_REPO="SeaLLMs/SeaLLMs-Audio-7B"
 SEALLMS_REVISION="c5c3152b373350653ec6dd981d041f8285ab26c9"
 SEALLMS_BASE_URL="https://huggingface.co/$SEALLMS_REPO/resolve/$SEALLMS_REVISION"
@@ -39,10 +47,12 @@ usage() {
 Usage:
   ./scripts/download-model.sh                         Download the Whisper baseline
   ./scripts/download-model.sh whisper                 Download the Whisper baseline
+  ./scripts/download-model.sh whisper-tiny.en         Download English Whisper tiny (77.7 MB)
   ./scripts/download-model.sh zipformer-small        Download the LiteRT Zipformer small model
   ./scripts/download-model.sh zipformer-medium       Download the LiteRT Zipformer medium model
   ./scripts/download-model.sh zipformer-large        Download the LiteRT Zipformer large model
   ./scripts/download-model.sh qwen2.5-1.5b-instruct-q4-k-m  Download Qwen reply GGUF
+  ./scripts/download-model.sh qwen3-4b-instruct-2507-q4-k-m  Download the bundled iPhone reply GGUF
   ./scripts/download-model.sh seallms-audio-7b --yes  Download the experimental SeaLLMs files
   ./scripts/download-model.sh --list                 List available model artifacts
   ./scripts/download-model.sh --help                 Show this help
@@ -62,10 +72,12 @@ list_models() {
     cat <<'EOF'
 Available model artifacts:
   whisper            Whisper large-v3-turbo GGML model; supported by whisper.cpp
+  whisper-tiny.en     English Whisper tiny GGML model; supported by whisper.cpp
   zipformer-small    LiteRT Zipformer small FP16 CTC model; optional Rust adapter
   zipformer-medium   LiteRT Zipformer medium FP16 CTC model; optional Rust adapter
   zipformer-large    LiteRT Zipformer large FP16 CTC model; optional Rust adapter
   qwen2.5-1.5b-instruct-q4-k-m  Qwen instruction GGUF Q4_K_M; native reply adapter
+  qwen3-4b-instruct-2507-q4-k-m  Qwen3 instruction GGUF Q4_K_M; bundled iPhone reply
   seallms-audio-7b   SeaLLMs-Audio 7B safetensors; download-only, requires --yes
 EOF
 }
@@ -207,6 +219,14 @@ download_qwen() {
         "$QWEN_URL" "$QWEN_SHA256" "$MODEL_DIR/reply/$QWEN_FILE"
 }
 
+download_qwen3() {
+    printf 'Qwen3-4B-Instruct-2507 Q4_K_M: %s bytes; Apache-2.0\n' "$QWEN3_SIZE_BYTES"
+    printf 'Source: %s at %s\nDestination: %s/reply/%s\n' \
+        "$QWEN3_REPO" "$QWEN3_REVISION" "$MODEL_DIR" "$QWEN3_FILE"
+    download_artifact "Qwen3-4B-Instruct-2507 Q4_K_M" \
+        "$QWEN3_URL" "$QWEN3_SHA256" "$MODEL_DIR/reply/$QWEN3_FILE"
+}
+
 download_seallms() {
     printf '%s\n' \
         'WARNING: SeaLLMs-Audio-7B is an experimental download-only artifact.' \
@@ -256,7 +276,7 @@ for argument in "$@"; do
         --yes)
             allow_seallms=true
             ;;
-        whisper|zipformer-small|zipformer-medium|zipformer-large|qwen2.5-1.5b-instruct-q4-k-m|seallms-audio-7b)
+        whisper|whisper-tiny.en|zipformer-small|zipformer-medium|zipformer-large|qwen2.5-1.5b-instruct-q4-k-m|qwen3-4b-instruct-2507-q4-k-m|seallms-audio-7b)
             if [[ -n "$selected_model" ]]; then
                 printf 'download-model: choose one model at a time\n' >&2
                 usage >&2
@@ -315,6 +335,11 @@ case "$selected_model" in
     whisper)
         download_whisper
         ;;
+    whisper-tiny.en)
+        download_artifact "Whisper tiny.en model" \
+            "https://huggingface.co/$WHISPER_REPO/resolve/$WHISPER_REVISION/ggml-tiny.en.bin" \
+            "$WHISPER_TINY_EN_SHA256" "$MODEL_DIR/transcript/whisper/ggml-tiny.en.bin"
+        ;;
     zipformer-small)
         download_zipformer small
         ;;
@@ -326,6 +351,9 @@ case "$selected_model" in
         ;;
     qwen2.5-1.5b-instruct-q4-k-m)
         download_qwen
+        ;;
+    qwen3-4b-instruct-2507-q4-k-m)
+        download_qwen3
         ;;
     seallms-audio-7b)
         download_seallms

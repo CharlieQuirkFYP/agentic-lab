@@ -21,6 +21,15 @@ test('missing native build fails explicitly without making network requests', as
   await client.close();
 });
 
+test('device metadata is read without opening inference and older builds request reinstall', async () => {
+  const info = { hardware: 'iPhone-test', os_version: '27', app_version: '0.1', build: '2' };
+  let opens = 0;
+  const client = createPhemeClient(fake({ deviceInfo: async () => ok(info), open: async () => { opens++; return ok({}); } }));
+  assert.deepEqual(await client.deviceInfo(), info);
+  assert.equal(opens, 0);
+  await assert.rejects(createPhemeClient(fake()).deviceInfo(), (error: unknown) => error instanceof PhemeError && error.code === 'native_update_required');
+});
+
 test('reasoning forwards reviewed text and request identity through the native module', async () => {
   let request: string[] = [];
   let loaded: [string, number] | undefined;
@@ -57,6 +66,35 @@ test('passes file URI and settings directly; retains run ID and exact metric pay
 test('native failures preserve stable code and admitted run ID', async () => {
   const client = createPhemeClient(fake({ transcribeFile: async () => JSON.stringify({ ok: false, error: { code: 'native_2', message: 'Inference failed', run_id: 'failed-1' } }) }));
   await assert.rejects(client.transcribeFile('file:///app/test.wav'), (e: unknown) => e instanceof PhemeError && e.code === 'native_2' && e.runID === 'failed-1');
+});
+
+test('preallocated attempt identity crosses native admission and errors retain runtime ownership', async () => {
+  const calls: unknown[] = [];
+  const client = createPhemeClient(fake({
+    transcribeFileWithAttempt: async (uri, attempt) => { calls.push([uri, attempt]); return ok({ attempt_id: attempt, runtime_session_id: 'runtime-1', transcription: { run_id: attempt } }); },
+    respondWithAttempt: async (text, request, attempt) => { calls.push([text, request, attempt]); return JSON.stringify({ ok: false, error: { code: 'native_2', message: 'failed', run_id: attempt, attempt_id: attempt, runtime_session_id: 'runtime-1' } }); },
+    setBenchmarkActive: async active => { calls.push(active); return ok(null); },
+  }));
+  assert.equal((await client.transcribeFile('file:///speech.wav', 'asr-attempt')).transcription.run_id, 'asr-attempt');
+  await assert.rejects(client.respond('smoke', 'logical-request', 'reply-attempt'), (e: unknown) => e instanceof PhemeError && e.attemptID === 'reply-attempt' && e.runtimeSessionID === 'runtime-1' && e.runID === 'reply-attempt');
+  await client.setBenchmarkActive(true); await client.setBenchmarkActive(false);
+  assert.deepEqual(calls, [['file:///speech.wav', 'asr-attempt'], ['smoke', 'logical-request', 'reply-attempt'], true, false]);
+});
+
+test('attributed operations never silently use an older uncorrelated native API', async () => {
+  let calls = 0;
+  const client = createPhemeClient(fake({ transcribeFile: async () => { calls++; return ok({}); } }));
+  await assert.rejects(client.transcribeFile('file:///speech.wav', 'attempt'), (e: unknown) => e instanceof PhemeError && e.code === 'native_update_required');
+  await assert.rejects(client.respond('smoke', 'request', 'attempt'), (e: unknown) => e instanceof PhemeError && e.code === 'native_update_required');
+  assert.equal(calls, 0);
+});
+
+test('sampler overhead control is explicit and requires supporting native build', async () => {
+  const states: boolean[] = [];
+  const client = createPhemeClient(fake({ setResourceSamplingEnabled: async enabled => { states.push(enabled); return ok(null); } }));
+  await client.setResourceSamplingEnabled(false); await client.setResourceSamplingEnabled(true);
+  assert.deepEqual(states, [false, true]);
+  await assert.rejects(createPhemeClient(fake()).setResourceSamplingEnabled(false), (e: unknown) => e instanceof PhemeError && e.code === 'native_update_required');
 });
 
 test('malformed and missing native results do not appear successful', async () => {

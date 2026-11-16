@@ -41,13 +41,20 @@ struct FFISmoke {
         #if PHEME_TEST_SUPPORT
         let bridge = try NativeBridge(handle: pheme_va_test_create())
         _ = try await bridge.configure(BridgeConfiguration(model_path: "test-only"))
-        let result = try await bridge.transcribe(CapturedAudio(samples: [Float](repeating: 0.05, count: 16000), sampleRate: 16000, channels: 1))
+        let result = try await bridge.transcribe(CapturedAudio(samples: [Float](repeating: 0.05, count: 16000), sampleRate: 16000, channels: 1), attemptID: "swift-admitted-attempt")
         precondition(result.result.text == "Incident at west entrance.")
+        precondition(result.run_id == "swift-admitted-attempt")
         let poll = try bridge.poll()
         let batches = try JSONSerialization.jsonObject(with: Data(poll.batchesJSON.utf8)) as! [[String: Any]]
         precondition(batches.first?["run_id"] as? String == result.run_id)
         let empty = try bridge.poll()
         precondition(empty.batchesJSON == "[]")
+        do {
+            _ = try await bridge.transcribe(CapturedAudio(samples: [.nan], sampleRate: 16000, channels: 1), attemptID: "swift-failed-attempt")
+            fatalError("Non-finite audio accepted")
+        } catch let failure as BridgeFailure {
+            precondition(failure.run_id == "swift-failed-attempt")
+        }
         let handle = pheme_va_test_new()
         let observer = pheme_va_observer_new(handle)
         pheme_va_free(handle)

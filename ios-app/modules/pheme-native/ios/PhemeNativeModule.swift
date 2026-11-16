@@ -1,6 +1,7 @@
 import ExpoModulesCore
 import Foundation
 import UIKit
+import Darwin
 
 extension NativeBridge: PhemeEngine {}
 
@@ -29,6 +30,20 @@ public final class PhemeNativeModule: Module {
 
     public func definition() -> ModuleDefinition {
         Name("PhemeNative")
+        AsyncFunction("deviceInfo") { () throws -> String in
+            var system = utsname()
+            uname(&system)
+            let hardware = withUnsafeBytes(of: system.machine) {
+                String(cString: $0.baseAddress!.assumingMemoryBound(to: CChar.self))
+            }
+            let info = Bundle.main.infoDictionary ?? [:]
+            return try json(["ok": true, "value": [
+                "hardware": hardware,
+                "os_version": UIDevice.current.systemVersion,
+                "app_version": info["CFBundleShortVersionString"] as? String ?? "unknown",
+                "build": info["CFBundleVersion"] as? String ?? "unknown",
+            ]])
+        }.runOnQueue(.main)
         OnCreate { [weak self, owner, contextID] in
             self?.memoryWarningObserver = NotificationCenter.default.addObserver(forName: UIApplication.didReceiveMemoryWarningNotification, object: nil, queue: .main) { _ in
                 PhemeHost.lifecycleQueue.async { owner.close(contextID: contextID) }
@@ -58,6 +73,9 @@ public final class PhemeNativeModule: Module {
         AsyncFunction("transcribeFile") { [owner, contextID] (uri: String) async -> String in
             await owner.respond(contextID: contextID) { try await $0.transcribeFile(uri: uri) }
         }
+        AsyncFunction("transcribeFileWithAttempt") { [owner, contextID] (uri: String, attemptID: String) async -> String in
+            await owner.respond(contextID: contextID) { try await $0.transcribeFile(uri: uri, attemptID: attemptID) }
+        }
         AsyncFunction("listReasoningModels") { [owner, contextID] () async -> String in
             await owner.respond(contextID: contextID) { runtime in
                 let models = try await runtime.listReasoningModels()
@@ -73,6 +91,15 @@ public final class PhemeNativeModule: Module {
         AsyncFunction("respond") { [owner, contextID] (text: String, requestID: String) async -> String in
             await owner.respond(contextID: contextID) { try await $0.respond(text: text, requestID: requestID) }
         }
+        AsyncFunction("respondWithAttempt") { [owner, contextID] (text: String, requestID: String, attemptID: String) async -> String in
+            await owner.respond(contextID: contextID) { try await $0.respond(text: text, requestID: requestID, attemptID: attemptID) }
+        }
+        AsyncFunction("setBenchmarkActive") { [owner, contextID] (active: Bool) async -> String in
+            await owner.respond(contextID: contextID) { runtime in try runtime.setBenchmarkActive(active); return "null" }
+        }
+        AsyncFunction("setResourceSamplingEnabled") { [owner, contextID] (enabled: Bool) async -> String in
+            await owner.respond(contextID: contextID) { runtime in try runtime.setResourceSamplingEnabled(enabled); return "null" }
+        }
         AsyncFunction("resetConversation") { [owner, contextID] () async -> String in
             await owner.respond(contextID: contextID) { runtime in
                 let snapshot = try await runtime.resetConversation()
@@ -82,7 +109,7 @@ public final class PhemeNativeModule: Module {
         AsyncFunction("poll") { [owner, contextID] () async -> String in await owner.respond(contextID: contextID) { try $0.pollJSON() } }
         AsyncFunction("cancel") { [owner, contextID] () -> Void in owner.cancel(contextID: contextID) }
         AsyncFunction("close") { [owner, contextID] () -> Void in owner.close(contextID: contextID) }
-        OnAppEntersBackground { [owner, contextID] in PhemeHost.lifecycleQueue.async { owner.cancel(contextID: contextID) } }
+        OnAppEntersBackground { [owner, contextID] in PhemeHost.lifecycleQueue.async { owner.suspend(contextID: contextID) } }
         OnAppContextDestroys { [owner, contextID] in PhemeHost.lifecycleQueue.async { owner.close(contextID: contextID) } }
     }
 }

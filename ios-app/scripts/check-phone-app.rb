@@ -20,6 +20,15 @@ abort "Unexpected bundle identifier: #{bundle_id}" if ARGV[1] && bundle_id != AR
 executable = File.join(app, info.fetch("CFBundleExecutable"))
 abort "Missing app executable" unless File.file?(executable)
 abort "Missing microphone permission" if info.fetch("NSMicrophoneUsageDescription", "").empty?
+config = JSON.parse(File.read(File.expand_path("../app.json", __dir__))).fetch("expo")
+abort "Unexpected app version" unless info["CFBundleShortVersionString"] == config.fetch("version")
+abort "Unexpected app build number" unless info["CFBundleVersion"] == config.fetch("ios").fetch("buildNumber")
+permission = info.fetch("NSLocalNetworkUsageDescription", "")
+abort "Missing metrics Local Network permission" unless permission.include?("metrics")
+abort "Development-only Local Network permission" if permission.include?("Expo Dev Launcher")
+ats = info.fetch("NSAppTransportSecurity", {})
+abort "Missing local networking allowance" unless ats["NSAllowsLocalNetworking"] == true
+abort "Unexpected unrestricted network allowance" unless ats["NSAllowsArbitraryLoads"] == false
 abort "Missing embedded Expo JavaScript (validate a Release build)" unless File.file?(File.join(app, "main.jsbundle"))
 scenes = info.dig("UIApplicationSceneManifest", "UISceneConfigurations", "UIWindowSceneSessionRoleApplication")
 unless scenes&.any? { |scene| scene["UISceneDelegateClassName"] == "EXExpoAppSceneDelegate" }
@@ -55,25 +64,8 @@ abort "Missing reasoning C ABI" unless exports.match?(/_pheme_reply_create$/)
 abort "Reasoning framework leaks GGML/llama symbols" if exports.match?(/ (_ggml_|_gguf_|_llama_)/)
 
 model_root = File.join(app, "PhemeModels.bundle")
-manifest = File.read(File.expand_path("../../pheme-va/models/manifest.toml", __dir__))
-blocks = manifest.split(/^\[\[models\]\]\s*$/)
-{
-  "whisper-large-v3-turbo" => "ASR",
-  "qwen2.5-1.5b-instruct-q4-k-m" => "Reasoning"
-}.each do |id, directory|
-  block = blocks.find { |entry| entry.match?(/^id = "#{Regexp.escape(id)}"$/) }
-  abort "Missing model catalog entry: #{id}" unless block
-  filename = block.match(/^model = "([^"]+)"$/)[1].split("/").last
-  sha256 = block.match(/^sha256 = "([a-f0-9]{64})"$/)[1]
-  bytes = Integer(block.match(/^model_size_bytes = (\d+)$/)[1])
-  path = File.join(model_root, filename)
-  abort "Missing bundled model: #{path}" unless File.file?(path)
-  abort "Incorrect bundled model size: #{path}" unless File.size(path) == bytes
-  abort "Incorrect bundled model checksum: #{path}" unless Digest::SHA256.file(path).hexdigest == sha256
-  puts "PASS: #{id}, #{bytes} bytes, SHA-256 #{sha256}"
-end
-prompt = File.join(model_root, "incident-reporting.txt")
-source_prompt = File.expand_path("../../pheme-va/roles/incident-reporting.txt", __dir__)
-abort "Missing or stale bundled incident role" unless File.file?(prompt) && File.binread(prompt) == File.binread(source_prompt)
-abort "Missing model notices" unless File.file?(File.join(model_root, "MODEL-NOTICES.txt"))
-puts "PASS: #{bundle_id}, Expo JS/scenes, microphone permission, embedded reasoning, portable linkage, models and incident role"
+# Use the same manifest/selection/license validation as native:prepare; it checks
+# every selected model and rejects unexpected extra artifacts in the built app.
+verified = system("node", File.expand_path("model-bundle.mjs", __dir__), "--check-resource", model_root)
+abort "Bundled model resources failed verification" unless verified
+puts "PASS: #{bundle_id} #{info["CFBundleShortVersionString"]} (#{info["CFBundleVersion"]}), Expo JS/scenes, microphone/local-network permissions, embedded reasoning, portable linkage, models and incident role"

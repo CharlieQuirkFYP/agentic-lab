@@ -66,6 +66,23 @@ struct ReasoningSnapshot: Codable, Sendable {
     let active_run: String?
     let history_turns: Int
     let load_time_ms: UInt64
+    var conversation_config: ReasoningEffectiveSettings? = nil
+    var gpu_layers: Int? = nil
+    var runtime: NativeRuntimeVersion? = nil
+}
+
+struct NativeRuntimeVersion: Codable, Sendable { let name: String; let version: String }
+struct ReasoningEffectiveSettings: Codable, Sendable {
+    let max_input_chars: Int
+    let max_output_chars: Int
+    let max_history_turns: Int
+    let max_output_tokens: Int
+    let context_size: Int
+    let temperature: Double
+    let top_k: Int
+    let top_p: Double
+    let min_p: Double
+    let seed: UInt32?
 }
 
 struct ReasoningResult: Codable, Sendable {
@@ -77,8 +94,13 @@ struct ReasoningResult: Codable, Sendable {
 protocol PhemeReasoningEngine: Sendable {
     func inspect() throws -> ReasoningSnapshot
     func load(path: String, prompt: String, threads: Int) async throws -> ReasoningSnapshot
-    func respond(text: String, requestID: String) async throws -> ReasoningResult
+    func respond(text: String, requestID: String, attemptID: String?) async throws -> ReasoningResult
     func reset() async throws -> ReasoningSnapshot
     func cancel()
     func close()
+}
+extension PhemeReasoningEngine {
+    func respond(text: String, requestID: String) async throws -> ReasoningResult {
+        try await respond(text: text, requestID: requestID, attemptID: nil)
+    }
 }

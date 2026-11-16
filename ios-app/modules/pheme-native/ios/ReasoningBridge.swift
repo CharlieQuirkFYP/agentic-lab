@@ -55,10 +55,12 @@ final class ReasoningBridge: PhemeReasoningEngine, @unchecked Sendable {
         }
     }
 
-    func respond(text: String, requestID: String = UUID().uuidString) async throws -> ReasoningResult {
+    func respond(text: String, requestID: String = UUID().uuidString, attemptID: String? = nil) async throws -> ReasoningResult {
         let owner = try retained()
         return try await execute { [self] in
-            let data = try JSONEncoder().encode(["request_id": requestID, "text": text])
+            var request = ["request_id": requestID, "text": text]
+            if let attemptID { request["attempt_id"] = attemptID }
+            let data = try JSONEncoder().encode(request)
             return try data.withUnsafeBytes { bytes in
                 try decode { output in
                     pheme_reply_respond(owner.handle, bytes.bindMemory(to: UInt8.self).baseAddress, bytes.count, output)
