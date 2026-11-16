@@ -1,6 +1,6 @@
 # Metrics API
 
-Status: implemented for the Rust `pheme-va` workspace and the Go API. The Go server persists metric batches in its experiment SQLite database, separate from `benchmark.Experiment.Result`. An in-memory implementation remains for tests. See the [dashboard integration guide](benchmark-ui.md) for query and summary contracts.
+Status: implemented for the Rust `pheme-va` workspace, the Go API and the Expo phone outbox/uploader. The Go server persists metric batches in its experiment SQLite database, separate from `benchmark.Experiment.Result`. An in-memory implementation remains for tests. Physical-phone upload acceptance remains separate from automated HTTP tests. See the [dashboard integration guide](benchmark-ui.md) for query and summary contracts.
 
 ## Architecture
 
@@ -175,6 +175,89 @@ Returns:
 
 This read endpoint supports exact `run_id`/`name` filters and optional `limit` (1–100)/`offset` pagination. Name filtering keeps matching events within batches; `total` counts matching batches. Without pagination the legacy response returns all matching batches and `limit: 0`; an offset requires an explicit limit. Ordering is run ID then batch sequence ascending. Unknown experiments return 404. It does not merge metrics into the generic experiment result; `/summary` reports separate observation statistics.
 
+### Phone-origin ingestion
+
+```http
+POST /api/v1/phone/metrics
+Content-Type: application/json
+```
+
+The phone does not create a benchmark job. It uploads one nonempty batch with
+installation/device attribution:
+
+```json
+{
+  "schema_version": 1,
+  "device": {
+    "installation_id": "app-generated-installation-id",
+    "hardware": "iPhone19,2",
+    "os_version": "27.0.1",
+    "app_version": "0.1.0",
+    "build": "2"
+  },
+  "batch": {
+    "schema_version": 1,
+    "run_id": "phone-run-123",
+    "sequence_number": 0,
+    "timestamp_ms": 1794268800000,
+    "events": [
+      {
+        "schema_version": 1,
+        "run_id": "phone-run-123",
+        "sequence": 0,
+        "timestamp_ms": 1794268800000,
+        "name": "reasoning_duration_ms",
+        "value": 150,
+        "unit": "milliseconds",
+        "scope": "run",
+        "source": "native.ios.host"
+      }
+    ]
+  }
+}
+```
+
+This is a contract example, not a performance measurement. Device fields must
+be nonblank and no longer than 256 bytes. Installation and run IDs must not
+contain NUL characters. Batch validation uses the existing
+event contract. The server assigns `ios_` plus the first 16 SHA-256 bytes of
+`installation_id + NUL + run_id` as the experiment ID. Producers normally omit
+`experiment_id`; if supplied it must match the assigned ID.
+
+Registration and batch storage occur in one SQLite transaction. An identical
+retry returns 202 without another stored batch. Different batch content or
+device attribution for the same identity returns 409. Different installations
+using the same run ID remain isolated. Invalid input returns 400, bodies over
+4 MiB return 413, and storage errors return a generic 500.
+
+```json
+{
+  "status": "accepted",
+  "experiment_id": "ios_server_assigned_id",
+  "event_count": 1
+}
+```
+
+The experiment records `result_source: "device_reported"`, `dataset: "phone"`,
+`device.execution_location: "device"` and the supplied attribution. No generic
+benchmark result is fabricated. `completed` describes the observation container,
+not a finalized incident, a quality score or independently verified hardware.
+Accepted uploads publish `metrics.updated` on the dashboard WebSocket.
+
+```http
+GET /api/v1/phone/metrics?limit=100&offset=0
+```
+
+Returns `source: "device_reported"`, `batches`, `total`, `limit` and `offset`.
+Limit defaults to 100 (range 1–100); offset defaults to zero. Total counts batches.
+Only device-reported experiments are included. Ordering is experiment creation
+time descending, then experiment ID and batch sequence ascending. Experiment
+detail/summary/run/export routes work with the returned experiment IDs.
+
+These endpoints have no authentication. CORS restricts browser origins, not
+native clients. Use only a trusted research LAN; require HTTPS and deployment
+access controls before exposing the API beyond it.
+
 ## Rust development-host drain
 
 The Rust server exposes:
@@ -198,13 +281,48 @@ Use `X-Run-ID` and `X-Experiment-ID` headers on Rust requests to control correla
 
 The versioned C ABI exposes an independent observer through `pheme_va_observer_new`, `pheme_va_observer_drain`, `pheme_va_observer_inspect`, and `pheme_va_observer_free`. It can drain while model inference runs and may outlive the engine. FFI retention is bounded to 512 events; overflow drops the oldest event and increments a cumulative dropped-event count. The event/batch wire schema remains unchanged.
 
-The native host owns one drain consumer and distributes each original payload to displays, remote monitoring, and any future exporter. Retry uploaded batches with the same identity/content. Existing `MetricsBatcher::new()` consumers retain their previous retention behaviour.
+The native host owns one drain consumer and distributes each original payload to displays and the exporter. Retry uploaded batches with the same identity/content. Existing `MetricsBatcher::new()` consumers retain their previous retention behaviour.
 
 `pheme_va_transcribe_v1` returns the same generated run ID used by its events; inspection reports the active run and admitted failures retain the run ID. An experiment ID is optional because the Go experiment route can supply it. FFI does not ingest measurements.
 
 Collection is configured for future operations. Whisper-enabled builds also retain legacy `pheme_va_metrics_set_enabled` and `pheme_va_metrics_drain`; the legacy drain competes for the same queue and must not run beside another drain owner.
 
-The [Expo native guide](../../ios-app/NATIVE_TESTING.md) describes the app-owned
-bridge and local diagnostic metrics. The standalone SwiftUI host and its paired
-monitor transport have been removed. Expo does not yet upload batches to Go or
-collect device resource/energy measurements. Unavailable values remain unavailable.
+The retained legacy Expo delivery path persists pending batches
+in the `metric_outbox` table of `voice-recordings.db`. The queue retains up to
+2,000 batches / 8 MiB of JSON without evicting unsent entries. Every five seconds
+while active, the uploader sends up to 25 batches with a ten-second request
+timeout. It deletes only acknowledged batches and retries the exact stored JSON.
+Permanent 4xx failures are retained as blocked, except retryable 408/429 responses.
+Pausing uploads does not stop local collection; foregrounding resumes work.
+This is not iOS background upload.
+
+A drained observation remains in memory if SQLite insertion fails. Events not
+yet persisted are not crash-durable; the bounded native observer can still drop
+events and exposes its cumulative counter. Host metadata has a separate bounded
+in-memory retry buffer and visible drop count.
+
+Native ASR batches, ASR metadata and successful reasoning timings may have
+separate run IDs/experiment containers. Host metadata contains native run IDs,
+optional chat turn IDs, model hashes and configuration for correlation. Reply
+upload identities include the chat turn ID because native reply counters restart
+with the engine. Host metadata does not contain audio, transcripts, vocabulary
+hints or reply text. Successful reply
+timing alone does not count canceled/failed turns or measure task success.
+
+New manual conversations and benchmark sweeps use the canonical
+[`/api/v1/phone/observations` contract](phone-observations-api.md). The single
+foreground collector drains once per second into an immutable SQLite archive
+and pending-delivery table. Its uploader sends bounded chunks of up to 50
+observations and preserves original device/build snapshots across app updates.
+Acknowledgement removes pending delivery only; archived observations remain.
+Conversations, turns, attempts, setup/warmup, finalization and resource samples
+have explicit identities. Legacy delivery continues for already queued data.
+
+The [Expo native guide](../../ios-app/NATIVE_TESTING.md) describes setup and
+physical-device acceptance. The standalone SwiftUI host and its paired monitor
+transport have been removed. Expo samples whole-app process CPU, resident and
+physical-footprint memory, battery/charging and categorical thermal state.
+GPU utilization and verified device power/energy providers remain unavailable.
+Desktop-host drains are labelled `host_voice` for new registrations; the legacy
+`/api/v1/voice/metrics` response and historical records retain their old labels
+and must not be used as evidence of phone origin.

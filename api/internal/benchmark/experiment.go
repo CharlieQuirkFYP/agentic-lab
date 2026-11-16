@@ -43,8 +43,18 @@ type EnvironmentProfile struct {
 	GPUInfo  string `json:"gpu_info,omitempty"`
 }
 
+type DeviceProfile struct {
+	InstallationID    string `json:"installation_id"`
+	Hardware          string `json:"hardware"`
+	OSVersion         string `json:"os_version"`
+	AppVersion        string `json:"app_version"`
+	Build             string `json:"build"`
+	ExecutionLocation string `json:"execution_location"`
+}
+
 type Experiment struct {
 	ResultSource       string             `json:"result_source"`
+	Device             *DeviceProfile     `json:"device,omitempty"`
 	ID                 string             `json:"id"`
 	UseCase            UseCase            `json:"use_case"`
 	Dataset            string             `json:"dataset,omitempty"`

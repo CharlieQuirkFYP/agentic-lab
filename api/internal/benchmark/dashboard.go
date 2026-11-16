@@ -203,3 +203,8 @@ func summarizeMetrics(batches []metrics.Batch) []MetricSummary {
 	})
 	return result
 }
+
+// SummarizeMetrics exposes the same reported-sample semantics to phone read views.
+func SummarizeMetrics(batches []metrics.Batch) []MetricSummary {
+	return summarizeMetrics(batches)
+}

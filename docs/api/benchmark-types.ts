@@ -1,7 +1,7 @@
 // Frontend contract reference for the Go benchmark API. See benchmark-ui.md.
 // The current server executes configured text cases through Pheme.
 export type ExperimentStatus = 'queued' | 'running' | 'completed' | 'failed';
-export type ResultSource = 'mock' | 'measured' | 'unavailable';
+export type ResultSource = 'mock' | 'measured' | 'unavailable' | 'device_reported' | 'host_voice' | 'phone_voice';
 export type UseCase = 'incident-reporting' | 'interview-assistant' | 'license-plate-monitoring';
 
 export interface ModelConfig {
@@ -42,6 +42,14 @@ export interface ExperimentResult {
   error_message?: string;
 }
 
+export interface PhoneDevice {
+  installation_id: string;
+  hardware: string;
+  os_version: string;
+  app_version: string;
+  build: string;
+}
+
 export interface Experiment {
   id: string;
   use_case: UseCase;
@@ -49,6 +57,7 @@ export interface Experiment {
   cases?: BenchmarkCase[];
   model_config: ModelConfig;
   environment_profile: EnvironmentProfile;
+  device?: PhoneDevice & { execution_location: 'device' };
   result_source: ResultSource;
   status: ExperimentStatus;
   created_at: string;
@@ -85,6 +94,17 @@ export interface MetricBatch {
 
 export interface MetricPage extends Pagination {
   experiment_id: string;
+  batches: MetricBatch[];
+}
+
+export interface PhoneMetricsUpload {
+  schema_version: 1;
+  device: PhoneDevice;
+  batch: MetricBatch;
+}
+
+export interface PhoneMetricsPage extends Pagination {
+  source: 'device_reported';
   batches: MetricBatch[];
 }
 
@@ -134,4 +154,5 @@ export interface ExperimentExport {
 }
 
 export interface AppendMetricsResponse { status: 'accepted'; event_count: number }
+export interface AppendPhoneMetricsResponse extends AppendMetricsResponse { experiment_id: string }
 export interface APIError { error: string }
