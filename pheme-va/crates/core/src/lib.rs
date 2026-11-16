@@ -9,6 +9,7 @@ pub mod conversation;
 mod dictionary;
 mod engine;
 mod incident;
+pub mod intake;
 pub mod registry;
 mod transcript;
 

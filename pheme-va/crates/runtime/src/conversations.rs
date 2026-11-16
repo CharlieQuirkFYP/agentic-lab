@@ -112,7 +112,12 @@ pub(crate) fn sample_during(state: &AgentRuntime, context: &MetricsContext) -> S
 
 fn child(parent: &Arc<Voice>, id: String) -> Arc<Voice> {
     Arc::new(Voice {
-        inner: Mutex::new(Inner::default()),
+        inner: Mutex::new(Inner {
+            conversation: va_core::chat::ConversationState::for_role(
+                parent.prompt.as_ref().map_or("", |p| &p.text),
+            ),
+            ..Default::default()
+        }),
         inference: parent.inference.clone(),
         model: parent.model.clone(),
         prompt: parent.prompt.clone(),
@@ -557,7 +562,11 @@ pub fn finish(state: &AgentRuntime, id: &str) -> Result<ChatSnapshot, RuntimeErr
                 &title_state,
                 None,
                 &maintenance_op,
-                Job { messages, permit },
+                Job {
+                    messages,
+                    permit,
+                    plan: None,
+                },
                 metrics,
                 None,
             )

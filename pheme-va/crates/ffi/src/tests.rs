@@ -20,6 +20,52 @@ unsafe fn run(handle: *mut PhemeVaHandle) -> (i32, serde_json::Value) {
     response(|out| pheme_va_transcribe_v1(handle, audio.as_ptr(), audio.len(), 16000, 1, out))
 }
 
+unsafe fn run_with_attempt(handle: *mut PhemeVaHandle, id: &str) -> (i32, serde_json::Value) {
+    let audio = vec![0.05; 16000];
+    response(|out| {
+        pheme_va_transcribe_v2(
+            handle,
+            audio.as_ptr(),
+            audio.len(),
+            16000,
+            1,
+            id.as_ptr(),
+            id.len(),
+            out,
+        )
+    })
+}
+
+#[test]
+fn caller_identity_is_bounded_and_survives_admitted_failure() {
+    unsafe {
+        let handle = Box::into_raw(Box::new(test_support::handle()));
+        for bad in ["", "contains space", "control\0", &"x".repeat(129)] {
+            let (code, _) = run_with_attempt(handle, bad);
+            assert_eq!(code, INVALID_ARGUMENT);
+        }
+        let id = "stage-attempt-1";
+        let samples = [f32::NAN];
+        let (code, failure) = response(|out| {
+            pheme_va_transcribe_v2(
+                handle,
+                samples.as_ptr(),
+                1,
+                16000,
+                1,
+                id.as_ptr(),
+                id.len(),
+                out,
+            )
+        });
+        assert_eq!(code, INVALID_ARGUMENT);
+        assert_eq!(failure["error"]["run_id"], id);
+        let (_, status) = response(|out| pheme_va_inspect(handle, out));
+        assert_eq!(status["last_failure"]["run_id"], id);
+        pheme_va_free(handle);
+    }
+}
+
 #[test]
 fn unloaded_inspection_config_validation_and_owned_errors() {
     unsafe {
@@ -164,12 +210,18 @@ fn status_metrics_and_busy_responses_remain_live_during_inference_and_close() {
         config.engine_config(),
     ));
     let worker_handle = Arc::clone(&handle);
-    let worker = std::thread::spawn(move || unsafe { run(Arc::as_ptr(&worker_handle).cast_mut()) });
+    let worker = std::thread::spawn(move || unsafe {
+        run_with_attempt(
+            Arc::as_ptr(&worker_handle).cast_mut(),
+            "registered-before-inference",
+        )
+    });
     assert_eq!(entered_rx.recv_timeout(Duration::from_secs(5)).unwrap(), 7);
     // A regression holding the engine lock would deadlock here until the fake times out.
     let status = serde_json::to_value(handle.snapshot()).unwrap();
     assert_eq!(status["state"], "running");
     let run_id = status["active_run"].as_str().unwrap();
+    assert_eq!(run_id, "registered-before-inference");
     unsafe {
         let observer = pheme_va_observer_new(Arc::as_ptr(&handle).cast_mut());
         let (code, batches) = response(|out| pheme_va_observer_drain(observer, out));

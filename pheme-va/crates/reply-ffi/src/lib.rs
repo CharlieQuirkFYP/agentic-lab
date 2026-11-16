@@ -11,8 +11,9 @@ use std::time::{Duration, Instant};
 
 use serde::{Deserialize, Serialize};
 use va_core::{
-    build_messages, validate_response, ConversationConfig, ConversationMessage, ConversationModel,
-    ConversationRole,
+    chat::{ChatPhase, ConversationState},
+    intake::respond_with_plan,
+    validate_response, ConversationConfig, ConversationModel,
 };
 
 const MAX_JSON: usize = 64 * 1024;
@@ -38,7 +39,13 @@ impl Configuration {
         {
             return Err(Failure::new(1, "invalid reasoning configuration"));
         }
-        build_messages(&self.system_prompt, &[], "Hello", &conversation_config())
+        ConversationState::for_role(&self.system_prompt)
+            .approve(
+                ChatPhase::AwaitingReview,
+                &self.system_prompt,
+                "Hello",
+                &conversation_config(),
+            )
             .map_err(|error| Failure::new(1, error.to_string()))?;
         Ok(())
     }
@@ -52,13 +59,19 @@ fn conversation_config() -> ConversationConfig {
 struct Failure {
     code: i32,
     message: String,
+    run_id: Option<String>,
 }
 impl Failure {
     fn new(code: i32, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
+            run_id: None,
         }
+    }
+    fn with_run(mut self, run_id: String) -> Self {
+        self.run_id = Some(run_id);
+        self
     }
 }
 
@@ -66,7 +79,7 @@ impl Failure {
 struct State {
     model: Option<Box<dyn ConversationModel>>,
     configuration: Option<Configuration>,
-    history: Vec<ConversationMessage>,
+    conversation: ConversationState,
     requests: VecDeque<String>,
     busy: bool,
     active_run: Option<String>,
@@ -98,8 +111,11 @@ impl ReplyHandle {
             "model_path": state.configuration.as_ref().map(|config| &config.model_path),
             "threads": state.configuration.as_ref().map(|config| config.threads),
             "active_run": state.active_run,
-            "history_turns": state.history.len() / 2,
+            "history_turns": state.conversation.history.len() / 2,
             "load_time_ms": state.load_time_ms,
+            "conversation_config": conversation_config(),
+            "gpu_layers": 0,
+            "runtime": {"name": "reply-ffi", "version": env!("CARGO_PKG_VERSION")},
             "last_failure": state.last_failure,
         }))
     }
@@ -113,7 +129,7 @@ impl ReplyHandle {
             }
             state.busy = true;
             state.configuration = None;
-            state.history.clear();
+            state.conversation.reset();
             state.requests.clear();
             state.last_failure = None;
             state.model.take()
@@ -128,6 +144,7 @@ impl ReplyHandle {
             Ok(model) => {
                 lease.model = Some(model);
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
+                state.conversation = ConversationState::for_role(&configuration.system_prompt);
                 state.configuration = Some(configuration);
                 state.load_time_ms = started.elapsed().as_millis() as u64;
             }
@@ -144,11 +161,24 @@ impl ReplyHandle {
     }
 
     fn respond(&self, request: Request) -> Result<serde_json::Value, Failure> {
+        if let Some(attempt) = &request.attempt_id {
+            if attempt.is_empty()
+                || attempt.len() > 128
+                || !attempt
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            {
+                return Err(Failure::new(
+                    1,
+                    "attempt_id must contain 1-128 ASCII letters, digits, underscores or hyphens",
+                ));
+            }
+        }
         if request.request_id.is_empty() || request.request_id.len() > 128 {
             return Err(Failure::new(1, "request_id must contain 1-128 bytes"));
         }
         let config = conversation_config();
-        let (model, messages, run_id) = {
+        let (model, messages, plan, run_id) = {
             let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
             if state.busy {
                 return Err(Failure::new(3, "reasoning engine is busy"));
@@ -167,25 +197,31 @@ impl ReplyHandle {
                 .configuration
                 .as_ref()
                 .ok_or_else(|| Failure::new(4, "load a reasoning model first"))?;
-            let messages = build_messages(
-                &effective.system_prompt,
-                &state.history,
-                &request.text,
-                &config,
-            )
-            .map_err(|error| Failure::new(1, error.to_string()))?;
+            let plan = state.conversation.plan(&request.text);
+            let messages = state
+                .conversation
+                .approve(
+                    ChatPhase::AwaitingReview,
+                    &effective.system_prompt,
+                    &request.text,
+                    &config,
+                )
+                .map_err(|error| Failure::new(1, error.to_string()))?;
             let model = state
                 .model
                 .take()
                 .ok_or_else(|| Failure::new(4, "load a reasoning model first"))?;
             static NEXT: AtomicU64 = AtomicU64::new(1);
-            let run_id = format!("ios_reply_{}", NEXT.fetch_add(1, Ordering::Relaxed));
+            let run_id = request
+                .attempt_id
+                .clone()
+                .unwrap_or_else(|| format!("ios_reply_{}", NEXT.fetch_add(1, Ordering::Relaxed)));
             state.active_run = Some(run_id.clone());
             state.requests.push_back(request.request_id);
             state.last_failure = None;
             state.busy = true;
             self.cancelled.store(false, Ordering::Release);
-            (model, messages, run_id)
+            (model, messages, plan, run_id)
         };
         let mut lease = Lease {
             handle: self,
@@ -202,11 +238,14 @@ impl ReplyHandle {
                 cancelled.store(true, Ordering::Release);
             }
         });
-        let response = lease
-            .model
-            .as_mut()
-            .expect("admitted model")
-            .respond_stream(&messages, &config, &self.cancelled, &mut |_| {});
+        let response = respond_with_plan(
+            lease.model.as_mut().expect("admitted model").as_mut(),
+            &messages,
+            &config,
+            plan.as_ref(),
+            &self.cancelled,
+            &mut |_| {},
+        );
         drop(done);
         let _ = timer.join();
         let response = response
@@ -217,18 +256,19 @@ impl ReplyHandle {
                 }
                 Ok(text)
             })
-            .map_err(|error| Failure::new(2, error.to_string()));
+            .map_err(|error| Failure::new(2, error.to_string()).with_run(run_id.clone()));
         match response {
             Ok(text) => {
                 let mut state = self.state.lock().unwrap_or_else(|error| error.into_inner());
-                state.history = messages[1..].to_vec();
-                state.history.push(ConversationMessage {
-                    role: ConversationRole::Assistant,
-                    content: text.clone(),
-                });
-                while state.history.len() > config.max_history_turns * 2 {
-                    state.history.drain(..2);
+                if self.cancelled.load(Ordering::Acquire) {
+                    let error = Failure::new(2, "reply generation cancelled");
+                    state.last_failure = Some(error.clone());
+                    return Err(error);
                 }
+                state
+                    .conversation
+                    .commit(request.text, text.clone(), &config)
+                    .map_err(|error| Failure::new(2, error.to_string()).with_run(run_id.clone()))?;
                 Ok(serde_json::json!({
                     "schema_version": 1,
                     "run_id": run_id,
@@ -252,7 +292,7 @@ impl ReplyHandle {
             if state.busy {
                 return Err(Failure::new(3, "reasoning engine is busy"));
             }
-            state.history.clear();
+            state.conversation.reset();
             state.requests.clear();
         }
         self.inspect()
@@ -271,11 +311,13 @@ impl Drop for Lease<'_> {
             .lock()
             .unwrap_or_else(|error| error.into_inner());
         state.busy = false;
-        state.active_run = None;
+        let run_id = state.active_run.take();
         if std::thread::panicking() {
             state.configuration = None;
-            state.history.clear();
-            state.last_failure = Some(Failure::new(7, "reasoning panicked; reload the model"));
+            state.conversation.reset();
+            let mut failure = Failure::new(7, "reasoning panicked; reload the model");
+            failure.run_id = run_id;
+            state.last_failure = Some(failure);
         } else {
             state.model = self.model.take();
         }
@@ -287,6 +329,8 @@ impl Drop for Lease<'_> {
 struct Request {
     request_id: String,
     text: String,
+    #[serde(default)]
+    attempt_id: Option<String>,
 }
 
 fn load_model(configuration: &Configuration) -> Result<Box<dyn ConversationModel>, Failure> {
@@ -376,7 +420,15 @@ pub unsafe extern "C" fn pheme_reply_respond(
     len: usize,
     output: *mut *mut c_char,
 ) -> i32 {
-    boundary(output, || handle(ptr)?.respond(input(json, len)?))
+    boundary(output, || {
+        let request: Request = input(json, len)?;
+        let attempt_id = request.attempt_id.clone();
+        catch_unwind(AssertUnwindSafe(|| handle(ptr)?.respond(request))).unwrap_or_else(|_| {
+            let mut failure = Failure::new(7, "contained reasoning panic; reload the model");
+            failure.run_id = attempt_id;
+            Err(failure)
+        })
+    })
 }
 
 /// # Safety
@@ -420,6 +472,7 @@ pub unsafe extern "C" fn pheme_reply_free(ptr: *mut ReplyHandle) {
 mod tests {
     use super::*;
     use std::ffi::CStr;
+    use va_core::ConversationMessage;
 
     struct FakeModel;
     impl ConversationModel for FakeModel {
@@ -459,9 +512,42 @@ mod tests {
     }
     fn request(id: &str, text: &str) -> Request {
         Request {
+            attempt_id: None,
             request_id: id.into(),
             text: text.into(),
         }
+    }
+
+    #[test]
+    fn attempt_identity_preserves_request_dedup_and_failure_correlation() {
+        let handle = ReplyHandle::new(fake);
+        handle.configure(config()).unwrap();
+        let mut first = request("logical-request", "hello");
+        first.attempt_id = Some("attempt-success".into());
+        assert_eq!(handle.respond(first).unwrap()["run_id"], "attempt-success");
+        let mut duplicate = request("logical-request", "hello");
+        duplicate.attempt_id = Some("different-attempt".into());
+        assert!(handle.respond(duplicate).is_err());
+        let mut cancelled = request("cancelled-request", "cancel");
+        cancelled.attempt_id = Some("attempt-cancelled".into());
+        assert_eq!(
+            handle.respond(cancelled).unwrap_err().run_id.as_deref(),
+            Some("attempt-cancelled")
+        );
+        assert_eq!(
+            handle.inspect().unwrap()["last_failure"]["run_id"],
+            "attempt-cancelled"
+        );
+        assert_eq!(handle.inspect().unwrap()["history_turns"], 1);
+        let mut bad = request("invalid-request", "hello");
+        bad.attempt_id = Some("unbounded bad identity".into());
+        assert_eq!(handle.respond(bad).unwrap_err().code, 1);
+        let metadata = handle.inspect().unwrap();
+        assert_eq!(
+            metadata["conversation_config"],
+            serde_json::to_value(conversation_config()).unwrap()
+        );
+        assert_eq!(metadata["gpu_layers"], 0);
     }
 
     #[test]
@@ -479,6 +565,91 @@ mod tests {
         assert!(handle.respond(request("0", "hello")).is_err());
         handle.reset().unwrap();
         assert_eq!(handle.inspect().unwrap()["history_turns"], 0);
+    }
+
+    #[test]
+    fn mobile_intake_filters_bad_replies_retains_fields_and_resets() {
+        let handle = ReplyHandle::new(fake);
+        let mut configuration = config();
+        configuration.system_prompt = include_str!("../../../roles/incident-reporting.txt").into();
+        handle.configure(configuration).unwrap();
+        let first = handle
+            .respond(request("report", "Smoke at the west entrance."))
+            .unwrap();
+        assert_eq!(
+            first["text"],
+            "I have your account. Is anyone injured or trapped?"
+        );
+        // A retry never advances the state or reruns a turn.
+        assert!(handle
+            .respond(request("report", "Smoke at the west entrance."))
+            .is_err());
+        let revision = handle
+            .state
+            .lock()
+            .unwrap()
+            .conversation
+            .intake
+            .as_ref()
+            .unwrap()
+            .revision;
+        assert!(handle.respond(request("cancelled", "cancel")).is_err());
+        assert_eq!(
+            handle
+                .state
+                .lock()
+                .unwrap()
+                .conversation
+                .intake
+                .as_ref()
+                .unwrap()
+                .revision,
+            revision
+        );
+        let second = handle
+            .respond(request("injuries", "Nobody is injured."))
+            .unwrap();
+        assert_eq!(
+            second["text"],
+            "I have your account. Are there any ongoing hazards?"
+        );
+        // Detail state survives eviction of all raw chat pairs.
+        for index in 0..8 {
+            handle
+                .respond(request(&format!("followup-{index}"), "thanks"))
+                .unwrap();
+        }
+        assert!(handle
+            .state
+            .lock()
+            .unwrap()
+            .conversation
+            .intake
+            .as_ref()
+            .unwrap()
+            .location
+            .as_ref()
+            .unwrap()
+            .contains("west entrance"));
+        handle.reset().unwrap();
+        let state = handle.state.lock().unwrap();
+        assert!(state.conversation.history.is_empty());
+        assert!(state
+            .conversation
+            .intake
+            .as_ref()
+            .unwrap()
+            .location
+            .is_none());
+        assert_eq!(
+            state
+                .conversation
+                .intake
+                .as_ref()
+                .unwrap()
+                .reviewed_revision,
+            None
+        );
     }
 
     #[test]

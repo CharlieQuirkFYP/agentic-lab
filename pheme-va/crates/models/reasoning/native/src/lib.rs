@@ -335,7 +335,7 @@ impl ReplyModel {
     }
 }
 
-fn make_sampler(temperature: f32) -> Result<Sampler> {
+fn make_sampler(config: &ConversationConfig) -> Result<Sampler> {
     // SAFETY: each sampler is allocated once; chain_add transfers ownership to
     // the chain, which is freed even if a later sampler allocation fails.
     unsafe {
@@ -351,15 +351,18 @@ fn make_sampler(temperature: f32) -> Result<Sampler> {
             native::llama_sampler_chain_add(sampler.0.as_ptr(), ptr.as_ptr());
             Ok(())
         };
-        if temperature == 0.0 {
+        if config.temperature == 0.0 {
             add(native::llama_sampler_init_greedy())?;
         } else {
-            add(native::llama_sampler_init_top_k(40))?;
-            add(native::llama_sampler_init_top_p(0.95, 1))?;
-            add(native::llama_sampler_init_temp(temperature))?;
+            add(native::llama_sampler_init_top_k(config.top_k))?;
+            add(native::llama_sampler_init_top_p(config.top_p, 1))?;
+            add(native::llama_sampler_init_min_p(config.min_p, 1))?;
+            add(native::llama_sampler_init_temp(config.temperature))?;
             // llama.h defines LLAMA_DEFAULT_SEED as 0xFFFFFFFF; bindgen
             // does not export that macro. This requests a native random seed.
-            add(native::llama_sampler_init_dist(u32::MAX))?;
+            add(native::llama_sampler_init_dist(
+                config.seed.unwrap_or(u32::MAX),
+            ))?;
         }
         Ok(sampler)
     }
@@ -414,7 +417,7 @@ impl ConversationModel for ReplyModel {
         for (index, chunk) in tokens.chunks(batch_size).enumerate() {
             self.decode(&context, chunk, index * batch_size, cancelled)?;
         }
-        let sampler = make_sampler(config.temperature).map_err(backend_error)?;
+        let sampler = make_sampler(config).map_err(backend_error)?;
         let mut output = Utf8Stream::default();
         for index in 0..config.max_output_tokens as usize {
             check_cancelled(cancelled)?;

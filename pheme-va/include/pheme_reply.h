@@ -15,6 +15,9 @@ typedef struct ReplyHandle ReplyHandle;
 ReplyHandle *pheme_reply_create(void);
 int32_t pheme_reply_inspect(const ReplyHandle *, char **output);
 int32_t pheme_reply_configure(const ReplyHandle *, const uint8_t *json, size_t length, char **output);
+/* Request JSON retains request_id duplicate protection and accepts an optional
+ * attempt_id (1-128 ASCII letters/digits/'_'/'-'). When supplied it becomes the
+ * active_run and result/error run_id before inference. Old callers are unchanged. */
 int32_t pheme_reply_respond(const ReplyHandle *, const uint8_t *json, size_t length, char **output);
 int32_t pheme_reply_reset(const ReplyHandle *, char **output);
 void pheme_reply_cancel(const ReplyHandle *);

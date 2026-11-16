@@ -61,6 +61,13 @@ int32_t pheme_va_inspect(PhemeVaHandle *, char **output);
  */
 int32_t pheme_va_transcribe_v1(PhemeVaHandle *, const float *samples,
     size_t count, uint32_t sample_rate, uint16_t channels, char **output);
+/* Additive version: caller supplies a unique attempt/run identity BEFORE any
+ * event is emitted. It appears unchanged in active_run, result/error run_id and
+ * metric batches. Identity is 1-128 ASCII letters, digits, '_' or '-'.
+ * Caller owns uniqueness; this function does not deduplicate operations. */
+int32_t pheme_va_transcribe_v2(PhemeVaHandle *, const float *samples,
+    size_t count, uint32_t sample_rate, uint16_t channels,
+    const uint8_t *request_id, size_t request_id_length, char **output);
 int32_t pheme_va_close(PhemeVaHandle *, char **output);
 void pheme_va_free(PhemeVaHandle *);
 

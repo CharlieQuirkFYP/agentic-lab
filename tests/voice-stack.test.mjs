@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import {
   chmod,
@@ -114,13 +115,24 @@ test(
       "Additional local role: preserve the approved wording.\n";
     const additionalRolePath = path.join(dir, "additional-role.txt");
     await writeFile(additionalRolePath, additionalRole);
-    const combinedRole =
-      (await readFile(
-        path.join(workspace, "roles/incident-reporting.txt"),
-        "utf8",
-      )) +
-      "\n\n" +
-      additionalRole;
+    // This suite exercises the adapter's raw chunks, including WAIT/cancel.
+    // Use an explicit custom role without the bundled intake policy marker;
+    // the separate suite below exercises that policy through the same boundary.
+    const bundledRole = await readFile(
+      path.join(workspace, "roles/incident-reporting.txt"),
+      "utf8",
+    );
+    assert.match(bundledRole, /^Pheme incident intake v1\r?\n/);
+    const genericRole = bundledRole.replace(
+      /^Pheme incident intake v1\r?\n/,
+      "Pheme generic conversation integration fixture\n",
+    );
+    const genericRolePath = path.join(dir, "generic-role.txt");
+    await writeFile(genericRolePath, genericRole);
+    const combinedRole = genericRole + "\n\n" + additionalRole;
+    const combinedRoleHash = createHash("sha256")
+      .update(combinedRole)
+      .digest("hex");
     const rustPort = await freePort();
     const goPort = await freePort();
     const rustURL = `http://127.0.0.1:${rustPort}`;
@@ -133,7 +145,7 @@ test(
         "--reply-path",
         path.join(dir, "valid.gguf"),
         "--prompt-file",
-        path.join(workspace, "roles/incident-reporting.txt"),
+        genericRolePath,
         "--prompt-file",
         additionalRolePath,
         "--startup-choices",
@@ -214,6 +226,8 @@ test(
         const readiness = await inspect();
         assert.equal(readiness.reply.ready, true);
         assert.equal(readiness.stt.ready, false);
+        assert.equal(readiness.role.name, genericRolePath);
+        assert.equal(readiness.role.sha256, combinedRoleHash);
         const web = stream(
           await request("/turns", "uncorrected question", {
             headers: { "Idempotency-Key": "web-one" },
@@ -356,6 +370,7 @@ test(
       assert.equal(snapshot.turns.length, 2);
       assert.equal(snapshot.runs.length, 2);
       assert.ok(snapshot.runs.every(run => run.stage === "reasoning"));
+      assert.ok(snapshot.runs.every(run => run.role_sha256 === combinedRoleHash));
       const generations = (await readFile(`${worker}.log`, "utf8")).trim().split("\n").map(line => JSON.parse(line)).filter(command => command.type === "generate");
       assert.deepEqual(generations.at(-1).messages.map(message=>message.content), [combinedRole, "Console first question", "Hello café 世界 🧯", "Console follow-up"]);
       const page1 = await (await fetch(`${base}${route}/metrics?after=0`)).json();
@@ -439,5 +454,135 @@ test(
         );
       },
     );
+  },
+);
+
+test(
+  "bundled incident intake validates replies before Go exposes stream or history",
+  { timeout: 20000 },
+  async (t) => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "pheme-intake-stack-"));
+    const worker = path.join(dir, "worker.sh");
+    await copyFile(
+      path.join(workspace, "crates/models/reasoning/tests/fixtures/worker.sh"),
+      worker,
+    );
+    await chmod(worker, 0o700);
+    await writeFile(path.join(dir, "valid.gguf"), "tiny fake model, not weights");
+    await writeFile(path.join(dir, "choices.toml"), "");
+    const rolePath = path.join(workspace, "roles/incident-reporting.txt");
+    const role = await readFile(rolePath, "utf8");
+    assert.match(role, /^Pheme incident intake v1\r?\n/);
+    const roleHash = createHash("sha256").update(role).digest("hex");
+    const rustPort = await freePort();
+    const goPort = await freePort();
+    const rustURL = `http://127.0.0.1:${rustPort}`;
+    const goURL = `http://127.0.0.1:${goPort}`;
+    const pheme = start(
+      serverBinary,
+      [
+        "--bind",
+        `127.0.0.1:${rustPort}`,
+        "--reply-path",
+        path.join(dir, "valid.gguf"),
+        "--prompt-file",
+        rolePath,
+        "--startup-choices",
+        path.join(dir, "choices.toml"),
+        "--max-review-seconds",
+        "15",
+      ],
+      { PHEME_VA_REPLY_WORKER: worker, PHEME_VA_WHISPER_MODEL: undefined },
+      workspace,
+    );
+    const api = start(
+      apiBinary,
+      [],
+      {
+        API_ADDR: `127.0.0.1:${goPort}`,
+        PHEME_VA_URL: rustURL,
+        API_CORS_ORIGINS: "http://localhost:5173",
+        GIN_MODE: "release",
+      },
+      root,
+    );
+    t.after(async () => {
+      await Promise.all([stop(api), stop(pheme)]);
+      await rm(dir, { recursive: true, force: true });
+    });
+    for (const [url, process] of [[rustURL, pheme], [goURL, api]]) {
+      await until(async () => {
+        if (process.child.exitCode !== null) throw new Error(process.logs());
+        try {
+          return (await fetch(`${url}/health`, {
+            signal: AbortSignal.timeout(500),
+          })).ok;
+        } catch {
+          return false;
+        }
+      }, `${url} ready; build binaries first (see tests/README.md)`);
+    }
+    const base = `${goURL}/api/v1/voice`;
+    const request = (route, text) => fetch(`${base}${route}`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Origin: "http://localhost:5173",
+      },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(10000),
+    });
+    const inspect = async () => {
+      const response = await fetch(`${base}/inspect`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      assert.equal(response.status, 200);
+      return response.json();
+    };
+    await until(async () => !(await inspect()).busy, "intake inference idle");
+    const readiness = await inspect();
+    assert.equal(readiness.role.name, rolePath);
+    assert.equal(readiness.role.sha256, roleHash);
+    const history = [];
+    const cases = [
+      ["There is smoke at Amokil.", "I have your account. Is anyone injured or trapped?"],
+      ["I don't know.", "I have your account. Are there any ongoing hazards?"],
+      ["The fire is still burning. Send help now.", "This app cannot dispatch help; contact emergency services directly. Shall I read back an excerpt for review?"],
+    ];
+    for (const [text, expected] of cases) {
+      const web = stream(await request("/turns", text), true);
+      await until(() => web.turn()?.status === "awaiting_review", "intake transcript review");
+      assert.equal(web.events.some(event => event.name === "reply.delta"), false);
+      const id = web.turn().turn_id;
+      assert.equal((await request(`/turns/${id}/submit`, text)).status, 200);
+      assert.equal(await web.done, true);
+      assert.equal(web.events.at(-1).name, "reply.completed");
+      assert.equal(web.turn().reply, expected);
+      assert.equal(web.events.filter(event => event.name === "reply.delta")
+        .map(event => event.data.text).join(""), expected);
+      assert.doesNotMatch(JSON.stringify(web.events), /Hello café|partial 世界|late delta/);
+      await until(async () => !(await inspect()).busy, "intake turn settled");
+      history.push(text, expected);
+      const completed = await inspect();
+      assert.deepEqual(completed.history.map(message => message.content), history);
+      assert.equal(completed.current_turn.role_sha256, roleHash);
+      const statusResponse = await fetch(`${base}/turns/${id}`, {
+        signal: AbortSignal.timeout(2000),
+      });
+      assert.equal(statusResponse.status, 200);
+      assert.equal((await statusResponse.json()).reply, expected);
+    }
+    const commands = (await readFile(`${worker}.log`, "utf8"))
+      .trim().split("\n").map(line => JSON.parse(line));
+    assert.equal(commands.filter(command => command.type === "init").length, 1);
+    const generations = commands.filter(command => command.type === "generate");
+    assert.equal(generations.length, cases.length);
+    for (const [index, generation] of generations.entries()) {
+      assert.equal(generation.messages[0].role, "system");
+      assert.ok(generation.messages[0].content.startsWith(role));
+      assert.ok(generation.messages[0].content.endsWith(cases[index][1]));
+      assert.deepEqual(generation.messages.slice(1).map(message => message.content),
+        history.slice(0, index * 2 + 1));
+    }
   },
 );
