@@ -29,9 +29,14 @@ The frontend uses the benchmark API directly:
 
 The dashboard does not fabricate benchmark measurements. Empty backend data is shown as an empty state, and unavailable metrics remain unavailable.
 
+Phone metrics start with the current/latest run, followed by the full selected Metrics overview and conversation/sweep/run history. `GET /api/v1/phone/overview` supplies full-scope totals independently of the activity page. URL filters survive opening and returning from a detail view. Legacy uploads retain unknown conversation ownership and outcomes; explicit installation-scoped IDs alone connect historical runs.
+
+JSON, CSV and Markdown reports fetch every page of `/phone/observations` and `/phone/legacy-observations` at one API snapshot. Aggregation and serializers come from `shared/phone-benchmarks/`, also used by the phone. Load an analysis snapshot to inspect raw sample histories and eligible execution-duration statistics. New server receipts update the overview; previously exported reports retain their snapshot identity. See [the phone API contract](../docs/api/phone-observations-api.md).
+
 ## Verification
 
 ```sh
 npm run build
 npm test
+npm run lint
 ```

@@ -4,6 +4,7 @@ import DashboardPage from "@/pages/DashboardPage";
 import BenchmarkTestingPage from "@/pages/BenchmarkTestingPage";
 import DownloadsPage from "@/pages/DownloadsPage";
 import ExperimentDetailsPage from "@/pages/ExperimentDetailsPage";
+import PhoneDetailsPage from "@/pages/PhoneDetailsPage";
 
 export const router = createBrowserRouter([
   { path: "/", element: <Navigate to="/dashboard" replace /> },
@@ -15,6 +16,7 @@ export const router = createBrowserRouter([
     path: "/experiments/:id",
     element: <ExperimentDetailsPage />,
   },
+  { path: "/phone/:kind/:id", element: <PhoneDetailsPage /> },
   {
     path: "/benchmark-testing",
     element: <BenchmarkTestingPage />,
